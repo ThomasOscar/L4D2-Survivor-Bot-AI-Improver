@@ -6608,7 +6608,7 @@ stock bool GetEntityCenteroid(int iEntity, float fResult[3])
 
 bool IntervalHasPassed(float fInterval)
 {
-    return (((GetGameTime() % fInterval) + GetGameFrameTime()) >= fInterval);
+    return ((FloatFraction(GetGameTime() / fInterval) + GetGameFrameTime()) >= 1.0);
 }
 
 void LBI_GetNavAreaCenter(int iNavArea, float fResult[3])
