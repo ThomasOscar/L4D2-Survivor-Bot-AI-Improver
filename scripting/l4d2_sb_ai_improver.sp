@@ -792,7 +792,6 @@ public void OnPluginStart()
 	// EVENT HOOKS
 	// ----------------------------------------------------------------------------------------------------
 	HookEvent("round_start", 			Event_OnRoundStart);
-	HookEvent("round_end", 			Event_OnRoundEnd);
 	HookEvent("mission_lost", 			Event_OnMissionLost);
 	HookEvent("map_transition", 			Event_OnMapTransition);
 
@@ -1772,15 +1771,6 @@ void LLM_SendRoundOutcome(const char[] outcome)
 	Format(msg, sizeof(msg), "ROUND_OUTCOME {\"map\":\"%s\",\"outcome\":\"%s\"}\n", mapName, outcome);
 	g_hLLM_Socket.Send(msg, strlen(msg));
 	PrintToServer("[LLM] Round outcome sent: %s → %s", mapName, outcome);
-}
-
-void Event_OnRoundEnd(Event hEvent, const char[] sName, bool bBroadcast)
-{
-	int reason = hEvent.GetInt("reason");
-	char outcome[16] = "survived";
-	if (reason == 1) strcopy(outcome, sizeof(outcome), "team_wipe");  // survivors wiped
-	else if (reason == 2) strcopy(outcome, sizeof(outcome), "escaped");  // survivors escaped
-	LLM_SendRoundOutcome(outcome);
 }
 
 void Event_OnMissionLost(Event hEvent, const char[] sName, bool bBroadcast)
