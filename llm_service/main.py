@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-L4D2 LLM Bot - Main Entry (v2.1 with Rule Engine + Debug + Smart Interval)
+L4D2 LLM Bot - Main Entry (v3.0 with Model Router + Rule Engine + State Cache)
 """
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import signal
 import sys
 import time
@@ -19,13 +20,19 @@ from response_parser import ResponseParser
 from rule_engine import RuleEngine
 from decision_logger import DecisionLogger
 from debug_server import DebugServer
+from state_cache import StateCache
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/opt/l4d2_llm_service/logs/service.log")
+        RotatingFileHandler(
+            "/opt/l4d2_llm_service/logs/service.log",
+            maxBytes=5*1024*1024,  # 5MB
+            backupCount=3,
+            encoding="utf-8"
+        )
     ]
 )
 logger = logging.getLogger(__name__)
@@ -47,6 +54,7 @@ class LLMDecisionService:
         self.rule_engine: RuleEngine = None
         self.decision_logger: DecisionLogger = None
         self.debug_server: DebugServer = None
+        self.state_cache: StateCache = None
         self.last_action = None
         self.last_action_time = 0
         self.last_llm_call_time = 0
@@ -151,6 +159,14 @@ class LLMDecisionService:
         self.rule_engine = RuleEngine()
         self.decision_logger = DecisionLogger(max_history=100)
 
+        # State cache (Redis + in-memory fallback)
+        cache_cfg = self.config.get("cache", {})
+        self.state_cache = StateCache(
+            redis_url=cache_cfg.get("redis_url", "redis://localhost:6379"),
+            enabled=cache_cfg.get("enabled", False)
+        )
+        await self.state_cache.connect()
+
         self.tcp_server.on_message = self._handle_state
 
         # Start debug HTTP server
@@ -179,6 +195,8 @@ class LLMDecisionService:
             await self.tcp_server.stop()
         if self.model_router:
             await self.model_router.stop()
+        if self.state_cache:
+            await self.state_cache.disconnect()
         logger.info("Service stopped")
 
     async def _handle_state(self, state: dict) -> dict:

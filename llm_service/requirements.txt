@@ -2,3 +2,4 @@ openai>=1.0.0
 pyyaml>=6.0
 aiohttp>=3.9.0
 websockets>=12.0
+aioredis>=2.0.0

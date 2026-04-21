@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  llm-service:
+    build: .
+    container_name: l4d2-llm-service
+    restart: unless-stopped
+    ports:
+      - "9876:9876"
+      - "9877:9877"
+    networks:
+      - l4d2-network
+    environment:
+      - XFYUN_API_KEY=${XFYUN_API_KEY:-}
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs
+
+  redis:
+    image: redis:7-alpine
+    container_name: l4d2-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - l4d2-network
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+
+networks:
+  l4d2-network:
+    external: true
+    name: l4d2-server-next_l4d2-network
