@@ -21,6 +21,7 @@ from rule_engine import RuleEngine
 from decision_logger import DecisionLogger
 from debug_server import DebugServer
 from state_cache import StateCache
+from player_scorer import PlayerScorer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,7 @@ class LLMDecisionService:
         self.decision_logger: DecisionLogger = None
         self.debug_server: DebugServer = None
         self.state_cache: StateCache = None
+        self.player_scorer: PlayerScorer = None
         self.last_action = None
         self.last_action_time = 0
         self.last_llm_call_time = 0
@@ -167,6 +169,9 @@ class LLMDecisionService:
         )
         await self.state_cache.connect()
 
+        # Player scorer (five-dimensional scoring)
+        self.player_scorer = PlayerScorer()
+
         self.tcp_server.on_message = self._handle_state
 
         # Start debug HTTP server
@@ -206,6 +211,14 @@ class LLMDecisionService:
             self.last_state = state
             req_seq = state.get("seq", 0)  # Extract seq for request-response matching
 
+            # Log player score summary periodically (every 5th decision)
+            if state.get("player_scores") and not hasattr(self, '_score_log_counter'):
+                self._score_log_counter = 0
+            if state.get("player_scores"):
+                self._score_log_counter += 1
+                if self._score_log_counter % 5 == 1:
+                    logger.info(self.player_scorer.get_score_summary(state))
+
             # Step 0: STATE 变化检测（无变化 + 最近有决策 → 复用）
             state_changed = self._state_changed(state)
             if not state_changed and self.last_decision:
@@ -243,11 +256,16 @@ class LLMDecisionService:
             # Step 3: 构建 Prompt 并调用 LLM (via ModelRouter)
             t0 = time.time()
             system_prompt = self.prompt_builder.get_system_prompt()
+
+            # Inject player score hint into user prompt
+            score_hint = self.player_scorer.get_decision_hint(state)
             user_prompt = self.prompt_builder.build(
                 state,
                 self.last_action,
                 now - self.last_action_time
             )
+            if score_hint:
+                user_prompt = f"[Team Assessment] {score_hint}\n\n{user_prompt}"
 
             response, provider_name = await self.model_router.chat(system_prompt, user_prompt, state)
             elapsed = time.time() - t0

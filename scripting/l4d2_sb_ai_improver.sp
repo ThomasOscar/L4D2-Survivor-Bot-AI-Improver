@@ -100,6 +100,14 @@ bool g_bLLM_OverrideMove = false;  // whether to override movement
 int g_iLLM_TrackedBot = -1;        // which bot LLM controls (-1 = first found)
 int g_iLLM_Seq = 0;               // STATE sequence number for request-response matching
 
+// Player scoring (per-client index)
+int g_iLLM_PlayerIncap[MAXPLAYERS+1];    // incap count this round
+int g_iLLM_PlayerPinned[MAXPLAYERS+1];   // pinned count this round
+int g_iLLM_PlayerRevive[MAXPLAYERS+1];   // revive/defib count this round
+int g_iLLM_PlayerHeal[MAXPLAYERS+1];     // heal teammate count this round
+int g_iLLM_PlayerSIKills[MAXPLAYERS+1];  // SI kill count this round
+bool g_bLLM_WasPinned[MAXPLAYERS+1];     // previous pin state for edge detection
+
 // LLM Terrain Awareness
 bool g_bLLM_HasNarrowPassage = false;
 bool g_bLLM_HasLedges = false;
@@ -787,6 +795,7 @@ public void OnPluginStart()
 
 	HookEvent("weapon_fire", 			Event_OnWeaponFire);
 	HookEvent("player_death", 			Event_OnPlayerDeath);
+	HookEvent("heal_success", 			Event_OnHealSuccess);
 	HookEvent("player_use",				Event_OnPlayerUse);
 	HookEvent("ability_use",			Event_OnAbilityUse);
 	
@@ -1680,6 +1689,13 @@ void Event_OnPlayerDeath(Event hEvent, const char[] sName, bool bBroadcast)
 	int iAttacker = GetClientOfUserId(hEvent.GetInt("attacker"));
 	int iInfected = hEvent.GetInt("entityid");
 
+	// LLM score: track SI kills by survivor
+	if (iAttacker > 0 && iAttacker <= MaxClients && iVictim > 0 && iVictim <= MaxClients)
+	{
+		if (IsClientInGame(iAttacker) && IsClientSurvivor(iAttacker) && GetClientTeam(iVictim) == 3)
+			g_iLLM_PlayerSIKills[iAttacker]++;
+	}
+
 	int iCurTarget = g_iBot_TargetInfected[iAttacker];
 	if (iCurTarget == iVictim || iCurTarget == iInfected)
 		g_iBot_TargetInfected[iAttacker] = 0;
@@ -1700,6 +1716,10 @@ void Event_OnIncap(Event hEvent, const char[] sName, bool bBroadcast)
 	iUserID = hEvent.GetInt("userid");
 	iClient = GetClientOfUserId(iUserID);
 
+	// LLM score: track incap
+	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+		g_iLLM_PlayerIncap[iClient]++;
+
 	iSecondarySlot = GetWeaponInInventory(iClient, 1);
 	if (iSecondarySlot)
 	{
@@ -1714,6 +1734,10 @@ void Event_OnRevive(Event hEvent, const char[] sName, bool bBroadcast)
 	static int iClient, iUserID, iOwner, iEntIndex;
 	iUserID = hEvent.GetInt("subject");
 	iClient = GetClientOfUserId(iUserID);
+
+	// LLM score: track revive (the one being revived)
+	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+		g_iLLM_PlayerRevive[iClient]++;
 	
 	for (int i = 0; i < g_hForbiddenItemList.Length; i++)
 	{
@@ -1725,6 +1749,15 @@ void Event_OnRevive(Event hEvent, const char[] sName, bool bBroadcast)
 			continue;
 		}
 	}
+}
+
+// LLM score: track heal teammate
+void Event_OnHealSuccess(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int subject = GetClientOfUserId(hEvent.GetInt("subject"));
+	int healer = GetClientOfUserId(hEvent.GetInt("userid"));
+	if (healer > 0 && healer <= MaxClients && IsClientInGame(healer) && subject != healer)
+		g_iLLM_PlayerHeal[healer]++;
 }
 
 // Mark entity as used by certain client
@@ -7494,6 +7527,16 @@ void LLM_OnMapStart()
 	for (int i = 0; i < LLM_RECENT_EVENTS_MAX; i++) g_fLLM_EventTime[i] = 0.0;
 	g_iLLM_TrackedBot = -1;
 	g_iLLM_Seq = 0;
+	// Reset player scores
+	for (int i = 0; i <= MAXPLAYERS; i++)
+	{
+		g_iLLM_PlayerIncap[i] = 0;
+		g_iLLM_PlayerPinned[i] = 0;
+		g_iLLM_PlayerRevive[i] = 0;
+		g_iLLM_PlayerHeal[i] = 0;
+		g_iLLM_PlayerSIKills[i] = 0;
+		g_bLLM_WasPinned[i] = false;
+	}
 
 	// Force game start: L4D2 doesn't spawn survivor bots without a human player.
 	// Create a temporary fake client to trigger the game round, then kick it.
@@ -7886,7 +7929,25 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist);
 	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
 	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
-	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", g_sLLM_Action);
+	// Player scores (all alive survivors)
+	char scores[1024]="";
+	int sc = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i)) continue;
+		// Pin edge detection: count transition from not-pinned to pinned
+		bool nowPinned = LLM_IsPinned(i);
+		if (nowPinned && !g_bLLM_WasPinned[i])
+			g_iLLM_PlayerPinned[i]++;
+		g_bLLM_WasPinned[i] = nowPinned;
+		char sn[64]; GetClientName(i, sn, sizeof(sn));
+		if (sc > 0) Format(scores, sizeof(scores), "%s,", scores);
+		Format(scores, sizeof(scores), "%s{\"name\":\"%s\",\"incap\":%d,\"pinned\":%d,\"revive\":%d,\"heal\":%d,\"si_kills\":%d}",
+			scores, sn, g_iLLM_PlayerIncap[i], g_iLLM_PlayerPinned[i], g_iLLM_PlayerRevive[i], g_iLLM_PlayerHeal[i], g_iLLM_PlayerSIKills[i]);
+		sc++;
+	}
+
+	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"player_scores\":[%s],\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", scores, g_sLLM_Action);
 }
 
 bool LLM_IsPinned(int client)
