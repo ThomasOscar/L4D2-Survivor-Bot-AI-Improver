@@ -3,6 +3,23 @@ server:
   host: "0.0.0.0"
   port: 9876
 
+routing:
+  strategy: "priority"  # priority / round_robin / adaptive
+
+models:
+  - name: "xfyun-astron"
+    provider: "openai"
+    api_key: "fa89e03abf18b62f1dea56499c6f1b3e:ODM4ZTk2NjA2ZmMwNDU4N2MwZjdhNDcz"
+    base_url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+    model: "astron-code-latest"
+    max_tokens: 150
+    temperature: 0.3
+    timeout: 5.0
+    priority: 1
+    tier: "lightweight"
+    enabled: true
+
+# Legacy single-model config (backward compat, ignored when models[] is present)
 llm:
   provider: "openai"
   api_key: "fa89e03abf18b62f1dea56499c6f1b3e:ODM4ZTk2NjA2ZmMwNDU4N2MwZjdhNDcz"

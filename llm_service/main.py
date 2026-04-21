@@ -13,6 +13,7 @@ from pathlib import Path
 
 from tcp_server import TCPServer
 from llm_client import LLMClient, LLMConfig
+from model_router import ModelRouter
 from prompt_builder import PromptBuilder
 from response_parser import ResponseParser
 from rule_engine import RuleEngine
@@ -40,6 +41,7 @@ class LLMDecisionService:
         self.config = self._load_config(config_path)
         self.tcp_server: TCPServer = None
         self.llm_client: LLMClient = None
+        self.model_router: ModelRouter = None
         self.prompt_builder: PromptBuilder = None
         self.response_parser: ResponseParser = None
         self.rule_engine: RuleEngine = None
@@ -121,7 +123,7 @@ class LLMDecisionService:
         return 5.0  # Peaceful → slow refresh
 
     async def start(self):
-        logger.info("Starting LLM Decision Service v2.1 (Rule Engine + Debug + Smart Interval)...")
+        logger.info("Starting LLM Decision Service v3.0 (Model Router + Rule Engine + Debug)...")
 
         server_config = self.config.get("server", {})
         self.tcp_server = TCPServer(
@@ -129,16 +131,18 @@ class LLMDecisionService:
             port=server_config.get("port", 9876)
         )
 
-        llm_config = self.config.get("llm", {})
-        self.llm_client = LLMClient(LLMConfig(
-            provider=llm_config.get("provider", "deepseek"),
-            api_key=llm_config.get("api_key", ""),
-            base_url=llm_config.get("base_url", "https://api.deepseek.com/v1"),
-            model=llm_config.get("model", "deepseek-chat"),
-            max_tokens=llm_config.get("max_tokens", 150),
-            temperature=llm_config.get("temperature", 0.3),
-            timeout=llm_config.get("timeout", 5.0)
-        ))
+        # Initialize Model Router (supports multi-provider)
+        routing_config = self.config.get("routing", {})
+        # Merge models list and legacy llm config into routing config
+        if "models" in self.config:
+            routing_config["models"] = self.config["models"]
+        if "llm" in self.config:
+            routing_config["llm"] = self.config["llm"]
+        self.model_router = ModelRouter(routing_config)
+        await self.model_router.start()
+
+        # Legacy llm_client no longer needed - ModelRouter handles all LLM calls
+        # Keep reference for parse_response backward compat only
 
         self.prompt_builder = PromptBuilder(
             system_prompt_path=self.config.get("prompt", {}).get("system_prompt_file", "prompts/system.txt")
@@ -148,8 +152,6 @@ class LLMDecisionService:
         self.decision_logger = DecisionLogger(max_history=100)
 
         self.tcp_server.on_message = self._handle_state
-
-        await self.llm_client.start()
 
         # Start debug HTTP server
         self.debug_server = DebugServer(
@@ -175,8 +177,8 @@ class LLMDecisionService:
             await self.debug_server.stop()
         if self.tcp_server:
             await self.tcp_server.stop()
-        if self.llm_client:
-            await self.llm_client.stop()
+        if self.model_router:
+            await self.model_router.stop()
         logger.info("Service stopped")
 
     async def _handle_state(self, state: dict) -> dict:
@@ -184,12 +186,14 @@ class LLMDecisionService:
         try:
             now = time.time()
             self.last_state = state
+            req_seq = state.get("seq", 0)  # Extract seq for request-response matching
 
             # Step 0: STATE 变化检测（无变化 + 最近有决策 → 复用）
             state_changed = self._state_changed(state)
             if not state_changed and self.last_decision:
                 if now - self.last_action_time < FORCE_REEVAL_INTERVAL:
                     self.decision_logger.log(state, self.last_decision, "skipped")
+                    self.last_decision["seq"] = req_seq
                     return self.last_decision
 
             # Step 1: 规则引擎预判（即时，无 API 开销）
@@ -199,6 +203,7 @@ class LLMDecisionService:
                 elapsed = time.time() - t0
                 self.decision_logger.log(state, rule_decision, "rule", elapsed)
                 rule_decision["next_interval"] = self._compute_next_interval(state, rule_decision)
+                rule_decision["seq"] = req_seq
                 self.last_decision = rule_decision
                 self.last_action = rule_decision
                 self.last_action_time = now
@@ -208,14 +213,16 @@ class LLMDecisionService:
             # Step 2: 节流检查（规则引擎未命中才走到这）
             if now - self.last_llm_call_time < LLM_CALL_INTERVAL:
                 if self.last_decision:
+                    self.last_decision["seq"] = req_seq
                     return self.last_decision
                 fallback = self.response_parser.get_fallback_decision("waiting", state)
                 fallback["next_interval"] = self._compute_next_interval(state, fallback)
+                fallback["seq"] = req_seq
                 return fallback
 
             self.last_llm_call_time = now
 
-            # Step 3: 构建 Prompt 并调用 LLM
+            # Step 3: 构建 Prompt 并调用 LLM (via ModelRouter)
             t0 = time.time()
             system_prompt = self.prompt_builder.get_system_prompt()
             user_prompt = self.prompt_builder.build(
@@ -224,11 +231,11 @@ class LLMDecisionService:
                 now - self.last_action_time
             )
 
-            response = await self.llm_client.chat(system_prompt, user_prompt)
+            response, provider_name = await self.model_router.chat(system_prompt, user_prompt, state)
             elapsed = time.time() - t0
 
             if response:
-                content = self.llm_client.parse_response(response)
+                content = self.model_router.parse_response(response, provider_name)
                 decision = self.response_parser.parse(content)
 
                 if decision:
@@ -236,6 +243,7 @@ class LLMDecisionService:
                     decision = self.response_parser.validate_against_state(decision, state)
                     self.decision_logger.log(state, decision, "llm", elapsed)
                     decision["next_interval"] = self._compute_next_interval(state, decision)
+                    decision["seq"] = req_seq
                     self.last_action = decision
                     self.last_action_time = now
                     self.last_decision = decision
@@ -248,6 +256,7 @@ class LLMDecisionService:
             fallback = self.response_parser.get_fallback_decision("LLM failed", state)
             self.decision_logger.log(state, fallback, "fallback", elapsed)
             fallback["next_interval"] = self._compute_next_interval(state, fallback)
+            fallback["seq"] = req_seq
             self.last_decision = fallback
             return fallback
 
@@ -255,6 +264,7 @@ class LLMDecisionService:
             logger.error(f"Handle state error: {e}")
             fallback = self.response_parser.get_fallback_decision(str(e), self.last_state)
             fallback["next_interval"] = 3.0
+            fallback["seq"] = state.get("seq", 0)
             return fallback
 
 
