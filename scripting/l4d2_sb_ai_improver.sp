@@ -80,11 +80,13 @@ ConVar g_hCvar_LLM_Enabled;
 ConVar g_hCvar_LLM_Host;
 ConVar g_hCvar_LLM_Port;
 ConVar g_hCvar_LLM_Interval;
+ConVar g_hCvar_LLM_TestMode;
 
 // LLM Socket
 Socket g_hLLM_Socket = null;
 bool g_bLLM_Connected = false;
 Handle g_hLLM_ConnectTimer = null;
+Handle g_hLLM_TestTimer = null;
 float g_fLLM_LastSendTime = 0.0;
 
 // LLM Decision State
@@ -7455,6 +7457,15 @@ void LLM_Init()
 	g_hCvar_LLM_Port = CreateConVar("ib_llm_port", "9876", "LLM Python service port");
 	g_hCvar_LLM_Interval = CreateConVar("ib_llm_interval", "3.0", "Seconds between LLM state updates");
 
+	// Test mode: auto-spawn SI for LLM testing without human players
+	g_hCvar_LLM_TestMode = CreateConVar("ib_llm_testmode", "0", "Auto-spawn SI for LLM testing (0=off, 1=on)");
+
+	// Admin commands for manual testing
+	RegAdminCmd("sm_llm_spawn_si", Cmd_LLM_SpawnSI, ADMFLAG_ROOT, "Spawn a random SI near survivors");
+	RegAdminCmd("sm_llm_spawn_tank", Cmd_LLM_SpawnTank, ADMFLAG_ROOT, "Spawn a tank near survivors");
+	RegAdminCmd("sm_llm_spawn_witch", Cmd_LLM_SpawnWitch, ADMFLAG_ROOT, "Spawn a witch near survivors");
+	RegAdminCmd("sm_llm_status", Cmd_LLM_Status, ADMFLAG_ROOT, "Show LLM module status");
+
 	// Hook events for LLM awareness
 	HookEvent("witch_harasser_set", LLM_EventWitchHarassed);
 	HookEvent("tank_spawn", LLM_EventTankSpawn);
@@ -7483,6 +7494,10 @@ void LLM_OnMapStart()
 	// Create a temporary fake client to trigger the game round, then kick it.
 	// sb_all_bot_game=1 keeps bots alive after the launcher disconnects.
 	CreateTimer(8.0, LLM_TimerForceStart, _, TIMER_FLAG_NO_MAPCHANGE);
+
+	// Test mode: auto-spawn SI periodically for LLM testing
+	delete g_hLLM_TestTimer;
+	g_hLLM_TestTimer = CreateTimer(20.0, LLM_TimerTestSpawn, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 
 	PrintToServer("[LLM] OnMapStart - LLM layer active");
 }
@@ -7697,7 +7712,12 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	int ent = -1;
 	while ((ent = FindEntityByClassname(ent, "witch")) != -1)
 	{
-		int whp = GetEntProp(ent, Prop_Send, "m_iHealth");
+		// Witch uses m_iMaxHealth on Prop_Data, not m_iHealth on Prop_Send
+		int whp = 0;
+		if (HasEntProp(ent, Prop_Send, "m_iHealth"))
+			whp = GetEntProp(ent, Prop_Send, "m_iHealth");
+		else if (HasEntProp(ent, Prop_Data, "m_iMaxHealth"))
+			whp = GetEntProp(ent, Prop_Data, "m_iMaxHealth");
 		float wp[3]; GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", wp);
 		float dist = GetVectorDistance(pos, wp);
 		if (wc > 0) Format(witches, sizeof(witches), "%s,", witches);
@@ -8070,4 +8090,174 @@ public void LLM_EventChargerPummel(Event event, const char[] name, bool dontBroa
 {
 	int v = GetClientOfUserId(event.GetInt("victim"));
 	if (v > 0 && v != g_iLLM_TrackedBot) { char n[64]; GetClientName(v,n,sizeof(n)); char b[128]; Format(b,sizeof(b),"charger_pummel_%s",n); LLM_AddEvent(b); }
+}
+
+// ===================== Test Mode: Auto-spawn SI =====================
+
+public Action LLM_TimerTestSpawn(Handle timer)
+{
+	if (!g_hCvar_LLM_Enabled.BoolValue || !g_hCvar_LLM_TestMode.BoolValue)
+		return Plugin_Continue;
+
+	// Count current SI
+	int siCount = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 3 && IsPlayerAlive(i))
+			siCount++;
+	}
+
+	// Only spawn if fewer than 3 SI alive
+	if (siCount < 3)
+	{
+		LLM_SpawnNearSurvivor();
+	}
+
+	return Plugin_Continue;
+}
+
+void LLM_SpawnNearSurvivor()
+{
+	// Find a survivor bot and their position
+	int survivor = -1;
+	float survivorPos[3];
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+		{
+			survivor = i;
+			GetClientAbsOrigin(i, survivorPos);
+			break;
+		}
+	}
+	if (survivor == -1) return;
+
+	// Pick random SI class: 1=Smoker, 2=Boomer, 3=Hunter, 4=Spitter, 5=Jockey, 6=Charger
+	int zombieClass = GetRandomInt(1, 6);
+
+	// Try to get a valid PZ spawn position using left4dhooks native
+	float spawnPos[3];
+	if (!L4D_GetRandomPZSpawnPosition(survivor, zombieClass, 10, spawnPos))
+	{
+		// Fallback: offset from survivor position
+		spawnPos = survivorPos;
+		spawnPos[0] += GetRandomFloat(300.0, 600.0) * (GetRandomInt(0, 1) ? 1.0 : -1.0);
+		spawnPos[1] += GetRandomFloat(300.0, 600.0) * (GetRandomInt(0, 1) ? 1.0 : -1.0);
+		spawnPos[2] += 10.0;
+	}
+
+	float spawnAng[3];
+	spawnAng[1] = GetRandomFloat(0.0, 360.0);
+
+	int entity = L4D2_SpawnSpecial(zombieClass, spawnPos, spawnAng);
+	if (entity > 0)
+		PrintToServer("[LLM] Test: spawned SI class %d at %.0f %.0f %.0f (entity %d)", zombieClass, spawnPos[0], spawnPos[1], spawnPos[2], entity);
+	else
+		PrintToServer("[LLM] Test: L4D2_SpawnSpecial failed for class %d", zombieClass);
+}
+
+
+// Admin commands
+public Action Cmd_LLM_SpawnSI(int client, int args)
+{
+	LLM_SpawnNearSurvivor();
+	ReplyToCommand(client, "[LLM] Spawned SI near survivor");
+	return Plugin_Handled;
+}
+
+public Action Cmd_LLM_SpawnTank(int client, int args)
+{
+	int survivor = -1;
+	float survivorPos[3];
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+		{
+			survivor = i;
+			GetClientAbsOrigin(i, survivorPos);
+			break;
+		}
+	}
+	if (survivor == -1)
+	{
+		ReplyToCommand(client, "[LLM] No survivor found");
+		return Plugin_Handled;
+	}
+
+	float spawnPos[3];
+	if (!L4D_GetRandomPZSpawnPosition(survivor, 8, 10, spawnPos))
+	{
+		spawnPos = survivorPos;
+		spawnPos[0] += GetRandomFloat(300.0, 600.0) * (GetRandomInt(0, 1) ? 1.0 : -1.0);
+		spawnPos[1] += GetRandomFloat(300.0, 600.0) * (GetRandomInt(0, 1) ? 1.0 : -1.0);
+		spawnPos[2] += 10.0;
+	}
+
+	float spawnAng[3];
+	spawnAng[1] = GetRandomFloat(0.0, 360.0);
+
+	int entity = L4D2_SpawnTank(spawnPos, spawnAng);
+	if (entity > 0)
+		PrintToServer("[LLM] Spawned tank at %.0f %.0f %.0f (entity %d)", spawnPos[0], spawnPos[1], spawnPos[2], entity);
+	else
+		PrintToServer("[LLM] L4D2_SpawnTank failed");
+
+	ReplyToCommand(client, "[LLM] Spawning tank");
+	return Plugin_Handled;
+}
+
+public Action Cmd_LLM_SpawnWitch(int client, int args)
+{
+	int survivor = -1;
+	float survivorPos[3];
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+		{
+			survivor = i;
+			GetClientAbsOrigin(i, survivorPos);
+			break;
+		}
+	}
+	if (survivor == -1)
+	{
+		ReplyToCommand(client, "[LLM] No survivor found");
+		return Plugin_Handled;
+	}
+
+	float spawnPos[3];
+	// Witch is not a client-based SI, use position offset
+	spawnPos = survivorPos;
+	spawnPos[0] += GetRandomFloat(300.0, 600.0) * (GetRandomInt(0, 1) ? 1.0 : -1.0);
+	spawnPos[1] += GetRandomFloat(300.0, 600.0) * (GetRandomInt(0, 1) ? 1.0 : -1.0);
+	spawnPos[2] += 10.0;
+
+	float spawnAng[3];
+	spawnAng[1] = GetRandomFloat(0.0, 360.0);
+
+	int entity = L4D2_SpawnWitch(spawnPos, spawnAng);
+	if (entity > 0)
+		PrintToServer("[LLM] Spawned witch at %.0f %.0f %.0f (entity %d)", spawnPos[0], spawnPos[1], spawnPos[2], entity);
+	else
+		PrintToServer("[LLM] L4D2_SpawnWitch failed");
+
+	ReplyToCommand(client, "[LLM] Spawning witch");
+	return Plugin_Handled;
+}
+
+public Action Cmd_LLM_Status(int client, int args)
+{
+	ReplyToCommand(client, "[LLM] Enabled: %d | Connected: %d | TrackedBot: %d | Action: %s",
+		g_hCvar_LLM_Enabled.IntValue, g_bLLM_Connected, g_iLLM_TrackedBot, g_sLLM_Action);
+
+	int survivors = 0, si = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsFakeClient(i)) continue;
+		if (GetClientTeam(i) == 2 && IsPlayerAlive(i)) survivors++;
+		if (GetClientTeam(i) == 3 && IsPlayerAlive(i)) si++;
+	}
+	ReplyToCommand(client, "[LLM] Survivors: %d | SI alive: %d | TestMode: %d",
+		survivors, si, g_hCvar_LLM_TestMode.IntValue);
+	return Plugin_Handled;
 }
