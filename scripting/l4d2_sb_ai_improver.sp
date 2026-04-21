@@ -7504,15 +7504,21 @@ public Action LLM_TimerForceStart(Handle timer)
 	int fakeClient = CreateFakeClient("LLM_Launcher");
 	if (fakeClient != 0)
 	{
-		PrintToServer("[LLM] Launcher client created: %d", fakeClient);
 		ChangeClientTeam(fakeClient, 2);
+		// Kick immediately in same frame to avoid other plugins crashing on fake client.
+		// This spawns 1 survivor bot; a human player joining will fill to 4.
 		KickClient(fakeClient, "done");
-		PrintToServer("[LLM] Launcher kicked, game should start");
+		PrintToServer("[LLM] Launcher triggered game start");
 	}
 	else
 	{
 		PrintToServer("[LLM] CreateFakeClient failed");
 	}
+	return Plugin_Stop;
+}
+
+public Action LLM_TimerKickLauncher(Handle timer, int client)
+{
 	return Plugin_Stop;
 }
 
@@ -7734,6 +7740,26 @@ bool LLM_IsPinned(int client)
 	return false;
 }
 
+int LLM_FindNearestWitch(int bot)
+{
+	float botPos[3]; GetClientAbsOrigin(bot, botPos);
+	float bestDist = 99999.0;
+	int bestWitch = 0;
+
+	int ent = FindEntityByClassname(-1, "witch");
+	while (ent != -1)
+	{
+		if (IsValidEntity(ent))
+		{
+			float wp[3]; GetEntPropVector(ent, Prop_Send, "m_vecOrigin", wp);
+			float dist = GetVectorDistance(botPos, wp);
+			if (dist < bestDist) { bestDist = dist; bestWitch = ent; }
+		}
+		ent = FindEntityByClassname(ent, "witch");
+	}
+	return bestWitch;
+}
+
 // ===================== Decision Parsing =====================
 
 void LLM_ParseDecision(const char[] data, int size)
@@ -7890,7 +7916,77 @@ void LLM_ApplyStrategy(const char[] action)
 		g_iBot_PinnedFriend[bot] = 0;
 		g_iBot_PinnedFriend_Attacker[bot] = 0;
 	}
-	// Other actions (hold_position, pick_up_item, etc.) rely on IB's built-in behavior
+	else if (strcmp(action, "heal_teammate") == 0)
+	{
+		// Find lowest HP teammate and set IB to move toward them
+		int bestTarget = 0;
+		float bestHP = 999.0;
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
+			float hp = float(GetClientHealth(i));
+			if (hp < bestHP) { bestHP = hp; bestTarget = i; }
+		}
+		if (bestTarget > 0 && bestHP < 80.0)
+		{
+			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
+			SetMoveToPosition(bot, tp, 3, "LLM_Heal", 0.0, 5.0, true, true);
+		}
+	}
+	else if (strcmp(action, "attack_witch") == 0)
+	{
+		// Find nearest witch and set as target
+		int witchRef = LLM_FindNearestWitch(bot);
+		if (witchRef > 0)
+		{
+			float wp[3]; GetEntPropVector(witchRef, Prop_Send, "m_vecOrigin", wp);
+			SetMoveToPosition(bot, wp, 3, "LLM_Witch", 0.0, 5.0, true, true);
+		}
+	}
+	else if (strcmp(action, "pick_up_item") == 0)
+	{
+		// Let IB's built-in scavenge handle this - just ensure no override blocks it
+		g_iBot_PinnedFriend[bot] = 0;
+		g_iBot_PinnedFriend_Attacker[bot] = 0;
+	}
+	else if (strcmp(action, "throw_grenade") == 0)
+	{
+		// IB handles grenade throwing via ib_gren_enabled - ensure it's active
+		// No additional override needed
+	}
+	else if (strcmp(action, "cover_fire") == 0 || strcmp(action, "hold_position") == 0)
+	{
+		// Stay near current position, engage threats
+		float botPos[3]; GetClientAbsOrigin(bot, botPos);
+		// Don't move away, let IB handle targeting
+		g_iBot_PinnedFriend[bot] = 0;
+	}
+	else if (strcmp(action, "give_item") == 0)
+	{
+		// Move toward nearest teammate that needs items
+		int bestTarget = 0;
+		float bestDist = 99999.0;
+		float botPos[3]; GetClientAbsOrigin(bot, botPos);
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
+			float tp[3]; GetClientAbsOrigin(i, tp);
+			float dist = GetVectorDistance(botPos, tp);
+			if (dist < bestDist) { bestDist = dist; bestTarget = i; }
+		}
+		if (bestTarget > 0)
+		{
+			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
+			SetMoveToPosition(bot, tp, 2, "LLM_Give", 0.0, 5.0, true, true);
+		}
+	}
+	else if (strcmp(action, "use_defib") == 0)
+	{
+		// Find dead teammate body - IB's ib_defib_revive handles this
+		// Just make sure bot is not pinned-override-targeting
+		g_iBot_PinnedFriend[bot] = 0;
+		g_iBot_PinnedFriend_Attacker[bot] = 0;
+	}
 }
 
 // ===================== LLM Override in OnPlayerRunCmd =====================
