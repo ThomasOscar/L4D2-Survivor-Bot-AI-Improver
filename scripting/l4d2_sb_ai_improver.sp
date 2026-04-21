@@ -7693,6 +7693,7 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	bool incap = view_as<bool>(GetEntProp(bot, Prop_Send, "m_isIncapacitated"));
 	bool bw = view_as<bool>(GetEntProp(bot, Prop_Send, "m_bIsOnThirdStrike"));
 	float pos[3]; GetClientAbsOrigin(bot, pos);
+	float angles[3]; GetClientEyeAngles(bot, angles);
 
 	// Weapons
 	char primary[64]="none", secondary[64]="none", grenade[32]="none";
@@ -7712,21 +7713,27 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	if (w != -1) GetEntityClassname(w, pillsItem, sizeof(pillsItem));
 
 	// Teammates
-	char mates[768]="";
+	char mates[1024]="";
 	int mc = 0;
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
 		char mn[64]; GetClientName(i, mn, sizeof(mn));
 		int mhp = GetClientHealth(i);
+		float mTempHp = GetEntPropFloat(i, Prop_Send, "m_healthBuffer");
 		bool mi = view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated"));
 		bool mb = view_as<bool>(GetEntProp(i, Prop_Send, "m_bIsOnThirdStrike"));
 		float mp[3]; GetClientAbsOrigin(i, mp);
 		float dist = GetVectorDistance(pos, mp);
 		bool pin = LLM_IsPinned(i);
+		char mPinType[16]; LLM_GetPinType(i, mPinType, sizeof(mPinType));
+		// Teammate primary weapon
+		char mWeapon[64] = "none";
+		int mw = GetPlayerWeaponSlot(i, 0);
+		if (mw != -1) GetEntityClassname(mw, mWeapon, sizeof(mWeapon));
 		if (mc > 0) Format(mates, sizeof(mates), "%s,", mates);
-		Format(mates, sizeof(mates), "%s{\"name\":\"%s\",\"hp\":%d,\"incap\":%s,\"bw\":%s,\"pinned\":%s,\"dist\":%.0f}",
-			mates, mn, mhp, mi?"true":"false", mb?"true":"false", pin?"true":"false", dist);
+		Format(mates, sizeof(mates), "%s{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pinned\":%s,\"pin_type\":\"%s\",\"weapon\":\"%s\",\"dist\":%.0f}",
+			mates, mn, mhp, mTempHp, mi?"true":"false", mb?"true":"false", pin?"true":"false", mPinType, mWeapon, dist);
 		mc++;
 	}
 
@@ -7826,14 +7833,60 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		}
 	}
 
+	// Common infected count (300 units)
+	int commonCount = 0;
+	int commonEnt = -1;
+	while ((commonEnt = FindEntityByClassname(commonEnt, "infected")) != -1 && commonCount < 30)
+	{
+		float cp[3]; GetEntPropVector(commonEnt, Prop_Data, "m_vecAbsOrigin", cp);
+		if (GetVectorDistance(pos, cp) <= 300.0) commonCount++;
+	}
+
+	// Fire areas (200 units)
+	char fireAreas[256]="";
+	int fc = 0;
+	int fireEnt = -1;
+	while ((fireEnt = FindEntityByClassname(fireEnt, "inferno")) != -1 && fc < 4)
+	{
+		float fp[3]; GetEntPropVector(fireEnt, Prop_Data, "m_vecAbsOrigin", fp);
+		float fdist = GetVectorDistance(pos, fp);
+		if (fdist <= 200.0)
+		{
+			if (fc > 0) Format(fireAreas, sizeof(fireAreas), "%s,", fireAreas);
+			Format(fireAreas, sizeof(fireAreas), "%s{\"dist\":%.0f}", fireAreas, fdist);
+			fc++;
+		}
+	}
+
+	// Acid areas (200 units)
+	char acidAreas[256]="";
+	int ac = 0;
+	int acidEnt = -1;
+	while ((acidEnt = FindEntityByClassname(acidEnt, "insect_swarm")) != -1 && ac < 4)
+	{
+		float ap[3]; GetEntPropVector(acidEnt, Prop_Data, "m_vecAbsOrigin", ap);
+		float adist = GetVectorDistance(pos, ap);
+		if (adist <= 200.0)
+		{
+			if (ac > 0) Format(acidAreas, sizeof(acidAreas), "%s,", acidAreas);
+			Format(acidAreas, sizeof(acidAreas), "%s{\"dist\":%.0f}", acidAreas, adist);
+			ac++;
+		}
+	}
+
+	// Server config
+	bool friendlyFire = false;
+	ConVar hFF = FindConVar("sv_friendly_fire");
+	if (hFF != null && hFF.BoolValue) friendlyFire = true;
+
 	// Build JSON (with seq + flow)
 	g_iLLM_Seq++;
 	float flowDist = L4D2Direct_GetFlowDistance(bot);
 	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", g_iLLM_Seq, mapName, gameMode, difficulty);
-	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"flow\":%.0f,", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], flowDist);
+	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist);
 	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
 	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
-	Format(buffer, maxlen, "%s\"terrain\":{%s},\"events\":[%s],\"items\":[%s],\"action\":\"%s\"}\n", buffer, terrain, events, items, g_sLLM_Action);
+	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", g_sLLM_Action);
 }
 
 bool LLM_IsPinned(int client)
@@ -7844,6 +7897,23 @@ bool LLM_IsPinned(int client)
 	if (GetEntPropEnt(client, Prop_Send, "m_pounceAttacker") != -1) return true;
 	if (GetEntPropEnt(client, Prop_Send, "m_carryAttacker") != -1) return true;
 	return false;
+}
+
+// Returns the pin type string for a pinned client, or empty string if not pinned
+void LLM_GetPinType(int client, char[] pinType, int maxlen)
+{
+	pinType[0] = '\0';
+	int attacker;
+	attacker = GetEntPropEnt(client, Prop_Send, "m_jockeyAttacker");
+	if (attacker != -1) { strcopy(pinType, maxlen, "jockey"); return; }
+	attacker = GetEntPropEnt(client, Prop_Send, "m_pummelAttacker");
+	if (attacker != -1) { strcopy(pinType, maxlen, "charger"); return; }
+	attacker = GetEntPropEnt(client, Prop_Send, "m_tongueOwner");
+	if (attacker != -1) { strcopy(pinType, maxlen, "smoker"); return; }
+	attacker = GetEntPropEnt(client, Prop_Send, "m_pounceAttacker");
+	if (attacker != -1) { strcopy(pinType, maxlen, "hunter"); return; }
+	attacker = GetEntPropEnt(client, Prop_Send, "m_carryAttacker");
+	if (attacker != -1) { strcopy(pinType, maxlen, "charger"); return; }
 }
 
 int LLM_FindNearestWitch(int bot)

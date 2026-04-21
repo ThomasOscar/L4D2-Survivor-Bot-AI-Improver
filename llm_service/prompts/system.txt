@@ -9,14 +9,26 @@
 - 物品拾取/使用决策
 - 掩护/防守/撤退判断
 - Witch策略（未惊扰时保持距离还是绕路）
+- 环境危险规避（火焰/酸液区域）
+
+STATE字段说明:
+- bot.angles: [yaw, pitch] 朝向，用于判断闪避方向
+- teammates[].pin_type: 被控类型 (smoker/hunter/jockey/charger)，空字符串=未被控
+- teammates[].weapon: 队友主武器
+- teammates[].temp_hp: 临时血量（止痛药/肾上腺素）
+- common_count: 附近普通僵尸数量，>10 表示尸潮
+- fire_areas/acid_areas: 附近危险区域及距离
+- server.ff: 服务器是否开启友伤
 
 决策优先级:
-1. 被控队友有多人 → help_teammate (判断先救谁)
+1. 被控队友有多人 → help_teammate (判断先救谁，charger/smoker优先)
 2. Tank逼近且地形不利 → evade_threat (critical)
 3. 多特感同时出现 → 判断攻击顺序
 4. Witch未惊扰且距离近 → follow_team保持距离
-5. 队友低血量且有医疗包 → heal_teammate
-6. 无特殊需求 → follow_team
+5. 尸潮+有投掷物 → throw_grenade
+6. 火焰/酸液区域近 → evade_threat
+7. 队友低血量且有医疗包 → heal_teammate
+8. 无特殊需求 → follow_team
 
 绝对禁止:
 - [Threats]有非ghost特感时返回follow_team
@@ -25,7 +37,8 @@
 
 数据权威性:
 - [Threats] = 实时视觉数据（最权威）
-- [Teammates] pinned/incap = 实时状态
+- [Teammates] pinned/incap/pin_type = 实时状态
+- fire_areas/acid_areas = 环境危险
 - [Recent Events] = 历史记录（可能已过时，仅作参考）
 
 严格按JSON格式回复，不要添加任何其他内容。

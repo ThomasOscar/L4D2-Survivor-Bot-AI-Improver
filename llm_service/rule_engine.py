@@ -87,15 +87,19 @@ class RuleEngine:
             }
 
         # Rule 4: Pinned teammate → help_teammate (critical)
+        # Priority: charger/smoker (ongoing damage) > hunter (instant damage) > jockey (slow)
         pinned = [m for m in teammates if m.get("pinned")]
         if pinned:
-            closest = min(pinned, key=lambda m: m.get("dist", 9999))
-            logger.info(f"Rule: help_teammate pinned={closest.get('name')}")
+            pin_priority = {"charger": 0, "smoker": 1, "hunter": 2, "jockey": 3}
+            pinned.sort(key=lambda m: pin_priority.get(m.get("pin_type", ""), 99))
+            target = pinned[0]
+            pin_type = target.get("pin_type", "unknown")
+            logger.info(f"Rule: help_teammate pinned={target.get('name')} by {pin_type}")
             return {
                 "action": "help_teammate",
-                "params": {"target": closest.get("name")},
+                "params": {"target": target.get("name"), "pin_type": pin_type},
                 "priority": "critical",
-                "reason": f"{closest.get('name')} is pinned"
+                "reason": f"{target.get('name')} is pinned by {pin_type}"
             }
 
         # Rule 5: Incapacitated teammate → help_teammate (high)
