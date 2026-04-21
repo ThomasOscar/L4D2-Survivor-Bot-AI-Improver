@@ -792,6 +792,9 @@ public void OnPluginStart()
 	// EVENT HOOKS
 	// ----------------------------------------------------------------------------------------------------
 	HookEvent("round_start", 			Event_OnRoundStart);
+	HookEvent("round_end", 			Event_OnRoundEnd);
+	HookEvent("mission_lost", 			Event_OnMissionLost);
+	HookEvent("map_transition", 			Event_OnMapTransition);
 
 	HookEvent("weapon_fire", 			Event_OnWeaponFire);
 	HookEvent("player_death", 			Event_OnPlayerDeath);
@@ -1758,6 +1761,36 @@ void Event_OnHealSuccess(Event hEvent, const char[] sName, bool bBroadcast)
 	int healer = GetClientOfUserId(hEvent.GetInt("userid"));
 	if (healer > 0 && healer <= MaxClients && IsClientInGame(healer) && subject != healer)
 		g_iLLM_PlayerHeal[healer]++;
+}
+
+// LLM: Send round outcome to Python service for experience learning
+void LLM_SendRoundOutcome(const char[] outcome)
+{
+	if (g_hLLM_Socket == null || !g_hLLM_Socket.Connected) return;
+	char mapName[128]; GetCurrentMap(mapName, sizeof(mapName));
+	char msg[256];
+	Format(msg, sizeof(msg), "ROUND_OUTCOME {\"map\":\"%s\",\"outcome\":\"%s\"}\n", mapName, outcome);
+	g_hLLM_Socket.Send(msg, strlen(msg));
+	PrintToServer("[LLM] Round outcome sent: %s → %s", mapName, outcome);
+}
+
+void Event_OnRoundEnd(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int reason = hEvent.GetInt("reason");
+	char outcome[16] = "survived";
+	if (reason == 1) strcopy(outcome, sizeof(outcome), "team_wipe");  // survivors wiped
+	else if (reason == 2) strcopy(outcome, sizeof(outcome), "escaped");  // survivors escaped
+	LLM_SendRoundOutcome(outcome);
+}
+
+void Event_OnMissionLost(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	LLM_SendRoundOutcome("team_wipe");
+}
+
+void Event_OnMapTransition(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	LLM_SendRoundOutcome("escaped");
 }
 
 // Mark entity as used by certain client

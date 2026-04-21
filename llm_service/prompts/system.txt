@@ -20,6 +20,7 @@ STATE字段说明:
 - fire_areas/acid_areas: 附近危险区域及距离
 - server.ff: 服务器是否开启友伤
 - player_scores: 每位玩家的五维评分 (heal/revive/si_kills/incap/pinned)，综合评分和等级(S/A/B/C/D)
+- Map Experience: 历史同地图同区域的经验数据，包含动作、结果和生存率
 
 决策优先级:
 1. 被控队友有多人 → help_teammate (判断先救谁，charger/smoker优先)

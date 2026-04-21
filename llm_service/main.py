@@ -22,6 +22,7 @@ from decision_logger import DecisionLogger
 from debug_server import DebugServer
 from state_cache import StateCache
 from player_scorer import PlayerScorer
+from map_experience import MapExperienceStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +58,7 @@ class LLMDecisionService:
         self.debug_server: DebugServer = None
         self.state_cache: StateCache = None
         self.player_scorer: PlayerScorer = None
+        self.map_experience: MapExperienceStore = None
         self.last_action = None
         self.last_action_time = 0
         self.last_llm_call_time = 0
@@ -172,7 +174,12 @@ class LLMDecisionService:
         # Player scorer (five-dimensional scoring)
         self.player_scorer = PlayerScorer()
 
+        # Map experience store (SQLite)
+        self.map_experience = MapExperienceStore()
+        await self.map_experience.connect()
+
         self.tcp_server.on_message = self._handle_state
+        self.tcp_server.on_round_outcome = self._handle_round_outcome
 
         # Start debug HTTP server
         self.debug_server = DebugServer(
@@ -202,6 +209,8 @@ class LLMDecisionService:
             await self.model_router.stop()
         if self.state_cache:
             await self.state_cache.disconnect()
+        if self.map_experience:
+            await self.map_experience.disconnect()
         logger.info("Service stopped")
 
     async def _handle_state(self, state: dict) -> dict:
@@ -239,6 +248,8 @@ class LLMDecisionService:
                 self.last_action = rule_decision
                 self.last_action_time = now
                 logger.info(f"Rule decision: {rule_decision['action']} - {rule_decision.get('reason', '')}")
+                # Record to map experience
+                await self.map_experience.record_decision(state, rule_decision)
                 return rule_decision
 
             # Step 2: 节流检查（规则引擎未命中才走到这）
@@ -264,8 +275,23 @@ class LLMDecisionService:
                 self.last_action,
                 now - self.last_action_time
             )
+            hints = []
             if score_hint:
-                user_prompt = f"[Team Assessment] {score_hint}\n\n{user_prompt}"
+                hints.append(f"[Team Assessment] {score_hint}")
+
+            # Inject map experience hint
+            past_exp = await self.map_experience.get_experience(state, limit=3)
+            if past_exp:
+                exp_lines = []
+                for exp in past_exp:
+                    exp_lines.append(
+                        f"- {exp['action']}({exp['target']}): "
+                        f"{exp['outcome']} x{exp['count']} (survival_rate={exp['survival_rate']})"
+                    )
+                hints.append("[Map Experience]\n" + "\n".join(exp_lines))
+
+            if hints:
+                user_prompt = "\n\n".join(hints) + "\n\n" + user_prompt
 
             response, provider_name = await self.model_router.chat(system_prompt, user_prompt, state)
             elapsed = time.time() - t0
@@ -284,6 +310,8 @@ class LLMDecisionService:
                     self.last_action_time = now
                     self.last_decision = decision
                     logger.info(f"LLM decision: {decision.get('action', 'unknown')} - {decision.get('reason', '')}")
+                    # Record to map experience
+                    await self.map_experience.record_decision(state, decision)
                     return decision
 
             # Step 5: LLM 失败，状态感知 fallback
@@ -302,6 +330,14 @@ class LLMDecisionService:
             fallback["next_interval"] = 3.0
             fallback["seq"] = state.get("seq", 0)
             return fallback
+
+    async def _handle_round_outcome(self, data: dict):
+        """Handle round outcome from game (for map experience learning)."""
+        map_name = data.get("map", "unknown")
+        outcome = data.get("outcome", "unknown")
+        logger.info(f"Round outcome: {map_name} → {outcome}")
+        if self.map_experience:
+            await self.map_experience.record_round_outcome(map_name, outcome)
 
 
 async def main():

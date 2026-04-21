@@ -18,6 +18,7 @@ class TCPServer:
         self.server: Optional[asyncio.Server] = None
         self.clients = set()
         self.on_message: Optional[Callable] = None
+        self.on_round_outcome: Optional[Callable] = None
         self.running = False
         
     async def start(self):
@@ -54,11 +55,15 @@ class TCPServer:
                     if not line:
                         continue
                     try:
-                        # 支持两种格式: "STATE {...}" 或纯JSON
+                        # 支持三种格式: "STATE {...}", "ROUND_OUTCOME {...}" 或纯JSON
                         if line.startswith("STATE "):
                             json_part = line[6:]  # 去掉 "STATE " 前缀
                             message = {"type": "state", "data": json.loads(json_part)}
                             logger.info(f"Received STATE: {json_part[:1500]}")
+                        elif line.startswith("ROUND_OUTCOME "):
+                            json_part = line[14:]  # 去掉 "ROUND_OUTCOME " 前缀
+                            message = {"type": "round_outcome", "data": json.loads(json_part)}
+                            logger.info(f"Received ROUND_OUTCOME: {json_part}")
                         else:
                             message = json.loads(line)
                         await self._process_message(message, writer)
@@ -90,6 +95,15 @@ class TCPServer:
                 # 没有决策处理器时返回简单确认
                 response = {"type": "ack", "seq": seq}
                 await self._send_response(writer, response)
+        elif msg_type == "round_outcome":
+            if self.on_round_outcome:
+                try:
+                    await self.on_round_outcome(message.get("data", {}))
+                except Exception as e:
+                    logger.error(f"Round outcome error: {e}")
+            # Acknowledge without sending full response
+            response = {"type": "ack"}
+            await self._send_response(writer, response)
     
     async def _send_response(self, writer, response: dict):
         try:
