@@ -7869,6 +7869,18 @@ void LLM_ParseDecision(const char[] data, int size)
  * Core integration: LLM decision directly sets IB's internal target/move variables.
  * This is the key advantage of integrating inside IB rather than external plugin.
  */
+// Clear IB's current move command so SetMoveToPosition won't reject our override
+void LLM_ClearMoveOverride(int bot)
+{
+	g_iBot_MovePos_Priority[bot] = -1;
+	g_fBot_MovePos_Duration[bot] = GetGameTime();
+	g_fBot_MovePos_Tolerance[bot] = -1.0;
+	g_bBot_MovePos_IgnoreDamaging[bot] = false;
+	g_sBot_MovePos_Name[bot][0] = 0;
+	SetVectorToZero(g_fBot_MovePos_Position[bot]);
+	L4D2_CommandABot(bot, 0, BOT_CMD_RESET);
+}
+
 void LLM_ApplyStrategy(const char[] action)
 {
 	int bot = g_iLLM_TrackedBot;
@@ -7879,8 +7891,9 @@ void LLM_ApplyStrategy(const char[] action)
 
 	if (strcmp(action, "help_teammate") == 0)
 	{
-		// Find pinned/incap friend and set IB's internal target
-		int bestPin = 0, bestPinAttacker = 0;
+		// Move toward nearest pinned/incap teammate
+		// IB's own scan will handle targeting the attacker once bot is close
+		int bestPin = 0;
 		float bestDist = 99999.0;
 		float botPos[3]; GetClientAbsOrigin(bot, botPos);
 
@@ -7898,23 +7911,45 @@ void LLM_ApplyStrategy(const char[] action)
 
 		if (bestPin > 0)
 		{
-			// Directly set IB's internal variables!
-			g_iBot_PinnedFriend[bot] = bestPin;
-			// Find attacker
-			int attacker = GetEntPropEnt(bestPin, Prop_Send, "m_jockeyAttacker");
-			if (attacker == -1) attacker = GetEntPropEnt(bestPin, Prop_Send, "m_pummelAttacker");
-			if (attacker == -1) attacker = GetEntPropEnt(bestPin, Prop_Send, "m_tongueOwner");
-			if (attacker == -1) attacker = GetEntPropEnt(bestPin, Prop_Send, "m_pounceAttacker");
-			if (attacker != -1)
+			float fp[3]; GetClientAbsOrigin(bestPin, fp);
+			LLM_ClearMoveOverride(bot);
+			SetMoveToPosition(bot, fp, 4, "LLM_Help", 0.0, 3.0, true, true);
+
+			// Also find attacker and set target for IB's shooting logic
+			int attacker = L4D_GetPinnedInfected(bestPin);
+			if (attacker > 0)
 			{
-				g_iBot_PinnedFriend_Attacker[bot] = attacker;
 				g_iBot_TargetInfected[bot] = attacker;
+				g_iBot_PinnedFriend[bot] = bestPin;
+				g_iBot_PinnedFriend_Attacker[bot] = attacker;
+			}
+		}
+		else
+		{
+			// No currently pinned teammate (SI may have been killed since LLM decision)
+			// Fall back: move toward nearest teammate to stay with the team
+			int bestMate = 0;
+			float bestMateDist = 99999.0;
+			float matePos[3];
+			float botPos2[3]; GetClientAbsOrigin(bot, botPos2);
+			for (int i = 1; i <= MaxClients; i++)
+			{
+				if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
+				float tp[3]; GetClientAbsOrigin(i, tp);
+				float dist = GetVectorDistance(botPos2, tp);
+				if (dist < bestMateDist) { bestMateDist = dist; bestMate = i; }
+			}
+			if (bestMate > 0)
+			{
+				GetClientAbsOrigin(bestMate, matePos);
+				LLM_ClearMoveOverride(bot);
+				SetMoveToPosition(bot, matePos, 3, "LLM_Help", 0.0, 3.0, true, true);
 			}
 		}
 	}
 	else if (strcmp(action, "attack_si") == 0 || strcmp(action, "attack_tank") == 0)
 	{
-		// Find nearest SI/Tank and set IB's target
+		// Find nearest SI/Tank, move toward it and set as target
 		int bestSI = 0;
 		float bestDist = 99999.0;
 		float botPos[3]; GetClientAbsOrigin(bot, botPos);
@@ -7932,6 +7967,9 @@ void LLM_ApplyStrategy(const char[] action)
 
 		if (bestSI > 0)
 		{
+			float sp[3]; GetClientAbsOrigin(bestSI, sp);
+			LLM_ClearMoveOverride(bot);
+			SetMoveToPosition(bot, sp, 4, "LLM_Attack", 0.0, 3.0, true, true);
 			g_iBot_TargetInfected[bot] = bestSI;
 		}
 	}
@@ -7962,15 +8000,13 @@ void LLM_ApplyStrategy(const char[] action)
 			g_fLLM_OverrideMovePos[2] = botPos[2];
 			g_bLLM_OverrideMove = true;
 
-			// Use IB's SetMoveToPosition
+			LLM_ClearMoveOverride(bot);
 			SetMoveToPosition(bot, g_fLLM_OverrideMovePos, 4, "LLM_Evade", 0.0, 3.0, true, true);
 		}
 	}
 	else if (strcmp(action, "follow_team") == 0)
 	{
 		// Reset overrides, let IB default behavior take over
-		g_iBot_PinnedFriend[bot] = 0;
-		g_iBot_PinnedFriend_Attacker[bot] = 0;
 	}
 	else if (strcmp(action, "heal_teammate") == 0)
 	{
@@ -7986,6 +8022,7 @@ void LLM_ApplyStrategy(const char[] action)
 		if (bestTarget > 0 && bestHP < 80.0)
 		{
 			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
+			LLM_ClearMoveOverride(bot);
 			SetMoveToPosition(bot, tp, 3, "LLM_Heal", 0.0, 5.0, true, true);
 		}
 	}
@@ -7996,26 +8033,21 @@ void LLM_ApplyStrategy(const char[] action)
 		if (witchRef > 0)
 		{
 			float wp[3]; GetEntPropVector(witchRef, Prop_Send, "m_vecOrigin", wp);
+			LLM_ClearMoveOverride(bot);
 			SetMoveToPosition(bot, wp, 3, "LLM_Witch", 0.0, 5.0, true, true);
 		}
 	}
 	else if (strcmp(action, "pick_up_item") == 0)
 	{
-		// Let IB's built-in scavenge handle this - just ensure no override blocks it
-		g_iBot_PinnedFriend[bot] = 0;
-		g_iBot_PinnedFriend_Attacker[bot] = 0;
+		// Let IB's built-in scavenge handle this
 	}
 	else if (strcmp(action, "throw_grenade") == 0)
 	{
-		// IB handles grenade throwing via ib_gren_enabled - ensure it's active
-		// No additional override needed
+		// IB handles grenade throwing via ib_gren_enabled
 	}
 	else if (strcmp(action, "cover_fire") == 0 || strcmp(action, "hold_position") == 0)
 	{
-		// Stay near current position, engage threats
-		float botPos[3]; GetClientAbsOrigin(bot, botPos);
-		// Don't move away, let IB handle targeting
-		g_iBot_PinnedFriend[bot] = 0;
+		// Stay near current position, engage threats - IB handles targeting
 	}
 	else if (strcmp(action, "give_item") == 0)
 	{
@@ -8033,15 +8065,13 @@ void LLM_ApplyStrategy(const char[] action)
 		if (bestTarget > 0)
 		{
 			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
+			LLM_ClearMoveOverride(bot);
 			SetMoveToPosition(bot, tp, 2, "LLM_Give", 0.0, 5.0, true, true);
 		}
 	}
 	else if (strcmp(action, "use_defib") == 0)
 	{
 		// Find dead teammate body - IB's ib_defib_revive handles this
-		// Just make sure bot is not pinned-override-targeting
-		g_iBot_PinnedFriend[bot] = 0;
-		g_iBot_PinnedFriend_Attacker[bot] = 0;
 	}
 }
 
