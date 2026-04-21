@@ -106,10 +106,12 @@ bool g_bLLM_HasAlarmCars = false;
 bool g_bLLM_HasCrescendo = false;
 bool g_bLLM_IsFinale = false;
 
-// LLM Recent Events
+// LLM Recent Events (with TTL)
 char g_sLLM_RecentEvents[LLM_RECENT_EVENTS_MAX][128];
+float g_fLLM_EventTime[LLM_RECENT_EVENTS_MAX];
 int g_iLLM_EventIndex = 0;
 int g_iLLM_EventCount = 0;
+#define LLM_EVENT_TTL 5.0
 
 
 #define MAXENTITIES 					2048
@@ -7488,6 +7490,7 @@ void LLM_OnMapStart()
 	LLM_Connect();
 	g_iLLM_EventCount = 0;
 	g_iLLM_EventIndex = 0;
+	for (int i = 0; i < LLM_RECENT_EVENTS_MAX; i++) g_fLLM_EventTime[i] = 0.0;
 	g_iLLM_TrackedBot = -1;
 
 	// Force game start: L4D2 doesn't spawn survivor bots without a human player.
@@ -7677,9 +7680,13 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	char gameMode[32] = "coop";
 	ConVar hMode = FindConVar("mp_gamemode");
 	if (hMode != null) hMode.GetString(gameMode, sizeof(gameMode));
+	char difficulty[16] = "normal";
+	ConVar hDiff = FindConVar("z_difficulty");
+	if (hDiff != null) hDiff.GetString(difficulty, sizeof(difficulty));
 
 	char botName[64]; GetClientName(bot, botName, sizeof(botName));
 	int health = GetClientHealth(bot);
+	float tempHealth = GetEntPropFloat(bot, Prop_Send, "m_healthBuffer");
 	bool incap = view_as<bool>(GetEntProp(bot, Prop_Send, "m_isIncapacitated"));
 	bool bw = view_as<bool>(GetEntProp(bot, Prop_Send, "m_bIsOnThirdStrike"));
 	float pos[3]; GetClientAbsOrigin(bot, pos);
@@ -7688,9 +7695,10 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	char primary[64]="none", secondary[64]="none", grenade[32]="none";
 	char healthItem[32]="none", pillsItem[32]="none";
 	int primaryAmmo = 0;
+	int reserveAmmo = 0;
 	int w;
 	w = GetPlayerWeaponSlot(bot, 0);
-	if (w != -1) { GetEntityClassname(w, primary, sizeof(primary)); primaryAmmo = GetEntProp(w, Prop_Send, "m_iClip1"); }
+	if (w != -1) { GetEntityClassname(w, primary, sizeof(primary)); primaryAmmo = GetEntProp(w, Prop_Send, "m_iClip1"); reserveAmmo = GetEntProp(w, Prop_Send, "m_iExtra1"); }
 	w = GetPlayerWeaponSlot(bot, 1);
 	if (w != -1) GetEntityClassname(w, secondary, sizeof(secondary));
 	w = GetPlayerWeaponSlot(bot, 2);
@@ -7756,8 +7764,14 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 			whp = GetEntProp(ent, Prop_Data, "m_iMaxHealth");
 		float wp[3]; GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", wp);
 		float dist = GetVectorDistance(pos, wp);
+		bool witchAngry = false;
+		if (HasEntProp(ent, Prop_Send, "m_rage"))
+		{
+			float rage = GetEntPropFloat(ent, Prop_Send, "m_rage");
+			if (rage > 0.0) witchAngry = true;
+		}
 		if (wc > 0) Format(witches, sizeof(witches), "%s,", witches);
-		Format(witches, sizeof(witches), "%s{\"hp\":%d,\"dist\":%.0f}", witches, whp, dist);
+		Format(witches, sizeof(witches), "%s{\"hp\":%d,\"dist\":%.0f,\"angry\":%s}", witches, whp, dist, witchAngry?"true":"false");
 		wc++;
 	}
 
@@ -7767,23 +7781,54 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		g_bLLM_HasNarrowPassage?"true":"false", g_bLLM_HasLedges?"true":"false",
 		g_bLLM_HasAlarmCars?"true":"false", g_bLLM_IsFinale?"true":"false");
 
-	// Events
+	// Events (with TTL: skip events older than LLM_EVENT_TTL)
 	char events[256]="";
 	int ec = 0;
+	float nowTime = GetGameTime();
 	for (int i = 0; i < g_iLLM_EventCount; i++)
 	{
 		int idx = (g_iLLM_EventIndex - g_iLLM_EventCount + i + LLM_RECENT_EVENTS_MAX) % LLM_RECENT_EVENTS_MAX;
+		if (nowTime - g_fLLM_EventTime[idx] > LLM_EVENT_TTL) continue;  // 过期事件跳过
 		if (ec > 0) Format(events, sizeof(events), "%s,", events);
 		Format(events, sizeof(events), "%s\"%s\"", events, g_sLLM_RecentEvents[idx]);
 		ec++;
 	}
 
+	// Items (nearby pickup items within 500 units)
+	char items[512]="";
+	int ic = 0;
+	char itemClasses[][] = {
+		"weapon_first_aid_kit", "weapon_pain_pills", "weapon_adrenaline",
+		"weapon_defibrillator", "weapon_pipe_bomb", "weapon_molotov",
+		"weapon_vomitjar", "weapon_rifle", "weapon_shotgun",
+		"weapon_smg", "weapon_hunting_rifle", "weapon_sniper_military",
+		"weapon_rifle_ak47", "weapon_rifle_desert", "weapon_rifle_sg552",
+		"weapon_shotgun_chrome", "weapon_pumpshotgun", "weapon_autoshotgun",
+		"weapon_shotgun_spas", "weapon_smg_silenced", "weapon_smg_mp5",
+		"weapon_grenade_launcher", "weapon_rifle_m60", "weapon_melee",
+		"weapon_pistol", "weapon_pistol_magnum", "weapon_chainsaw"
+	};
+	for (int cls = 0; cls < sizeof(itemClasses) && ic < 8; cls++)
+	{
+		int itemEnt = -1;
+		while ((itemEnt = FindEntityByClassname(itemEnt, itemClasses[cls])) != -1)
+		{
+			float ip[3]; GetEntPropVector(itemEnt, Prop_Data, "m_vecAbsOrigin", ip);
+			float idist = GetVectorDistance(pos, ip);
+			if (idist > 500.0) continue;
+			if (ic > 0) Format(items, sizeof(items), "%s,", items);
+			Format(items, sizeof(items), "%s{\"name\":\"%s\",\"dist\":%.0f}", items, itemClasses[cls], idist);
+			ic++;
+			if (ic >= 8) break;
+		}
+	}
+
 	// Build JSON
-	Format(buffer, maxlen, "STATE {\"map\":\"%s\",\"mode\":\"%s\",", mapName, gameMode);
-	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],", buffer, botName, health, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2]);
-	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo);
+	Format(buffer, maxlen, "STATE {\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", mapName, gameMode, difficulty);
+	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2]);
+	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
 	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
-	Format(buffer, maxlen, "%s\"terrain\":{%s},\"events\":[%s],\"action\":\"%s\"}\n", buffer, terrain, events, g_sLLM_Action);
+	Format(buffer, maxlen, "%s\"terrain\":{%s},\"events\":[%s],\"items\":[%s],\"action\":\"%s\"}\n", buffer, terrain, events, items, g_sLLM_Action);
 }
 
 bool LLM_IsPinned(int client)
@@ -7859,6 +7904,26 @@ void LLM_ParseDecision(const char[] data, int size)
 
 	// Apply strategic override to IB internals
 	if (changed) LLM_ApplyStrategy(action);
+
+	// Parse next_interval from LLM response and adjust send frequency
+	int ni = StrContains(buf, "\"next_interval\"");
+	if (ni != -1)
+	{
+		int ns = ni + 15;
+		while (ns < size && (buf[ns]==' '||buf[ns]==':'||buf[ns]=='"')) ns++;
+		char nval[16]; int nv = 0;
+		while (ns < size && buf[ns]>='0' && buf[ns]<='9' && nv < 15) { nval[nv] = buf[ns]; nv++; ns++; }
+		if (buf[ns]=='.') { if (nv < 15) { nval[nv] = '.'; nv++; } ns++; }
+		while (ns < size && buf[ns]>='0' && buf[ns]<='9' && nv < 15) { nval[nv] = buf[ns]; nv++; ns++; }
+		nval[nv] = '\0';
+		float nextInt = StringToFloat(nval);
+		PrintToServer("[LLM] next_interval parsed: '%s' = %.1f", nval, nextInt);
+		if (nextInt >= 1.0 && nextInt <= 10.0)
+		{
+			g_hCvar_LLM_Interval.SetFloat(nextInt);
+			PrintToServer("[LLM] interval set to %.1f", nextInt);
+		}
+	}
 
 	PrintToServer("[LLM] Decision: %s target=%s", g_sLLM_Action, g_sLLM_Target);
 }
@@ -8130,6 +8195,7 @@ void LLM_LoadTerrain()
 void LLM_AddEvent(const char[] event)
 {
 	Format(g_sLLM_RecentEvents[g_iLLM_EventIndex], 128, "%s", event);
+	g_fLLM_EventTime[g_iLLM_EventIndex] = GetGameTime();
 	g_iLLM_EventIndex = (g_iLLM_EventIndex + 1) % LLM_RECENT_EVENTS_MAX;
 	if (g_iLLM_EventCount < LLM_RECENT_EVENTS_MAX) g_iLLM_EventCount++;
 }
