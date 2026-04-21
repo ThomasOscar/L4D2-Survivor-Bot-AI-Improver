@@ -98,6 +98,7 @@ int g_iLLM_OverrideTarget = 0;     // entity ref for target override
 float g_fLLM_OverrideMovePos[3];   // move position override
 bool g_bLLM_OverrideMove = false;  // whether to override movement
 int g_iLLM_TrackedBot = -1;        // which bot LLM controls (-1 = first found)
+int g_iLLM_Seq = 0;               // STATE sequence number for request-response matching
 
 // LLM Terrain Awareness
 bool g_bLLM_HasNarrowPassage = false;
@@ -7492,6 +7493,7 @@ void LLM_OnMapStart()
 	g_iLLM_EventIndex = 0;
 	for (int i = 0; i < LLM_RECENT_EVENTS_MAX; i++) g_fLLM_EventTime[i] = 0.0;
 	g_iLLM_TrackedBot = -1;
+	g_iLLM_Seq = 0;
 
 	// Force game start: L4D2 doesn't spawn survivor bots without a human player.
 	// Create a temporary fake client to trigger the game round, then kick it.
@@ -7652,6 +7654,7 @@ void LLM_SendState()
 	if (g_iLLM_TrackedBot == -1 || !IsClientInGame(g_iLLM_TrackedBot))
 	{
 		g_iLLM_TrackedBot = -1;
+		g_iLLM_Seq = 0;
 		for (int i = 1; i <= MaxClients; i++)
 		{
 			if (IsClientInGame(i) && IsFakeClient(i) && IsClientSurvivor(i) && IsPlayerAlive(i))
@@ -7823,9 +7826,11 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		}
 	}
 
-	// Build JSON
-	Format(buffer, maxlen, "STATE {\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", mapName, gameMode, difficulty);
-	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2]);
+	// Build JSON (with seq + flow)
+	g_iLLM_Seq++;
+	float flowDist = L4D2Direct_GetFlowDistance(bot);
+	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", g_iLLM_Seq, mapName, gameMode, difficulty);
+	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"flow\":%.0f,", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], flowDist);
 	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
 	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
 	Format(buffer, maxlen, "%s\"terrain\":{%s},\"events\":[%s],\"items\":[%s],\"action\":\"%s\"}\n", buffer, terrain, events, items, g_sLLM_Action);
@@ -7923,6 +7928,20 @@ void LLM_ParseDecision(const char[] data, int size)
 			g_hCvar_LLM_Interval.SetFloat(nextInt);
 			PrintToServer("[LLM] interval set to %.1f", nextInt);
 		}
+	}
+
+	// Parse seq from response for request-response matching
+	int si = StrContains(buf, "\"seq\"");
+	if (si != -1)
+	{
+		int ss = si + 5;
+		while (ss < size && (buf[ss]==' '||buf[ss]==':'||buf[ss]=='"')) ss++;
+		char sval[16]; int sv = 0;
+		while (ss < size && buf[ss]>='0' && buf[ss]<='9' && sv < 15) { sval[sv] = buf[ss]; sv++; ss++; }
+		sval[sv] = '\0';
+		int respSeq = StringToInt(sval);
+		if (respSeq > 0)
+			PrintToServer("[LLM] seq matched: sent=%d, resp=%d %s", g_iLLM_Seq, respSeq, respSeq==g_iLLM_Seq ? "OK" : "MISMATCH");
 	}
 
 	PrintToServer("[LLM] Decision: %s target=%s", g_sLLM_Action, g_sLLM_Target);
