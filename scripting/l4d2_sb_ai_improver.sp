@@ -7516,14 +7516,36 @@ public Action LLM_TimerForceStart(Handle timer)
 
 	PrintToServer("[LLM] Force starting game (no survivor bots found)...");
 
-	int fakeClient = CreateFakeClient("LLM_Launcher");
-	if (fakeClient != 0)
+	// Create fake clients to fill all 4 survivor slots.
+	// L4D2 replaces fake clients on team 2 with real survivor bots.
+	// We kick the fake clients after a short delay to let the game process.
+	int fakeClients[4];
+	int fakeCount = 0;
+	for (int slot = 0; slot < 4; slot++)
 	{
-		ChangeClientTeam(fakeClient, 2);
-		// Kick immediately in same frame to avoid other plugins crashing on fake client.
-		// This spawns 1 survivor bot; a human player joining will fill to 4.
-		KickClient(fakeClient, "done");
-		PrintToServer("[LLM] Launcher triggered game start");
+		char name[32];
+		Format(name, sizeof(name), "LLM_Boot_%d", slot);
+		int fc = CreateFakeClient(name);
+		if (fc != 0)
+		{
+			ChangeClientTeam(fc, 2);
+			fakeClients[fakeCount] = fc;
+			fakeCount++;
+		}
+		else
+		{
+			break;
+		}
+	}
+
+	if (fakeCount > 0)
+	{
+		PrintToServer("[LLM] Created %d fake clients on team 2", fakeCount);
+		// Kick after 2 seconds to let game spawn real survivor bots
+		for (int i = 0; i < fakeCount; i++)
+		{
+			CreateTimer(2.0, LLM_TimerKickLauncher, fakeClients[i], TIMER_FLAG_NO_MAPCHANGE);
+		}
 	}
 	else
 	{
@@ -7534,6 +7556,20 @@ public Action LLM_TimerForceStart(Handle timer)
 
 public Action LLM_TimerKickLauncher(Handle timer, int client)
 {
+	if (client > 0 && client <= MaxClients && IsClientInGame(client))
+	{
+		KickClient(client, "done");
+	}
+
+	// Count survivor bots after each kick
+	int count = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+			count++;
+	}
+	if (count > 0)
+		PrintToServer("[LLM] After kick: %d survivor bots active", count);
 	return Plugin_Stop;
 }
 
