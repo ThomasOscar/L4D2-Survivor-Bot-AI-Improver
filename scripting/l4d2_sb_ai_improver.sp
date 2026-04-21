@@ -84,6 +84,7 @@ ConVar g_hCvar_LLM_Interval;
 // LLM Socket
 Socket g_hLLM_Socket = null;
 bool g_bLLM_Connected = false;
+Handle g_hLLM_ConnectTimer = null;
 float g_fLLM_LastSendTime = 0.0;
 
 // LLM Decision State
@@ -108,8 +109,6 @@ char g_sLLM_RecentEvents[LLM_RECENT_EVENTS_MAX][128];
 int g_iLLM_EventIndex = 0;
 int g_iLLM_EventCount = 0;
 
-// LLM Fake Client (prevent hibernation)
-int g_iLLM_FakeClient = -1;
 
 #define MAXENTITIES 					2048
 #define MAXSURVIVORS 					32
@@ -1897,6 +1896,10 @@ Action CmdDumpCvars(int client, int args)
 
 public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fVel[3], float fAngles[3])
 {
+	// Skip fake clients that aren't properly in game (e.g. LLM_Spectator)
+	if (!IsClientInGame(iClient))
+		return Plugin_Continue;
+
 	GetClientEyePosition(iClient, g_fClientEyePos[iClient]);
 	g_fClientEyeAng[iClient] = fAngles;
 	GetClientAbsOrigin(iClient, g_fClientAbsOrigin[iClient]);
@@ -1998,8 +2001,8 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 	// LLM: Apply strategic overrides after IB's normal processing
 	LLM_ApplyOverrides(iClient, iButtons, fVel, fAngles);
 
-	// LLM: Send state periodically (only for tracked bot)
-	if (iClient == g_iLLM_TrackedBot) LLM_SendState();
+	// LLM: Send state periodically (call for all survivor bots to find tracked bot)
+	if (IsClientSurvivor(iClient)) LLM_SendState();
 	if (g_iBotProcessing_ProcessedCount >= iAliveBots)
 	{
 		iGameDifficulty = GetCurrentGameDifficulty();
@@ -7447,7 +7450,7 @@ BehaviorAction CreateSurvivorLegsRetreatAction(int iThreat)
 
 void LLM_Init()
 {
-	g_hCvar_LLM_Enabled = CreateConVar("ib_llm_enabled", "0", "Enable LLM strategic decision layer (0=off, 1=on)");
+	g_hCvar_LLM_Enabled = CreateConVar("ib_llm_enabled", "1", "Enable LLM strategic decision layer (0=off, 1=on)");
 	g_hCvar_LLM_Host = CreateConVar("ib_llm_host", "172.20.0.1", "LLM Python service host");
 	g_hCvar_LLM_Port = CreateConVar("ib_llm_port", "9876", "LLM Python service port");
 	g_hCvar_LLM_Interval = CreateConVar("ib_llm_interval", "3.0", "Seconds between LLM state updates");
@@ -7460,36 +7463,64 @@ void LLM_Init()
 	HookEvent("jockey_ride", LLM_EventJockeyRide);
 	HookEvent("charger_pummel_start", LLM_EventChargerPummel);
 
-	PrintToServer("[LLM] Module initialized (ib_llm_enabled to activate)");
+	PrintToServer("[LLM] Module initialized (ib_llm_enabled=%d)", g_hCvar_LLM_Enabled.IntValue);
 }
 
 // Called from OnMapStart
 void LLM_OnMapStart()
 {
-	ServerCommand("sm_cvar sv_hibernate_when_empty 0");
-
-	if (g_iLLM_FakeClient == -1 || !IsClientConnected(g_iLLM_FakeClient))
-	{
-		g_iLLM_FakeClient = CreateFakeClient("LLM_Spectator");
-		if (g_iLLM_FakeClient > 0)
-		{
-			ChangeClientTeam(g_iLLM_FakeClient, 1);
-			PrintToServer("[LLM] Fake spectator created");
-		}
-	}
+	SetConVarInt(FindConVar("sv_hibernate_when_empty"), 0);
+	SetConVarInt(FindConVar("sb_all_bot_game"), 1);
+	SetConVarInt(FindConVar("allow_all_bot_survivor_team"), 1);
 
 	LLM_LoadTerrain();
 	LLM_Connect();
 	g_iLLM_EventCount = 0;
 	g_iLLM_EventIndex = 0;
 	g_iLLM_TrackedBot = -1;
+
+	// Force game start: L4D2 doesn't spawn survivor bots without a human player.
+	// Create a temporary fake client to trigger the game round, then kick it.
+	// sb_all_bot_game=1 keeps bots alive after the launcher disconnects.
+	CreateTimer(8.0, LLM_TimerForceStart, _, TIMER_FLAG_NO_MAPCHANGE);
+
 	PrintToServer("[LLM] OnMapStart - LLM layer active");
+}
+
+public Action LLM_TimerForceStart(Handle timer)
+{
+	// Check if survivor bots already exist (e.g. human player connected)
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+		{
+			PrintToServer("[LLM] Survivor bots already exist, skipping force start");
+			return Plugin_Stop;
+		}
+	}
+
+	PrintToServer("[LLM] Force starting game (no survivor bots found)...");
+
+	int fakeClient = CreateFakeClient("LLM_Launcher");
+	if (fakeClient != 0)
+	{
+		PrintToServer("[LLM] Launcher client created: %d", fakeClient);
+		ChangeClientTeam(fakeClient, 2);
+		KickClient(fakeClient, "done");
+		PrintToServer("[LLM] Launcher kicked, game should start");
+	}
+	else
+	{
+		PrintToServer("[LLM] CreateFakeClient failed");
+	}
+	return Plugin_Stop;
 }
 
 // ===================== Socket =====================
 
 void LLM_Connect()
 {
+	g_bLLM_Connected = false;
 	if (g_hLLM_Socket != null) { g_hLLM_Socket.Disconnect(); delete g_hLLM_Socket; }
 	g_hLLM_Socket = new Socket(SOCKET_TCP, LLM_OnSocketError);
 	if (g_hLLM_Socket != null)
@@ -7498,12 +7529,16 @@ void LLM_Connect()
 		int port = g_hCvar_LLM_Port.IntValue;
 		g_hLLM_Socket.Connect(LLM_OnConnected, LLM_OnReceive, LLM_OnDisconnected, host, port);
 		PrintToServer("[LLM] Connecting to %s:%d...", host, port);
+		// Connection timeout: if not connected in 10s, retry
+		delete g_hLLM_ConnectTimer;
+		g_hLLM_ConnectTimer = CreateTimer(10.0, LLM_TimerConnectTimeout);
 	}
 }
 
 public void LLM_OnConnected(Socket socket, any arg)
 {
 	g_bLLM_Connected = true;
+	delete g_hLLM_ConnectTimer;
 	PrintToServer("[LLM] Connected to Python server!");
 }
 
@@ -7532,6 +7567,17 @@ public Action LLM_TimerReconnect(Handle timer)
 	return Plugin_Stop;
 }
 
+public Action LLM_TimerConnectTimeout(Handle timer)
+{
+	g_hLLM_ConnectTimer = null;
+	if (!g_bLLM_Connected)
+	{
+		PrintToServer("[LLM] Connection timeout, retrying...");
+		LLM_Connect();
+	}
+	return Plugin_Stop;
+}
+
 // ===================== State Collection =====================
 
 void LLM_SendState()
@@ -7551,6 +7597,7 @@ void LLM_SendState()
 			if (IsClientInGame(i) && IsFakeClient(i) && IsClientSurvivor(i) && IsPlayerAlive(i))
 			{
 				g_iLLM_TrackedBot = i;
+				PrintToServer("[LLM] Tracked bot: %d (%N)", i, i);
 				break;
 			}
 		}
