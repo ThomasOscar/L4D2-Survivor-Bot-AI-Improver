@@ -25,13 +25,14 @@ class StateCache:
         self._fallback_state: Dict[str, Any] = {}
         self._fallback_decisions: Dict[str, Any] = {}
         self._connected = False
+        self._redis_url = redis_url
 
         if enabled:
             try:
-                import aioredis
+                from redis.asyncio import from_url  # redis >= 4.2, Python 3.12 compatible
                 self._redis_url = redis_url
             except ImportError:
-                logger.warning("aioredis not installed, using in-memory cache only")
+                logger.warning("redis.asyncio not installed, using in-memory cache only")
                 self.enabled = False
 
     async def connect(self):
@@ -41,8 +42,8 @@ class StateCache:
             return
 
         try:
-            import aioredis
-            self.redis = await aioredis.from_url(
+            from redis.asyncio import from_url
+            self.redis = await from_url(
                 self._redis_url,
                 encoding="utf-8",
                 decode_responses=True

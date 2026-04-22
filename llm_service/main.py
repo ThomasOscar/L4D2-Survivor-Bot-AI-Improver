@@ -115,6 +115,14 @@ class LLMDecisionService:
             bot.get("incap") != old_bot.get("incap") or
             bot.get("bw") != old_bot.get("bw")):
             return True
+        # Environment: common_count (significant change > 5)
+        if abs(state.get("common_count", 0) - self.last_state.get("common_count", 0)) > 5:
+            return True
+        # Environment: fire_areas/acid_areas (presence change)
+        if len(state.get("fire_areas", [])) != len(self.last_state.get("fire_areas", [])):
+            return True
+        if len(state.get("acid_areas", [])) != len(self.last_state.get("acid_areas", [])):
+            return True
         return False
 
     def _compute_next_interval(self, state: dict, decision: dict) -> float:
