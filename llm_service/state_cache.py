@@ -101,6 +101,8 @@ class StateCache:
                 "bw": state.get("bot", {}).get("bw")
             },
             "common_count": state.get("common_count", 0),
+            "fire_areas": len(state.get("fire_areas", [])),
+            "acid_areas": len(state.get("acid_areas", [])),
             "events": state.get("events", [])
         }
         raw = json.dumps(hash_fields, sort_keys=True, default=str)
