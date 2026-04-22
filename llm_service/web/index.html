@@ -131,9 +131,11 @@ function showPage(name){
   if(pages[name])pages[name]();
   refreshTimer=setInterval(()=>{if(pages[name])pages[name]()},3000);
 }
+let _scene3d=null;
 function destroy3D(){
   if(animId){cancelAnimationFrame(animId);animId=null}
-  if(renderer3d){renderer3d.dispose();renderer3d.domElement=null;renderer3d=null}
+  if(_scene3d){_scene3d.traverse(obj=>{if(obj.geometry)obj.geometry.dispose();if(obj.material){if(Array.isArray(obj.material))obj.material.forEach(m=>m.dispose());else obj.material.dispose()}});_scene3d=null}
+  if(renderer3d){renderer3d.dispose();renderer3d.forceContextLoss();renderer3d.domElement=null;renderer3d=null}
 }
 async function api(path){const r=await fetch(API+path);return r.json()}
 function hpClass(hp){return hp>60?'hp-high':hp>30?'hp-mid':'hp-low'}
@@ -248,26 +250,32 @@ pages.sandbox=async()=>{
   const d=await api('/api/ai-view');
   const state=d.raw_state||{},decision=d.last_decision||{},bot=state.bot||{};
   const modeBtn=`<button onclick="sandboxMode=sandboxMode==='2d'?'3d':'2d';pages.sandbox()" style="margin-left:8px;font-size:11px;padding:3px 10px">${sandboxMode==='2d'?'切换3D':'切换2D'}</button>`;
-
   const spectateInfo=`<div class="card" style="border-color:#4fc3f7"><h3 style="color:#4fc3f7">游戏内观战（效果远优于网页沙盘）</h3><p style="font-size:11px;line-height:1.5">L4D2控制台: <code>connect 服务器IP:27017</code> → M键切换观战队伍 → E键跟随Bot视角 | <code>sm_llm_switch Nick</code> 切换Bot | <code>sm_llm_control_all</code> 全员控制</p></div>`;
-
+  const infoCards=`<div class="two-col"><div class="card"><h3>Bot</h3><div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div><div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div><div class="row"><span class="k">武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div><div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div></div><div class="card"><h3>战场</h3><div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')}</span></div><div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')}/${trDiff(state.difficulty||'')}</span></div><div class="row"><span class="k">导演</span><span class="v">${trDir(state.director||'')}</span></div><div class="row"><span class="k">特感/尸</span><span class="v">${(state.threats||[]).length}/${state.common_count||0}</span></div></div></div><div class="card"><h3>决策</h3><div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div><div class="row"><span class="k">目标/来源</span><span class="v">${decision.target||'-'} / ${srcL(d.decision_source||'')}</span></div><div class="row"><span class="k">原因</span><span class="v" style="font-size:11px">${decision.reason||'-'}</span></div></div>`;
+  let canvasPart;
   if(sandboxMode==='2d'){
-    document.getElementById('page-content').innerHTML=`<h2>2D 沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>${spectateInfo}<div class="card" style="padding:0;overflow:hidden"><div class="sandbox-wrap"><canvas id="sandbox2d"></canvas></div><div class="legend" style="padding:6px 10px"><span><span class="ld" style="background:#4fc3f7"></span>Bot</span><span><span class="ld" style="background:#4caf50"></span>队友</span><span><span class="ld" style="background:#f44336"></span>特感</span><span><span class="ld" style="background:#9c27b0"></span>女巫</span><span><span class="ld" style="background:#666"></span>尸</span><span><span class="ld" style="background:#ff9800"></span>物品</span><span><span class="ld" style="background:#ffd700"></span>决策</span></div></div>`;
-    draw2D(state,decision);
+    canvasPart=`<div class="card" style="padding:0;overflow:hidden"><div class="sandbox-wrap"><canvas id="sandbox2d"></canvas></div><div class="legend" style="padding:6px 10px"><span><span class="ld" style="background:#4fc3f7"></span>Bot</span><span><span class="ld" style="background:#4caf50"></span>队友</span><span><span class="ld" style="background:#f44336"></span>特感</span><span><span class="ld" style="background:#9c27b0"></span>女巫</span><span><span class="ld" style="background:#666"></span>尸</span><span><span class="ld" style="background:#ff9800"></span>物品</span><span><span class="ld" style="background:#ffd700"></span>决策</span></div></div>`;
   } else {
-    document.getElementById('page-content').innerHTML=`<h2>3D 沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>${spectateInfo}<div class="card" style="padding:0;overflow:hidden"><div id="sandbox3d"></div><div class="legend" style="padding:6px 10px"><span><span class="ld" style="background:#4fc3f7"></span>Bot</span><span><span class="ld" style="background:#4caf50"></span>队友</span><span><span class="ld" style="background:#f44336"></span>特感</span><span><span class="ld" style="background:#9c27b0"></span>女巫</span><span><span class="ld" style="background:#2196f3"></span>枪</span><span><span class="ld" style="background:#4caf50"></span>医</span><span><span class="ld" style="background:#ff9800"></span>投</span><span><span class="ld" style="background:#ffd700"></span>决策</span> 拖拽旋转|滚轮缩放</div></div>`;
-    build3D(state,decision);
+    canvasPart=`<div class="card" style="padding:0;overflow:hidden"><div id="sandbox3d"></div><div class="legend" style="padding:6px 10px"><span><span class="ld" style="background:#4fc3f7"></span>Bot</span><span><span class="ld" style="background:#4caf50"></span>队友</span><span><span class="ld" style="background:#f44336"></span>特感</span><span><span class="ld" style="background:#9c27b0"></span>女巫</span><span><span class="ld" style="background:#2196f3"></span>枪</span><span><span class="ld" style="background:#4caf50"></span>医</span><span><span class="ld" style="background:#ff9800"></span>投</span><span><span class="ld" style="background:#ffd700"></span>决策</span> 拖拽旋转|滚轮缩放</div></div>`;
   }
-  document.getElementById('page-content').innerHTML+=`<div class="two-col"><div class="card"><h3>Bot</h3><div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div><div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div><div class="row"><span class="k">武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div><div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div></div><div class="card"><h3>战场</h3><div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')}</span></div><div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')}/${trDiff(state.difficulty||'')}</span></div><div class="row"><span class="k">导演</span><span class="v">${trDir(state.director||'')}</span></div><div class="row"><span class="k">特感/尸</span><span class="v">${(state.threats||[]).length}/${state.common_count||0}</span></div></div></div><div class="card"><h3>决策</h3><div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div><div class="row"><span class="k">目标/来源</span><span class="v">${decision.target||'-'} / ${srcL(d.decision_source||'')}</span></div><div class="row"><span class="k">原因</span><span class="v" style="font-size:11px">${decision.reason||'-'}</span></div></div>`;
+  // 一次性设置完整HTML，避免innerHTML+=销毁已绘制canvas
+  document.getElementById('page-content').innerHTML=`<h2>${sandboxMode==='2d'?'2D':'3D'} 沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>${spectateInfo}${canvasPart}${infoCards}`;
+  // 等待DOM布局完成后再绘制
+  requestAnimationFrame(()=>{
+    if(sandboxMode==='2d') draw2D(state,decision);
+    else build3D(state,decision);
+  });
 };
 
 function draw2D(state,decision){
   const canvas=document.getElementById('sandbox2d');
   if(!canvas)return;
+  // 强制浏览器完成布局计算
   const rect=canvas.parentElement.getBoundingClientRect();
-  canvas.width=rect.width*2;canvas.height=rect.height*2;
+  const W=rect.width||800,H=rect.height||450;
+  canvas.width=W*2;canvas.height=H*2;
   const ctx=canvas.getContext('2d');ctx.scale(2,2);
-  const W=rect.width,H=rect.height,cx=W/2,cy=H/2;
+  const cx=W/2,cy=H/2;
   const sc=Math.min(W,H)/2200;
   ctx.fillStyle='#0a0a0f';ctx.fillRect(0,0,W,H);
   ctx.strokeStyle='#151525';ctx.lineWidth=0.5;
@@ -297,8 +305,8 @@ function build3D(state,decision){
   destroy3D();
   const container=document.getElementById('sandbox3d');
   if(!container)return;
-  const W=container.clientWidth,H=container.clientHeight;
-  const scene=new THREE.Scene();scene.background=new THREE.Color(0x0a0a12);scene.fog=new THREE.Fog(0x0a0a12,800,2000);
+  const W=container.clientWidth||800,H=container.clientHeight||400;
+  const scene=new THREE.Scene();_scene3d=scene;scene.background=new THREE.Color(0x0a0a12);scene.fog=new THREE.Fog(0x0a0a12,800,2000);
   const camera=new THREE.PerspectiveCamera(60,W/H,1,5000);camera.position.set(0,400,500);camera.lookAt(0,0,0);
   renderer3d=new THREE.WebGLRenderer({antialias:true});renderer3d.setSize(W,H);renderer3d.setPixelRatio(Math.min(window.devicePixelRatio,2));
   container.innerHTML='';container.appendChild(renderer3d.domElement);
