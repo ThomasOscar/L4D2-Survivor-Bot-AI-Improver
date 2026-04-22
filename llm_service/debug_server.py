@@ -53,6 +53,7 @@ class DebugServer:
         self.app.router.add_get("/api/llm-status", self._api_llm_status)
         self.app.router.add_get("/api/player-scores", self._api_player_scores)
         self.app.router.add_get("/api/map-experience", self._api_map_experience)
+        self.app.router.add_get("/api/director", self._api_director)
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, self.host, self.port)
@@ -276,4 +277,22 @@ class DebugServer:
             "map": map_name,
             "stats": stats,
             "db_connected": svc.map_experience.db is not None
+        })
+
+    async def _api_director(self, request):
+        """Return director system detailed info."""
+        svc = self.service
+        if not svc or not svc.last_state:
+            return web.json_response({"error": "no data"})
+        state = svc.last_state
+        director = state.get("director", {})
+        # If director is a string (old format), convert
+        if isinstance(director, str):
+            director = {"stage": director, "pending_mob": 0, "flow_percent": 0, "max_flow": 0, "current_flow": 0, "chapter": 0}
+        return web.json_response({
+            "director": director,
+            "bot_flow": state.get("bot", {}).get("flow", 0),
+            "map": state.get("map", ""),
+            "mode": state.get("mode", ""),
+            "difficulty": state.get("difficulty", ""),
         })

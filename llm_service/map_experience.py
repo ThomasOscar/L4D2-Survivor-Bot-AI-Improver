@@ -106,6 +106,8 @@ class MapExperienceStore:
             "has_fire": len(state.get("fire_areas", [])) > 0,
             "has_acid": len(state.get("acid_areas", [])) > 0,
             "witch_angry": any(w.get("angry") for w in state.get("witches", [])),
+            "mode": state.get("mode", "coop"),
+            "difficulty": state.get("difficulty", "Normal"),
         }
         raw = json.dumps(features, sort_keys=True)
         return hashlib.md5(raw.encode()).hexdigest()[:12]

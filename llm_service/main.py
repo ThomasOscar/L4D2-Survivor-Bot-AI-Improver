@@ -59,6 +59,11 @@ class LLMDecisionService:
         self.state_cache: StateCache = None
         self.player_scorer: PlayerScorer = None
         self.map_experience: MapExperienceStore = None
+        # 经验配置
+        exp_cfg = self.config.get("experience", {})
+        self.exp_enabled = exp_cfg.get("enabled", True)
+        self.exp_limit = exp_cfg.get("limit", 3)
+        self.exp_style = exp_cfg.get("inject_style", "reference")
         self.last_action = None
         self.last_action_time = 0
         self.last_llm_call_time = 0
@@ -288,16 +293,22 @@ class LLMDecisionService:
             if score_hint:
                 hints.append(f"[Team Assessment] {score_hint}")
 
-            # Inject map experience hint
-            past_exp = await self.map_experience.get_experience(state, limit=3)
-            if past_exp:
-                exp_lines = []
-                for exp in past_exp:
-                    exp_lines.append(
-                        f"- {exp['action']}({exp['target']}): "
-                        f"{exp['outcome']} x{exp['count']} (survival_rate={exp['survival_rate']})"
-                    )
-                hints.append("[Map Experience]\n" + "\n".join(exp_lines))
+            # Inject map experience hint (configurable)
+            if self.exp_enabled and self.exp_style != "none":
+                past_exp = await self.map_experience.get_experience(state, limit=self.exp_limit)
+                if past_exp:
+                    exp_lines = []
+                    for exp in past_exp:
+                        exp_lines.append(
+                            f"- {exp['action']}({exp['target']}): "
+                            f"{exp['outcome']} x{exp['count']} (survival_rate={exp['survival_rate']})"
+                        )
+                    if self.exp_style == "reference":
+                        hints.append("[Historical Reference — for reference only, adapt to current situation]\n"
+                                   + "\n".join(exp_lines)
+                                   + "\nNote: Each round is unique. Prioritize team survival and mutual protection.")
+                    else:  # advisory
+                        hints.append("[Map Experience — advisory]\n" + "\n".join(exp_lines))
 
             if hints:
                 user_prompt = "\n\n".join(hints) + "\n\n" + user_prompt

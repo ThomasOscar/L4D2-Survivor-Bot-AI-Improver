@@ -68,6 +68,7 @@ button:hover{background:#81d4fa}
   <a onclick="showPage('stats')" data-page="stats">统计</a>
   <a onclick="showPage('scores')" data-page="scores">评分</a>
   <a onclick="showPage('experience')" data-page="experience">经验</a>
+  <a onclick="showPage('director')" data-page="director">导演</a>
 </nav>
 <div class="container" id="page-content"></div>
 
@@ -110,7 +111,7 @@ const T={
   mode:{coop:'合作',versus:'对抗',survival:'生存',realism:'写实',scavenge:'搜刮',
     mutation1:'出血不止',mutation2:'坦克大战',mutation3:'限定油桶',mutation4:'绝境求生',
     mutation5:'碎尸盛宴',mutation9:'最后生还者',mutation11:'单人副本',mutation13:'仅限一人',mutation15:'对抗生存'},
-  director:{relax:'休整',build:'蓄势',peak:'高峰',sustain:'持续'}
+  director:{relax:'休整',build:'蓄势',build_up:'蓄势',peak:'高峰',sustain:'持续',finale:'终局'}
 };
 function trChar(n){return T.char[n]||n}
 function trWeapon(w){if(!w||w==='none')return'无';return T.weapon[w.replace('weapon_','')]||w.replace('weapon_','')}
@@ -203,7 +204,7 @@ pages.bot=async()=>{
     <div class="two-col">
       <div class="card"><h3>AI感知 — 环境</h3>
         <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')} ${trMode(state.mode||'')}</span></div>
-        <div class="row"><span class="k">难度/导演</span><span class="v">${trDiff(state.difficulty||'')} / ${trDir(state.director||'')}</span></div>
+        <div class="row"><span class="k">难度/导演</span><span class="v">${trDiff(state.difficulty||'')} / ${typeof state.director==='object'?trDir(state.director.stage||'')+' +'+state.director.pending_mob+'尸':trDir(state.director||'')}</span></div>
         <div class="row"><span class="k">地形</span><span class="v">窄:${t.narrow?'是':'否'} 崖:${t.ledge?'是':'否'} 车:${t.alarm_car?'是':'否'} 事件:${t.crescendo?'是':'否'} 终局:${t.finale?'是':'否'}</span></div>
         <div class="row"><span class="k">普通尸</span><span class="v">${state.common_count||0}</span></div>
         <div class="row"><span class="k">火/酸区</span><span class="v">${(state.fire_areas||[]).length}/${(state.acid_areas||[]).length}</span></div>
@@ -411,6 +412,88 @@ pages.experience=async()=>{
       <div class="card stat-item"><div class="value" style="color:#f44336">${(ms.team_wipe_rate||0)*100}%</div><div class="label">团灭率</div></div>
     </div>
     <div class="card"><h3>经验记录</h3>${rows?`<table><tr><th>动作</th><th>目标</th><th>结果</th><th>次数</th><th>存活率</th><th>平均存活</th></tr>${rows}</table>`:'<p style="color:#555">暂无</p>'}</div>`;
+};
+
+// ====== 导演系统 ======
+pages.director=async()=>{
+  const d=await api('/api/director');
+  const dir=d.director||{};
+  const stage=dir.stage||'unknown';
+  const pending=dir.pending_mob||0;
+  const flowPct=dir.flow_percent||0;
+  const maxFlow=dir.max_flow||0;
+  const curFlow=dir.current_flow||0;
+  const chapter=dir.chapter||0;
+  const stageColor=stage==='peak'?'#f44336':stage==='build_up'||stage==='build'?'#ff9800':stage==='finale'?'#9c27b0':'#4caf50';
+  const stageLabel=trDir(stage);
+  // Director stage timeline visualization
+  const stages=['relax','build_up','peak','sustain','finale'];
+  const stageNames=['休整','蓄势','高峰','持续','终局'];
+  const stageColors=['#4caf50','#ff9800','#f44336','#2196f3','#9c27b0'];
+  let timeline='<div style="display:flex;gap:2px;height:24px;border-radius:4px;overflow:hidden;margin:8px 0">';
+  stages.forEach((s,i)=>{
+    const isActive=s===stage||((s==='build_up'||s==='build')&&stage==='build_up');
+    timeline+=`<div style="flex:1;background:${isActive?stageColors[i]:'#222'};display:flex;align-items:center;justify-content:center;font-size:10px;color:${isActive?'#fff':'#555'};font-weight:${isActive?700:400}">${stageNames[i]}</div>`;
+  });
+  timeline+='</div>';
+  // Progress bar
+  const progColor=flowPct<30?'#4caf50':flowPct<60?'#ff9800':flowPct<90?'#f44336':'#9c27b0';
+  // Mob gauge
+  const mobLevel=pending===0?'低':pending<5?'中':pending<15?'高':'极高';
+  const mobColor=pending===0?'#4caf50':pending<5?'#ff9800':pending<15?'#f44336':'#f44336';
+
+  document.getElementById('page-content').innerHTML=`
+    <h2>导演系统 <button class="refresh-btn" onclick="pages.director()">刷新</button></h2>
+    <div class="stat-grid">
+      <div class="card stat-item"><div class="value" style="color:${stageColor}">${stageLabel}</div><div class="label">当前阶段</div></div>
+      <div class="card stat-item"><div class="value" style="color:${mobColor}">${pending}</div><div class="label">待生成尸潮 (${mobLevel})</div></div>
+      <div class="card stat-item"><div class="value">${flowPct.toFixed(1)}%</div><div class="label">地图进度</div></div>
+      <div class="card stat-item"><div class="value">${chapter}</div><div class="label">当前章节</div></div>
+    </div>
+    <div class="card">
+      <h3>导演阶段时间线</h3>
+      ${timeline}
+      <p style="font-size:11px;color:#888;margin-top:4px">休整→蓄势(尸潮准备中)→高峰(尸潮来袭)→持续→终局</p>
+    </div>
+    <div class="card">
+      <h3>地图流程进度</h3>
+      <div style="background:#222;border-radius:6px;height:20px;overflow:hidden;position:relative">
+        <div style="width:${Math.min(flowPct,100)}%;background:${progColor};height:100%;border-radius:6px;transition:width .5s"></div>
+        <span style="position:absolute;right:8px;top:2px;font-size:11px;color:#fff">${flowPct.toFixed(1)}%</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px">
+        <span>起点 (0)</span><span>当前 (${curFlow})</span><span>终点 (${maxFlow})</span>
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <h3>尸潮规模</h3>
+        <div style="background:#222;border-radius:6px;height:20px;overflow:hidden;position:relative">
+          <div style="width:${Math.min(pending/30*100,100)}%;background:${mobColor};height:100%;border-radius:6px;transition:width .5s"></div>
+          <span style="position:absolute;right:8px;top:2px;font-size:11px;color:#fff">${pending}</span>
+        </div>
+        <p style="font-size:11px;color:#888;margin-top:4px">0=休整 | 1-5=蓄势 | 6-15=中等 | >15=高峰</p>
+      </div>
+      <div class="card">
+        <h3>游戏信息</h3>
+        <div class="row"><span class="k">地图</span><span class="v">${trMap(d.map||'')}</span></div>
+        <div class="row"><span class="k">模式</span><span class="v">${trMode(d.mode||'')}</span></div>
+        <div class="row"><span class="k">难度</span><span class="v">${trDiff(d.difficulty||'')}</span></div>
+        <div class="row"><span class="k">章节</span><span class="v">${chapter}</span></div>
+        <div class="row"><span class="k">流程距离</span><span class="v">${curFlow} / ${maxFlow}</span></div>
+      </div>
+    </div>
+    <div class="card" style="border-color:#555"><h3 style="color:#888">导演系统说明</h3>
+      <p style="color:#666;font-size:11px;line-height:1.6">
+        L4D2 的 AI 导演 (AI Director) 控制僵尸生成节奏和强度。<br>
+        <b>休整</b>: 暂时平静，给玩家喘息时间<br>
+        <b>蓄势</b>: 开始准备尸潮，待生成数增加<br>
+        <b>高峰</b>: 尸潮来袭，大量僵尸涌入<br>
+        <b>持续</b>: 维持压力<br>
+        <b>终局</b>: 关卡最后一战<br>
+        地图进度 = 当前流程距离 / 最大流程距离，表示团队在地图中的位置。
+      </p>
+    </div>`;
 };
 
 showPage('index');

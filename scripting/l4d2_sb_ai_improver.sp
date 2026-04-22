@@ -7959,16 +7959,26 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 
 	// Director stage detection
 	char directorStage[16] = "relax";
+	int pendingMob = 0;
 	if (g_bLLM_IsFinale)
 		strcopy(directorStage, sizeof(directorStage), "finale");
 	else
 	{
-		int pendingMob = L4D2Direct_GetPendingMobCount();
+		pendingMob = L4D2Direct_GetPendingMobCount();
 		if (pendingMob > 15)
 			strcopy(directorStage, sizeof(directorStage), "peak");
 		else if (pendingMob > 0)
 			strcopy(directorStage, sizeof(directorStage), "build_up");
 	}
+
+	// Director enhanced data
+	float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
+	float flowPercent = 0.0;
+	if (maxFlow > 0.0 && flowDist > 0.0)
+		flowPercent = (flowDist / maxFlow) * 100.0;
+	int chapter = L4D_GetCurrentChapter();
+	char directorJSON[256];
+	Format(directorJSON, sizeof(directorJSON), "{\"stage\":\"%s\",\"pending_mob\":%d,\"flow_percent\":%.1f,\"max_flow\":%.0f,\"current_flow\":%.0f,\"chapter\":%d}", directorStage, pendingMob, flowPercent, maxFlow, flowDist, chapter);
 
 	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", g_iLLM_Seq, mapName, gameMode, difficulty);
 	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"pinned\":%s,\"pin_type\":\"%s\",", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist, botPinned?"true":"false", botPinType);
@@ -7992,7 +8002,7 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		sc++;
 	}
 
-	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":\"%s\",\"player_scores\":[%s],\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", directorStage, scores, g_sLLM_Action);
+	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", directorJSON, scores, g_sLLM_Action);
 }
 
 bool LLM_IsPinned(int client)

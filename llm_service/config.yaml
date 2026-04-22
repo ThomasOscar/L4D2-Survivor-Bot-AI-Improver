@@ -61,3 +61,8 @@ logging:
 cache:
   enabled: true
   redis_url: "redis://:redis_BzS6hB@localhost:6379/0"
+
+experience:
+  enabled: true
+  limit: 3
+  inject_style: "reference"  # "reference"(仅供参考) / "advisory"(建议) / "none"(不注入)
