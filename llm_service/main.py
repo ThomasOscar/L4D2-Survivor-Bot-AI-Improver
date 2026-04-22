@@ -190,11 +190,12 @@ class LLMDecisionService:
         self.tcp_server.on_round_outcome = self._handle_round_outcome
 
         # Start debug HTTP server
+        debug_cfg = self.config.get("debug_server", {})
         self.debug_server = DebugServer(
             decision_logger=self.decision_logger,
             service_ref=self,
-            host="0.0.0.0",
-            port=9877
+            host=debug_cfg.get("host", "0.0.0.0"),
+            port=debug_cfg.get("port", 9877)
         )
         await self.debug_server.start()
 
