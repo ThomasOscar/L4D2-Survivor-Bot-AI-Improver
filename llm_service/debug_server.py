@@ -50,6 +50,7 @@ class DebugServer:
         self.app.router.add_get("/api/stats", self._api_stats)
         self.app.router.add_get("/api/config", self._api_config)
         self.app.router.add_post("/api/config/prompt", self._api_update_prompt)
+        self.app.router.add_get("/api/llm-status", self._api_llm_status)
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, self.host, self.port)
@@ -232,3 +233,13 @@ class DebugServer:
             return web.json_response({"status": "ok"})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    async def _api_llm_status(self, request):
+        """Return ModelRouter provider health status."""
+        svc = self.service
+        if not svc or not svc.model_router:
+            return web.json_response({"providers": []})
+        return web.json_response({
+            "strategy": svc.model_router.strategy,
+            "providers": svc.model_router.get_status()
+        })

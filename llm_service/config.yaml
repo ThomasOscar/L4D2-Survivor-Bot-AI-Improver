@@ -19,6 +19,18 @@ models:
     tier: "lightweight"
     enabled: true
 
+  - name: "ollama-local"
+    provider: "ollama"
+    api_key: ""
+    base_url: "http://localhost:11434"
+    model: "llama3.2:latest"
+    max_tokens: 80
+    temperature: 0.3
+    timeout: 45.0
+    priority: 2
+    tier: "lightweight"
+    enabled: true
+
 # Legacy single-model config (backward compat, ignored when models[] is present)
 llm:
   provider: "openai"
