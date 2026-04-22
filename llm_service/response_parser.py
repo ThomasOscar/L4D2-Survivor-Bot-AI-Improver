@@ -55,6 +55,9 @@ class ResponseParser:
             return False
         if decision.get("priority", "medium") not in VALID_PRIORITIES:
             decision["priority"] = "medium"
+        # Normalize target: if in params.target but not at top level, move it up
+        if not decision.get("target") and decision.get("params", {}).get("target"):
+            decision["target"] = decision["params"]["target"]
         if "params" not in decision:
             decision["params"] = {}
         if "reason" not in decision:

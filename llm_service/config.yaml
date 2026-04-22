@@ -57,3 +57,7 @@ debug_server:
 
 logging:
   level: "INFO"
+
+cache:
+  enabled: true
+  redis_url: "redis://:redis_BzS6hB@localhost:6379/0"

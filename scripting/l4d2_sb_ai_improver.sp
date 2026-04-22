@@ -7854,9 +7854,9 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 
 	// Terrain
 	char terrain[128];
-	Format(terrain, sizeof(terrain), "\"narrow\":%s,\"ledge\":%s,\"alarm_car\":%s,\"finale\":%s",
+	Format(terrain, sizeof(terrain), "\"narrow\":%s,\"ledge\":%s,\"alarm_car\":%s,\"crescendo\":%s,\"finale\":%s",
 		g_bLLM_HasNarrowPassage?"true":"false", g_bLLM_HasLedges?"true":"false",
-		g_bLLM_HasAlarmCars?"true":"false", g_bLLM_IsFinale?"true":"false");
+		g_bLLM_HasAlarmCars?"true":"false", g_bLLM_HasCrescendo?"true":"false", g_bLLM_IsFinale?"true":"false");
 
 	// Events (with TTL: skip events older than LLM_EVENT_TTL)
 	char events[256]="";
@@ -8377,9 +8377,15 @@ void LLM_LoadTerrain()
 	if (StrContains(mapName, "c2m") == 0) g_bLLM_HasAlarmCars = true;
 	if (StrContains(mapName, "c3m") == 0) g_bLLM_HasAlarmCars = true;
 	if (StrContains(mapName, "c5m") == 0) g_bLLM_HasLedges = true;
+	// Crescendo events (alarm/horde trigger maps)
+	if (StrContains(mapName, "c1m2") >= 0 || StrContains(mapName, "c1m4") >= 0 ||
+		StrContains(mapName, "c2m3") >= 0 || StrContains(mapName, "c2m4") >= 0 ||
+		StrContains(mapName, "c3m2") >= 0 || StrContains(mapName, "c4m2") >= 0 ||
+		StrContains(mapName, "c4m3") >= 0 || StrContains(mapName, "c5m3") >= 0)
+		g_bLLM_HasCrescendo = true;
 
-	PrintToServer("[LLM] Terrain: %s narrow=%d ledge=%d alarm=%d finale=%d",
-		mapName, g_bLLM_HasNarrowPassage, g_bLLM_HasLedges, g_bLLM_HasAlarmCars, g_bLLM_IsFinale);
+	PrintToServer("[LLM] Terrain: %s narrow=%d ledge=%d alarm=%d crescendo=%d finale=%d",
+		mapName, g_bLLM_HasNarrowPassage, g_bLLM_HasLedges, g_bLLM_HasAlarmCars, g_bLLM_HasCrescendo, g_bLLM_IsFinale);
 }
 
 // ===================== Events =====================
