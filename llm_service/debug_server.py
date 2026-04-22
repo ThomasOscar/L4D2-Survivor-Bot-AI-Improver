@@ -98,7 +98,7 @@ class DebugServer:
         state = svc.last_state if svc else None
         result = {
             "service": "l4d2_llm_bot",
-            "version": "2.1",
+            "version": "3.0",
             "running": svc.running if svc else False,
             "llm_connected": svc.llm_client is not None if svc else False,
             "last_action": svc.last_action.get("action") if svc and svc.last_action else None,
