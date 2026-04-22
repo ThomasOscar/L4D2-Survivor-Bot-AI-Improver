@@ -69,6 +69,7 @@ button:hover{background:#81d4fa}
   <a onclick="showPage('scores')" data-page="scores">评分</a>
   <a onclick="showPage('experience')" data-page="experience">经验</a>
   <a onclick="showPage('director')" data-page="director">导演</a>
+  <a onclick="showPage('game-stats')" data-page="game-stats">数据统计</a>
 </nav>
 <div class="container" id="page-content"></div>
 
@@ -494,6 +495,75 @@ pages.director=async()=>{
         地图进度 = 当前流程距离 / 最大流程距离，表示团队在地图中的位置。
       </p>
     </div>`;
+};
+
+// ====== 数据统计页面 ======
+pages['game-stats']=async()=>{
+  const d=await api('/api/game-stats');
+  const ps=d.player_stats||[];
+  const tt=d.team_totals||{};
+  const rt=d.round_totals||{};
+  const ct=d.chapter_totals||{};
+  // Overview cards
+  const overview=`
+    <div class="stat-grid">
+      <div class="card stat-item"><div class="value">${trMap(d.map||'')}</div><div class="label">地图</div></div>
+      <div class="card stat-item"><div class="value">${trMode(d.mode||'')} / ${trDiff(d.difficulty||'')}</div><div class="label">模式/难度</div></div>
+      <div class="card stat-item"><div class="value">${d.chapter||0}</div><div class="label">当前章节</div></div>
+      <div class="card stat-item"><div class="value">${(d.flow_percent||0).toFixed(1)}%</div><div class="label">地图进度</div></div>
+    </div>`;
+  // Team totals
+  const teamCards=`
+    <div class="stat-grid">
+      <div class="card stat-item"><div class="value" style="color:${tt.deaths?'#f44336':'#4caf50'}">${tt.deaths||0}</div><div class="label">总死亡</div></div>
+      <div class="card stat-item"><div class="value" style="color:${tt.incaps?'#ff9800':'#4caf50'}">${tt.incaps||0}</div><div class="label">总倒地</div></div>
+      <div class="card stat-item"><div class="value">${tt.heals||0}</div><div class="label">总治疗</div></div>
+      <div class="card stat-item"><div class="value">${tt.si_kills||0}</div><div class="label">特感击杀</div></div>
+      <div class="card stat-item"><div class="value">${tt.common_kills||0}</div><div class="label">普通击杀</div></div>
+      <div class="card stat-item"><div class="value">${tt.item_pickups||0}</div><div class="label">物品拾取</div></div>
+    </div>`;
+  // Player stats table
+  let pRows='';
+  ps.forEach(p=>{
+    const hpClass=p.deaths>0?'danger':'ok';
+    pRows+=`<tr>
+      <td>${trChar(p.name||'?')}</td>
+      <td>${p.deaths||0}</td>
+      <td>${p.incap||0}</td>
+      <td>${p.pinned||0}</td>
+      <td>${p.heal||0}</td>
+      <td>${p.revive||0}</td>
+      <td>${p.si_kills||0}</td>
+      <td>${p.common_kills||0}</td>
+      <td>${p.item_pickups||0}</td>
+    </tr>`;
+  });
+  const playerTable=`
+    <div class="card">
+      <h3>玩家统计 (当前对局)</h3>
+      <table><thead><tr><th>玩家</th><th>死亡</th><th>倒地</th><th>被控</th><th>治疗</th><th>救人</th><th>特感击杀</th><th>普通击杀</th><th>拾取</th></tr></thead>
+      <tbody>${pRows||'<tr><td colspan="9" style="color:#666">暂无数据</td></tr>'}</tbody></table>
+    </div>`;
+  // Chapter stats
+  const chapTable=`
+    <div class="card">
+      <h3>章节统计 (第 ${d.chapter||0} 章)</h3>
+      <table><thead><tr><th>统计项</th><th>本章节</th><th>整局累计</th></tr></thead>
+      <tbody>
+        <tr><td>死亡</td><td>${ct.deaths||0}</td><td>${rt.deaths||0}</td></tr>
+        <tr><td>倒地</td><td>${ct.incaps||0}</td><td>${rt.incaps||0}</td></tr>
+        <tr><td>治疗</td><td>${ct.heals||0}</td><td>${rt.heals||0}</td></tr>
+        <tr><td>特感击杀</td><td>${ct.si_kills||0}</td><td>${rt.si_kills||0}</td></tr>
+        <tr><td>普通击杀</td><td>${ct.common_kills||0}</td><td>${rt.common_kills||0}</td></tr>
+      </tbody></table>
+    </div>`;
+
+  document.getElementById('page-content').innerHTML=`
+    <h2>数据统计 <button class="refresh-btn" onclick="pages['game-stats']()">刷新</button></h2>
+    ${overview}
+    <div class="card"><h3>团队总览</h3>${teamCards}</div>
+    ${playerTable}
+    ${chapTable}`;
 };
 
 showPage('index');
