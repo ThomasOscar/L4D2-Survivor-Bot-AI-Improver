@@ -19,16 +19,16 @@ models:
     tier: "lightweight"
     enabled: true
 
-  - name: "ollama-local"
-    provider: "ollama"
-    api_key: ""
-    base_url: "http://localhost:11434"
-    model: "llama3.2:latest"
-    max_tokens: 80
+  - name: "deepseek-chat"
+    provider: "openai"
+    api_key: "sk-8eb026b55ecf468cbbe290a322e51697"
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"
+    max_tokens: 150
     temperature: 0.3
-    timeout: 45.0
+    timeout: 8.0
     priority: 2
-    tier: "lightweight"
+    tier: "standard"
     enabled: true
 
 # Legacy single-model config (backward compat, ignored when models[] is present)

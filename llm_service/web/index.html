@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>L4D2 LLM Bot</title>
+<title>L4D2 LLM 机器人决策系统</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f0f0f;color:#e0e0e0;min-height:100vh}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Microsoft YaHei','PingFang SC',sans-serif;background:#0f0f0f;color:#e0e0e0;min-height:100vh}
 nav{background:#1a1a2e;padding:12px 24px;display:flex;align-items:center;gap:20px;border-bottom:1px solid #333}
 nav .logo{color:#4fc3f7;font-weight:700;font-size:18px}
 nav a{color:#aaa;text-decoration:none;font-size:14px;padding:6px 12px;border-radius:4px;transition:all .2s}
@@ -14,7 +14,7 @@ nav a:hover,nav a.active{color:#fff;background:#333}
 .container{max-width:1200px;margin:0 auto;padding:20px}
 h2{color:#4fc3f7;margin-bottom:16px;font-size:20px}
 .card{background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;margin-bottom:12px}
-.card h3{color:#4fc3f7;font-size:14px;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+.card h3{color:#4fc3f7;font-size:14px;margin-bottom:8px;letter-spacing:1px}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
 .stat-item{text-align:center;padding:12px}
 .stat-item .value{font-size:28px;font-weight:700;color:#4fc3f7}
@@ -40,18 +40,22 @@ button{background:#4fc3f7;color:#000;border:none;padding:8px 20px;border-radius:
 button:hover{background:#81d4fa}
 .refresh-btn{float:right;font-size:12px;padding:4px 12px}
 #page-content{display:none}
+.rating-S{color:#ffd700;font-weight:700}.rating-A{color:#4caf50;font-weight:700}.rating-B{color:#2196f3;font-weight:700}.rating-C{color:#888}.rating-D{color:#f44336;font-weight:700}
+.tag-S{background:#ffd700;color:#000}.tag-A{background:#4caf50;color:#fff}.tag-B{background:#2196f3;color:#fff}.tag-C{background:#666;color:#ccc}.tag-D{background:#f44336;color:#fff}
 </style>
 </head>
 <body>
 <nav>
-  <div class="logo">L4D2 LLM Bot</div>
-  <a href="#" onclick="showPage('index')" class="active" data-page="index">Dashboard</a>
-  <a href="#" onclick="showPage('bot')" data-page="bot">Bot</a>
-  <a href="#" onclick="showPage('map')" data-page="map">Map</a>
-  <a href="#" onclick="showPage('ai-view')" data-page="ai-view">AI View</a>
-  <a href="#" onclick="showPage('config')" data-page="config">Config</a>
-  <a href="#" onclick="showPage('history')" data-page="history">History</a>
-  <a href="#" onclick="showPage('stats')" data-page="stats">Stats</a>
+  <div class="logo">L4D2 LLM 机器人</div>
+  <a href="#" onclick="showPage('index')" class="active" data-page="index">仪表盘</a>
+  <a href="#" onclick="showPage('bot')" data-page="bot">机器人</a>
+  <a href="#" onclick="showPage('map')" data-page="map">地图</a>
+  <a href="#" onclick="showPage('ai-view')" data-page="ai-view">AI 视角</a>
+  <a href="#" onclick="showPage('config')" data-page="config">配置</a>
+  <a href="#" onclick="showPage('history')" data-page="history">历史</a>
+  <a href="#" onclick="showPage('stats')" data-page="stats">统计</a>
+  <a href="#" onclick="showPage('scores')" data-page="scores">评分</a>
+  <a href="#" onclick="showPage('experience')" data-page="experience">经验</a>
 </nav>
 <div class="container" id="page-content"></div>
 
@@ -78,140 +82,187 @@ function hpClass(hp){return hp>60?'hp-high':hp>30?'hp-mid':'hp-low'}
 function hpBar(hp,max=100){return `<div class="hp-bar"><div class="fill ${hpClass(hp)}" style="width:${Math.min(hp/max*100,100)}%"></div></div>`}
 function tag(text,cls){return `<span class="tag tag-${cls}">${text}</span>`}
 function distColor(d){return d<300?'#f44336':d<800?'#ff9800':'#4caf50'}
+function statusLabel(m){return m.pinned?'被控':m.incap?'倒地':'正常'}
+function statusClass(m){return m.pinned?'critical':m.incap?'high':'low'}
+function sourceLabel(s){return s==='rule'?'规则':s==='llm'?'LLM':s==='fallback'?'回退':s}
+function ghostLabel(g){return g?'幽灵':'实体'}
+function angryLabel(a){return a?'暴怒':'平静'}
+function outcomeLabel(o){return o==='survived'?'存活':o==='team_wipe'?'团灭':o==='escaped'?'逃脱':o}
 
-// Dashboard
+// 仪表盘
 pages.index=async()=>{
   const d=await api('/api/status');
   const s=await api('/api/stats');
   const h=await api('/api/history?count=5');
-  let histHtml=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(e.source,e.source)}</td><td>${tag(e.decision.action,'high')}</td><td style="color:#888;font-size:11px">${e.decision.reason?.slice(0,60)||''}</td></tr>`).join('');
+  let histHtml=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(sourceLabel(e.source),e.source)}</td><td>${tag(e.decision.action,'high')}</td><td style="color:#888;font-size:11px">${e.decision.reason?.slice(0,60)||''}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>Dashboard <button class="refresh-btn" onclick="pages.index()">Refresh</button></h2>
+    <h2>仪表盘 <button class="refresh-btn" onclick="pages.index()">刷新</button></h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value">${d.bot_name||'?'}</div><div class="label">Bot</div></div>
-      <div class="card stat-item"><div class="value" style="color:${hpClass(d.bot_hp||0).replace('hp-','#').replace('high','4caf50').replace('mid','ff9800').replace('low','f44336')}">${d.bot_hp||0}</div><div class="label">HP</div></div>
-      <div class="card stat-item"><div class="value">${d.threats_visible||0}</div><div class="label">Threats</div></div>
-      <div class="card stat-item"><div class="value">${d.current_map||'?'}</div><div class="label">Map</div></div>
-      <div class="card stat-item"><div class="value" style="color:${d.director==='peak'?'#f44336':d.director==='build_up'?'#ff9800':'#4caf50'}">${d.director||'?'}</div><div class="label">Director</div></div>
-      <div class="card stat-item"><div class="value rating-${d.team_rating||'C'}">${d.team_rating||'?'}</div><div class="label">Team Rating</div></div>
-      <div class="card stat-item"><div class="value">${d.team_score||0}</div><div class="label">Team Score</div></div>
-      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">Rule Decisions</div></div>
-      <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM Decisions</div></div>
-      <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">Skipped</div></div>
-      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">Avg API Time</div></div>
+      <div class="card stat-item"><div class="value">${d.bot_name||'?'}</div><div class="label">机器人</div></div>
+      <div class="card stat-item"><div class="value" style="color:${hpClass(d.bot_hp||0).replace('hp-','#').replace('high','4caf50').replace('mid','ff9800').replace('low','f44336')}">${d.bot_hp||0}</div><div class="label">生命值</div></div>
+      <div class="card stat-item"><div class="value">${d.threats_visible||0}</div><div class="label">可见威胁</div></div>
+      <div class="card stat-item"><div class="value">${d.current_map||'?'}</div><div class="label">当前地图</div></div>
+      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">规则决策</div></div>
+      <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM 决策</div></div>
+      <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">跳过</div></div>
+      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">平均 API 耗时</div></div>
     </div>
-    <div class="card"><h3>Recent Decisions</h3><table><tr><th>Time</th><th>Source</th><th>Action</th><th>Reason</th></tr>${histHtml}</table></div>`;
+    <div class="card"><h3>最近决策</h3><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th></tr>${histHtml}</table></div>`;
 };
 
-// Bot
+// 机器人
 pages.bot=async()=>{
   const d=await api('/api/bot');
-  const matesHtml=(d.teammates||[]).map(m=>`<tr><td>${m.name}</td><td>${m.hp}${hpBar(m.hp)}</td><td>${tag(m.pinned?'PINNED':m.incap?'INCAP':'OK',m.pinned?'critical':m.incap?'high':'low')}</td><td style="color:${distColor(m.dist)}">${m.dist?.toFixed(0)||'?'}</td></tr>`).join('');
+  const matesHtml=(d.teammates||[]).map(m=>`<tr><td>${m.name}</td><td>${m.hp}${hpBar(m.hp)}</td><td>${tag(statusLabel(m),statusClass(m))}</td><td style="color:${distColor(m.dist)}">${m.dist?.toFixed(0)||'?'}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>Bot Info</h2>
+    <h2>机器人信息</h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value">${d.name||'?'}</div><div class="label">Name</div></div>
-      <div class="card stat-item"><div class="value">${d.hp||0}</div><div class="label">HP</div>${hpBar(d.hp||0)}</div>
-      <div class="card stat-item"><div class="value">${d.temp_hp||0}</div><div class="label">Temp HP</div></div>
-      <div class="card stat-item"><div class="value">${tag(d.current_action||'?','high')}</div><div class="label">Action</div></div>
-      <div class="card stat-item"><div class="value" style="color:${d.pinned?'#f44336':'#4caf50'}">${d.pinned?d.pin_type||'PINNED':'Free'}</div><div class="label">Pin Status</div></div>
+      <div class="card stat-item"><div class="value">${d.name||'?'}</div><div class="label">名称</div></div>
+      <div class="card stat-item"><div class="value">${d.hp||0}</div><div class="label">生命值</div>${hpBar(d.hp||0)}</div>
+      <div class="card stat-item"><div class="value">${d.temp_hp||0}</div><div class="label">临时生命</div></div>
+      <div class="card stat-item"><div class="value">${tag(d.current_action||'?',d.pinned?'critical':d.incap?'high':'medium')}</div><div class="label">当前动作</div></div>
     </div>
-    <div class="card"><h3>Weapons</h3>
-      <table><tr><th>Slot</th><th>Item</th><th>Ammo</th></tr>
-        <tr><td>Primary</td><td>${(d.weapons?.primary||'none').replace('weapon_','')}</td><td>${d.ammo||0}+${d.reserve||0}</td></tr>
-        <tr><td>Secondary</td><td>${(d.weapons?.secondary||'none').replace('weapon_','')}</td><td>-</td></tr>
-        <tr><td>Grenade</td><td>${(d.weapons?.grenade||'none').replace('weapon_','')}</td><td>-</td></tr>
-        <tr><td>Health</td><td>${(d.weapons?.health||'none').replace('weapon_','')}</td><td>-</td></tr>
-        <tr><td>Pills</td><td>${(d.weapons?.pills||'none').replace('weapon_','')}</td><td>-</td></tr>
+    ${d.pinned?`<div class="card" style="border-color:#f44336"><h3 style="color:#f44336">被控状态</h3><p>被 <strong>${d.pin_type||'未知'}</strong> 控制，无法自主行动</p></div>`:''}
+    <div class="card"><h3>武器装备</h3>
+      <table><tr><th>槽位</th><th>物品</th><th>弹药</th></tr>
+        <tr><td>主武器</td><td>${(d.weapons?.primary||'无').replace('weapon_','')}</td><td>${d.ammo||0}+${d.reserve||0}</td></tr>
+        <tr><td>副武器</td><td>${(d.weapons?.secondary||'无').replace('weapon_','')}</td><td>-</td></tr>
+        <tr><td>投掷物</td><td>${(d.weapons?.grenade||'无').replace('weapon_','')}</td><td>-</td></tr>
+        <tr><td>医疗品</td><td>${(d.weapons?.health||'无').replace('weapon_','')}</td><td>-</td></tr>
+        <tr><td>止痛药</td><td>${(d.weapons?.pills||'无').replace('weapon_','')}</td><td>-</td></tr>
       </table>
     </div>
-    <div class="card"><h3>Teammates</h3><table><tr><th>Name</th><th>HP</th><th>Status</th><th>Dist</th></tr>${matesHtml}</table></div>
-    <div class="card"><h3>Current Decision</h3><p><strong>${d.current_action||'none'}</strong> (${d.current_priority||'?'}) - ${d.current_reason||''}</p></div>`;
+    <div class="card"><h3>队友</h3><table><tr><th>名称</th><th>生命值</th><th>状态</th><th>距离</th></tr>${matesHtml}</table></div>
+    <div class="card"><h3>当前决策</h3><p><strong>${d.current_action||'无'}</strong> (${d.current_priority||'?'}) - ${d.current_reason||''}</p></div>`;
 };
 
-// Map
+// 地图
 pages.map=async()=>{
   const d=await api('/api/map');
-  const thHtml=(d.threats||[]).map(t=>`<tr><td>${t.type}</td><td>${t.hp}</td><td style="color:${distColor(t.dist)}">${t.dist?.toFixed(0)||'?'}</td><td>${t.ghost?'Ghost':'Active'}</td></tr>`).join('');
-  const wHtml=(d.witches||[]).map(w=>`<tr><td>Witch</td><td>${w.hp}</td><td style="color:${distColor(w.dist)}">${w.dist?.toFixed(0)||'?'}</td><td>${w.angry?'ANGRY':'Calm'}</td></tr>`).join('');
+  const thHtml=(d.threats||[]).map(t=>`<tr><td>${t.type}</td><td>${t.hp}</td><td style="color:${distColor(t.dist)}">${t.dist?.toFixed(0)||'?'}</td><td>${ghostLabel(t.ghost)}</td></tr>`).join('');
+  const wHtml=(d.witches||[]).map(w=>`<tr><td>女巫</td><td>${w.hp}</td><td style="color:${distColor(w.dist)}">${w.dist?.toFixed(0)||'?'}</td><td>${angryLabel(w.angry)}</td></tr>`).join('');
   const iHtml=(d.items||[]).map(i=>`<tr><td>${i.name.replace('weapon_','')}</td><td style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}</td></tr>`).join('');
   const t=d.terrain||{};
   document.getElementById('page-content').innerHTML=`
-    <h2>Map Info</h2>
+    <h2>地图信息</h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value">${d.map||'?'}</div><div class="label">Map</div></div>
-      <div class="card stat-item"><div class="value">${d.mode||'?'}</div><div class="label">Mode</div></div>
-      <div class="card stat-item"><div class="value">${d.difficulty||'?'}</div><div class="label">Difficulty</div></div>
+      <div class="card stat-item"><div class="value">${d.map||'?'}</div><div class="label">地图</div></div>
+      <div class="card stat-item"><div class="value">${d.mode||'?'}</div><div class="label">模式</div></div>
+      <div class="card stat-item"><div class="value">${d.difficulty||'?'}</div><div class="label">难度</div></div>
     </div>
-    <div class="card"><h3>Terrain</h3><p>Narrow: ${t.narrow?'Yes':'No'} | Ledge: ${t.ledge?'Yes':'No'} | Alarm Car: ${t.alarm_car?'Yes':'No'} | Finale: ${t.finale?'Yes':'No'}</p></div>
-    <div class="card"><h3>Environment</h3><p>Common Infected: <strong>${d.common_count||0}</strong> | Fire Areas: ${d.fire_areas?.length||0} | Acid Areas: ${d.acid_areas?.length||0}</p></div>
-    <div class="card"><h3>Threats</h3>${thHtml?`<table><tr><th>Type</th><th>HP</th><th>Dist</th><th>Status</th></tr>${thHtml}</table>`:'<p style="color:#666">No threats visible</p>'}</div>
-    <div class="card"><h3>Witches</h3>${wHtml?`<table><tr><th>Type</th><th>HP</th><th>Dist</th><th>Status</th></tr>${wHtml}</table>`:'<p style="color:#666">No witches</p>'}</div>
-    <div class="card"><h3>Nearby Items</h3>${iHtml?`<table><tr><th>Item</th><th>Dist</th></tr>${iHtml}</table>`:'<p style="color:#666">No items nearby</p>'}</div>
-    <div class="card"><h3>Events</h3><p>${(d.events||[]).join(', ')||'None'}</p></div>`;
+    <div class="card"><h3>地形</h3><p>狭窄: ${t.narrow?'是':'否'} | 悬崖: ${t.ledge?'是':'否'} | 警报车: ${t.alarm_car?'是':'否'} | 事件: ${t.crescendo?'是':'否'} | 终局: ${t.finale?'是':'否'}</p></div>
+    <div class="card"><h3>威胁</h3>${thHtml?`<table><tr><th>类型</th><th>生命值</th><th>距离</th><th>状态</th></tr>${thHtml}</table>`:'<p style="color:#666">无可见威胁</p>'}</div>
+    <div class="card"><h3>女巫</h3>${wHtml?`<table><tr><th>类型</th><th>生命值</th><th>距离</th><th>状态</th></tr>${wHtml}</table>`:'<p style="color:#666">附近无女巫</p>'}</div>
+    <div class="card"><h3>附近物品</h3>${iHtml?`<table><tr><th>物品</th><th>距离</th></tr>${iHtml}</table>`:'<p style="color:#666">附近无物品</p>'}</div>
+    <div class="card"><h3>事件</h3><p>${(d.events||[]).join('、')||'无'}</p></div>`;
 };
 
-// AI View
+// AI 视角
 pages.ai_view=async()=>{
   const d=await api('/api/ai-view');
   document.getElementById('page-content').innerHTML=`
-    <h2>AI View</h2>
-    <div class="card"><h3>Raw STATE (what AI sees)</h3><pre>${JSON.stringify(d.raw_state,null,2)}</pre></div>
-    <div class="card"><h3>System Prompt</h3><pre>${(d.system_prompt||'').replace(/</g,'&lt;')}</pre></div>
-    <div class="card"><h3>User Prompt (latest)</h3><pre>${(d.user_prompt||'').replace(/</g,'&lt;')}</pre></div>
-    <div class="card"><h3>Last Decision</h3><pre>${JSON.stringify(d.last_decision,null,2)}</pre></div>`;
+    <h2>AI 视角</h2>
+    <div class="card"><h3>原始 STATE（AI 所见）</h3><pre>${JSON.stringify(d.raw_state,null,2)}</pre></div>
+    <div class="card"><h3>系统提示词</h3><pre>${(d.system_prompt||'').replace(/</g,'&lt;')}</pre></div>
+    <div class="card"><h3>用户提示词（最近）</h3><pre>${(d.user_prompt||'').replace(/</g,'&lt;')}</pre></div>
+    <div class="card"><h3>最近决策</h3><pre>${JSON.stringify(d.last_decision,null,2)}</pre></div>`;
 };
 
-// Config
+// 配置
 pages.config=async()=>{
   const d=await api('/api/config');
   document.getElementById('page-content').innerHTML=`
-    <h2>Configuration</h2>
-    <div class="card"><h3>System Prompt</h3>
+    <h2>配置</h2>
+    <div class="card"><h3>系统提示词</h3>
       <textarea id="prompt-editor">${(d.system_prompt||'').replace(/</g,'&lt;')}</textarea>
-      <br><br><button onclick="savePrompt()">Save Prompt</button>
+      <br><br><button onclick="savePrompt()">保存提示词</button>
       <span id="save-status" style="margin-left:12px"></span>
     </div>
-    <div class="card"><h3>Service Config</h3><pre>${JSON.stringify(d.config,null,2)}</pre></div>`;
+    <div class="card"><h3>服务配置</h3><pre>${JSON.stringify(d.config,null,2)}</pre></div>`;
 };
 
 async function savePrompt(){
   const text=document.getElementById('prompt-editor').value;
   const r=await fetch('/api/config/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:text})});
   const j=await r.json();
-  document.getElementById('save-status').textContent=j.status==='ok'?'Saved!':'Error: '+j.error;
+  document.getElementById('save-status').textContent=j.status==='ok'?'已保存!':'错误: '+j.error;
   setTimeout(()=>{document.getElementById('save-status').textContent=''},3000);
 }
 
-// History
+// 历史
 pages.history=async()=>{
   const h=await api('/api/history?count=50');
-  const rows=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(e.source,e.source)}</td><td>${tag(e.decision.action,e.decision.priority||'medium')}</td><td style="font-size:11px;color:#888">${e.decision.reason?.slice(0,80)||''}</td><td>${e.elapsed_ms||0}ms</td>
-    <td style="font-size:11px">${e.state?.threat_count||0}T ${e.state?.pinned_count||0}P</td></tr>`).join('');
+  const rows=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(sourceLabel(e.source),e.source)}</td><td>${tag(e.decision.action,e.decision.priority||'medium')}</td><td style="font-size:11px;color:#888">${e.decision.reason?.slice(0,80)||''}</td><td>${e.elapsed_ms||0}ms</td>
+    <td style="font-size:11px">${e.state?.threat_count||0}敌 ${e.state?.pinned_count||0}控</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>Decision History</h2><div class="card"><table><tr><th>Time</th><th>Source</th><th>Action</th><th>Reason</th><th>Latency</th><th>State</th></tr>${rows}</table></div>`;
+    <h2>决策历史</h2><div class="card"><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th><th>延迟</th><th>状态</th></tr>${rows}</table></div>`;
 };
 
-// Stats
+// 统计
 pages.stats=async()=>{
   const s=await api('/api/stats');
   const dist=Object.entries(s.action_distribution||{}).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>Statistics</h2>
+    <h2>统计数据</h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">Rule (${s.rule_pct||0}%)</div></div>
+      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">规则 (${s.rule_pct||0}%)</div></div>
       <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM (${s.llm_pct||0}%)</div></div>
-      <div class="card stat-item"><div class="value">${s.fallback||0}</div><div class="label">Fallback (${s.fallback_pct||0}%)</div></div>
-      <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">Skipped</div></div>
-      <div class="card stat-item"><div class="value">${s.total_decisions||0}</div><div class="label">Total</div></div>
-      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">Avg API</div></div>
-      <div class="card stat-item"><div class="value">${s.api_timeout||0}</div><div class="label">API Timeouts</div></div>
-      <div class="card stat-item"><div class="value">${s.uptime_seconds||0}s</div><div class="label">Uptime</div></div>
+      <div class="card stat-item"><div class="value">${s.fallback||0}</div><div class="label">回退 (${s.fallback_pct||0}%)</div></div>
+      <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">跳过</div></div>
+      <div class="card stat-item"><div class="value">${s.total_decisions||0}</div><div class="label">总计</div></div>
+      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">平均 API</div></div>
+      <div class="card stat-item"><div class="value">${s.api_timeout||0}</div><div class="label">API 超时</div></div>
+      <div class="card stat-item"><div class="value">${s.uptime_seconds||0}s</div><div class="label">运行时间</div></div>
     </div>
-    <div class="card"><h3>Action Distribution</h3><table><tr><th>Action</th><th>Count</th></tr>${dist}</table></div>`;
+    <div class="card"><h3>动作分布</h3><table><tr><th>动作</th><th>次数</th></tr>${dist}</table></div>`;
 };
 
-// Init
+// 评分
+pages.scores=async()=>{
+  const d=await api('/api/player-scores');
+  const players=d.players||[];
+  const team=d.team||{};
+  const rows=players.map(p=>{
+    const rClass=`rating-${p.rating}`;
+    const composite=p.composite>=0?`+${p.composite}`:p.composite;
+    return `<tr><td>${p.name}</td><td class="${rClass}">${tag(p.rating,p.rating)}</td><td>${composite}</td>
+      <td style="color:#4caf50">${p.heal}</td><td style="color:#2196f3">${p.revive}</td><td style="color:#ff9800">${p.si_kills}</td>
+      <td style="color:#f44336">${p.incap}</td><td style="color:#ff5722">${p.pinned}</td></tr>`;
+  }).join('');
+  document.getElementById('page-content').innerHTML=`
+    <h2>玩家评分</h2>
+    <div class="stat-grid">
+      <div class="card stat-item"><div class="value">${team.team_score||0}</div><div class="label">团队总分</div></div>
+      <div class="card stat-item"><div class="value rating-${team.team_rating||'C'}">${team.team_rating||'C'}</div><div class="label">团队评级</div></div>
+      <div class="card stat-item"><div class="value">${team.mvp||'-'}</div><div class="label">MVP</div></div>
+      <div class="card stat-item"><div class="value" style="color:#f44336">${(team.needs_protection||[]).join('、')||'无'}</div><div class="label">需保护</div></div>
+    </div>
+    <div class="card"><h3>玩家详情</h3>
+      <table><tr><th>名称</th><th>评级</th><th>分数</th><th>治疗</th><th>救起</th><th>特感击杀</th><th>倒地</th><th>被控</th></tr>${rows}</table></div>
+    ${d.hint?`<div class="card"><h3>AI 建议</h3><p>${d.hint}</p></div>`:''}`;
+};
+
+// 经验
+pages.experience=async()=>{
+  const d=await api('/api/map-experience');
+  const exps=d.experiences||[];
+  const ms=d.map_stats||{};
+  const rows=exps.map(e=>`<tr><td>${tag(e.action,'medium')}</td><td>${e.target||'-'}</td><td>${tag(outcomeLabel(e.outcome),e.outcome==='survived'?'rule':e.outcome==='team_wipe'?'critical':'low')}</td>
+    <td>${e.count}</td><td>${(e.survival_rate*100).toFixed(0)}%</td><td>${e.avg_survival||0}s</td></tr>`).join('');
+  document.getElementById('page-content').innerHTML=`
+    <h2>地图经验</h2>
+    <div class="stat-grid">
+      <div class="card stat-item"><div class="value">${d.current_map||'?'}</div><div class="label">当前地图</div></div>
+      <div class="card stat-item"><div class="value">${ms.total_decisions||0}</div><div class="label">总决策数</div></div>
+      <div class="card stat-item"><div class="value">${ms.flow_sections||0}</div><div class="label">流程段数</div></div>
+      <div class="card stat-item"><div class="value">${(ms.survival_rate||0)*100}%</div><div class="label">存活率</div></div>
+      <div class="card stat-item"><div class="value">${(ms.escape_rate||0)*100}%</div><div class="label">逃脱率</div></div>
+      <div class="card stat-item"><div class="value" style="color:#f44336">${(ms.team_wipe_rate||0)*100}%</div><div class="label">团灭率</div></div>
+    </div>
+    <div class="card"><h3>经验记录（当前局势）</h3>${rows?`<table><tr><th>动作</th><th>目标</th><th>结果</th><th>次数</th><th>存活率</th><th>平均存活</th></tr>${rows}</table>`:'<p style="color:#666">当前局势暂无经验记录</p>'}</div>`;
+};
+
+// 启动
 showPage('index');
 </script>
 </body>
