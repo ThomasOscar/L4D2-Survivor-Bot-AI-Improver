@@ -801,7 +801,7 @@ public void OnPluginStart()
 	HookEvent("player_use",				Event_OnPlayerUse);
 	HookEvent("ability_use",			Event_OnAbilityUse);
 	
-	HookEvent("player_incapacitated_start",	Event_OnIncap);
+	HookEvent("player_incapacitated",		Event_OnIncap);
 	HookEvent("revive_success",			Event_OnRevive);
 	HookEvent("defibrillator_used",		Event_OnRevive);
 	
@@ -1734,10 +1734,11 @@ void Event_OnIncap(Event hEvent, const char[] sName, bool bBroadcast)
 void Event_OnRevive(Event hEvent, const char[] sName, bool bBroadcast)
 {
 	static int iClient, iUserID, iOwner, iEntIndex;
-	iUserID = hEvent.GetInt("subject");
+	// userid = the player performing revive, subject = the player being revived
+	iUserID = hEvent.GetInt("userid");
 	iClient = GetClientOfUserId(iUserID);
 
-	// LLM score: track revive (the one being revived)
+	// LLM score: track revive (the one performing the revive)
 	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
 		g_iLLM_PlayerRevive[iClient]++;
 	
