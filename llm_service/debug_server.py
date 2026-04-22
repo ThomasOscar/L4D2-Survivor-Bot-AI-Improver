@@ -51,6 +51,8 @@ class DebugServer:
         self.app.router.add_get("/api/config", self._api_config)
         self.app.router.add_post("/api/config/prompt", self._api_update_prompt)
         self.app.router.add_get("/api/llm-status", self._api_llm_status)
+        self.app.router.add_get("/api/player-scores", self._api_player_scores)
+        self.app.router.add_get("/api/map-experience", self._api_map_experience)
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, self.host, self.port)
@@ -101,7 +103,7 @@ class DebugServer:
             "service": "l4d2_llm_bot",
             "version": "3.0",
             "running": svc.running if svc else False,
-            "llm_connected": svc.llm_client is not None if svc else False,
+            "llm_connected": svc.model_router is not None if svc else False,
             "last_action": svc.last_action.get("action") if svc and svc.last_action else None,
             "uptime": round(time.time() - self.logger.stats["start_time"], 0),
         }
@@ -242,4 +244,36 @@ class DebugServer:
         return web.json_response({
             "strategy": svc.model_router.strategy,
             "providers": svc.model_router.get_status()
+        })
+
+    async def _api_player_scores(self, request):
+        """Return player scores with ratings."""
+        svc = self.service
+        if not svc or not svc.last_state or not svc.player_scorer:
+            return web.json_response({"error": "no data"})
+        state = svc.last_state
+        raw_scores = state.get("player_scores", [])
+        scored = [svc.player_scorer.score_player(p) for p in raw_scores]
+        team = svc.player_scorer.score_team(scored)
+        return web.json_response({
+            "players": scored,
+            "team": team,
+            "hint": svc.player_scorer.get_decision_hint(state)
+        })
+
+    async def _api_map_experience(self, request):
+        """Return map experience stats."""
+        svc = self.service
+        if not svc or not svc.map_experience:
+            return web.json_response({"error": "no data"})
+        map_name = request.query.get("map", "")
+        if not map_name and svc.last_state:
+            map_name = svc.last_state.get("map", "")
+        stats = {}
+        if map_name:
+            stats = await svc.map_experience.get_map_stats(map_name)
+        return web.json_response({
+            "map": map_name,
+            "stats": stats,
+            "db_connected": svc.map_experience.db is not None
         })

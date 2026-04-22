@@ -95,11 +95,25 @@ class ResponseParser:
         return {"action": "follow_team", "params": {}, "priority": "low", "reason": reason}
 
     def validate_against_state(self, decision: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
-        """Post-validation: override LLM follow_team when threats actually exist"""
+        """Post-validation: override impossible or dangerous LLM decisions"""
         if not decision or not state:
             return decision
 
         action = decision.get("action", "")
+        bot = state.get("bot", {})
+
+        # Bot is pinned → can only hold_position (can't help/attack/move)
+        if bot.get("pinned") and action not in ("hold_position",):
+            pin_type = bot.get("pin_type", "unknown")
+            return {"action": "hold_position", "params": {"pin_type": pin_type},
+                    "priority": "critical",
+                    "reason": f"Override: bot pinned by {pin_type}, can't {action}"}
+
+        # Bot is incap → can only hold_position
+        if bot.get("incap") and action not in ("hold_position",):
+            return {"action": "hold_position", "params": {},
+                    "priority": "critical",
+                    "reason": f"Override: bot incapacitated, can't {action}"}
 
         if action == "follow_team":
             threats = state.get("threats", [])
