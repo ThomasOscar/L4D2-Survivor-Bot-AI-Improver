@@ -114,10 +114,15 @@ class DebugServer:
                 "bot_temp_hp": bot.get("temp_hp", 0),
                 "bot_incap": bot.get("incap", False),
                 "bot_bw": bot.get("bw", False),
+                "bot_pinned": bot.get("pinned", False),
+                "bot_pin_type": bot.get("pin_type", ""),
                 "threats_visible": len([t for t in state.get("threats", []) if not t.get("ghost")]),
                 "teammates_pinned": len([m for m in state.get("teammates", []) if m.get("pinned")]),
                 "witches_visible": len(state.get("witches", [])),
                 "items_nearby": len(state.get("items", [])),
+                "common_count": state.get("common_count", 0),
+                "director_stage": state.get("director", "unknown"),
+                "player_scores": state.get("player_scores", []),
             })
         return web.json_response(result)
 
@@ -137,7 +142,10 @@ class DebugServer:
             "weapons": bot.get("weapons", {}),
             "ammo": bot.get("ammo", 0),
             "reserve": bot.get("reserve", 0),
+            "pinned": bot.get("pinned", False),
+            "pin_type": bot.get("pin_type", ""),
             "teammates": state.get("teammates", []),
+            "player_scores": state.get("player_scores", []),
             "current_action": svc.last_action.get("action") if svc.last_action else "none",
             "current_priority": svc.last_action.get("priority") if svc.last_action else "none",
             "current_reason": svc.last_action.get("reason") if svc.last_action else "",
@@ -157,6 +165,10 @@ class DebugServer:
             "threats": state.get("threats", []),
             "witches": state.get("witches", []),
             "items": state.get("items", []),
+            "common_count": state.get("common_count", 0),
+            "fire_areas": state.get("fire_areas", []),
+            "acid_areas": state.get("acid_areas", []),
+            "director": state.get("director", "unknown"),
         })
 
     async def _api_ai_view(self, request):

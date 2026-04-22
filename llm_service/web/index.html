@@ -92,6 +92,9 @@ pages.index=async()=>{
       <div class="card stat-item"><div class="value" style="color:${hpClass(d.bot_hp||0).replace('hp-','#').replace('high','4caf50').replace('mid','ff9800').replace('low','f44336')}">${d.bot_hp||0}</div><div class="label">HP</div></div>
       <div class="card stat-item"><div class="value">${d.threats_visible||0}</div><div class="label">Threats</div></div>
       <div class="card stat-item"><div class="value">${d.current_map||'?'}</div><div class="label">Map</div></div>
+      <div class="card stat-item"><div class="value" style="color:${d.director==='peak'?'#f44336':d.director==='build_up'?'#ff9800':'#4caf50'}">${d.director||'?'}</div><div class="label">Director</div></div>
+      <div class="card stat-item"><div class="value rating-${d.team_rating||'C'}">${d.team_rating||'?'}</div><div class="label">Team Rating</div></div>
+      <div class="card stat-item"><div class="value">${d.team_score||0}</div><div class="label">Team Score</div></div>
       <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">Rule Decisions</div></div>
       <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM Decisions</div></div>
       <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">Skipped</div></div>
@@ -111,6 +114,7 @@ pages.bot=async()=>{
       <div class="card stat-item"><div class="value">${d.hp||0}</div><div class="label">HP</div>${hpBar(d.hp||0)}</div>
       <div class="card stat-item"><div class="value">${d.temp_hp||0}</div><div class="label">Temp HP</div></div>
       <div class="card stat-item"><div class="value">${tag(d.current_action||'?','high')}</div><div class="label">Action</div></div>
+      <div class="card stat-item"><div class="value" style="color:${d.pinned?'#f44336':'#4caf50'}">${d.pinned?d.pin_type||'PINNED':'Free'}</div><div class="label">Pin Status</div></div>
     </div>
     <div class="card"><h3>Weapons</h3>
       <table><tr><th>Slot</th><th>Item</th><th>Ammo</th></tr>
@@ -140,6 +144,7 @@ pages.map=async()=>{
       <div class="card stat-item"><div class="value">${d.difficulty||'?'}</div><div class="label">Difficulty</div></div>
     </div>
     <div class="card"><h3>Terrain</h3><p>Narrow: ${t.narrow?'Yes':'No'} | Ledge: ${t.ledge?'Yes':'No'} | Alarm Car: ${t.alarm_car?'Yes':'No'} | Finale: ${t.finale?'Yes':'No'}</p></div>
+    <div class="card"><h3>Environment</h3><p>Common Infected: <strong>${d.common_count||0}</strong> | Fire Areas: ${d.fire_areas?.length||0} | Acid Areas: ${d.acid_areas?.length||0}</p></div>
     <div class="card"><h3>Threats</h3>${thHtml?`<table><tr><th>Type</th><th>HP</th><th>Dist</th><th>Status</th></tr>${thHtml}</table>`:'<p style="color:#666">No threats visible</p>'}</div>
     <div class="card"><h3>Witches</h3>${wHtml?`<table><tr><th>Type</th><th>HP</th><th>Dist</th><th>Status</th></tr>${wHtml}</table>`:'<p style="color:#666">No witches</p>'}</div>
     <div class="card"><h3>Nearby Items</h3>${iHtml?`<table><tr><th>Item</th><th>Dist</th></tr>${iHtml}</table>`:'<p style="color:#666">No items nearby</p>'}</div>
