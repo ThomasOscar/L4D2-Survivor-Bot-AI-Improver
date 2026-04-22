@@ -10,7 +10,7 @@
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Microsoft YaHei','PingFang SC',sans-serif;background:#0f0f0f;color:#e0e0e0;min-height:100vh}
 nav{background:#1a1a2e;padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #333;flex-wrap:wrap}
 nav .logo{color:#4fc3f7;font-weight:700;font-size:16px}
-nav a{color:#aaa;text-decoration:none;font-size:13px;padding:4px 8px;border-radius:4px;transition:all .2s}
+nav a{color:#aaa;text-decoration:none;font-size:13px;padding:4px 8px;border-radius:4px;transition:all .2s;cursor:pointer}
 nav a:hover,nav a.active{color:#fff;background:#333}
 .container{max-width:1200px;margin:0 auto;padding:12px}
 h2{color:#4fc3f7;margin-bottom:10px;font-size:18px}
@@ -51,26 +51,29 @@ button:hover{background:#81d4fa}
 .legend{display:flex;gap:10px;padding:4px 0;font-size:11px;flex-wrap:wrap}
 .legend span{display:flex;align-items:center;gap:3px}
 .ld{width:8px;height:8px;border-radius:50%;display:inline-block}
+.tab-bar{display:flex;gap:4px;margin-bottom:8px}
+.tab-bar button{background:#1a1a2e;color:#aaa;border:1px solid #333;padding:4px 12px;font-size:12px;border-radius:4px 4px 0 0}
+.tab-bar button.active{background:#4fc3f7;color:#000;border-color:#4fc3f7}
 </style>
 </head>
 <body>
 <nav>
   <div class="logo">L4D2 LLM</div>
-  <a href="#" onclick="showPage('index')" class="active" data-page="index">仪表盘</a>
-  <a href="#" onclick="showPage('bot')" data-page="bot">机器人</a>
-  <a href="#" onclick="showPage('map')" data-page="map">地图</a>
-  <a href="#" onclick="showPage('sandbox')" data-page="sandbox">沙盘</a>
-  <a href="#" onclick="showPage('ai_view')" data-page="ai_view">AI视角</a>
-  <a href="#" onclick="showPage('config')" data-page="config">配置</a>
-  <a href="#" onclick="showPage('history')" data-page="history">历史</a>
-  <a href="#" onclick="showPage('stats')" data-page="stats">统计</a>
-  <a href="#" onclick="showPage('scores')" data-page="scores">评分</a>
-  <a href="#" onclick="showPage('experience')" data-page="experience">经验</a>
+  <a onclick="showPage('index')" class="active" data-page="index">仪表盘</a>
+  <a onclick="showPage('bot')" data-page="bot">机器人+AI</a>
+  <a onclick="showPage('sandbox')" data-page="sandbox">沙盘</a>
+  <a onclick="showPage('map')" data-page="map">地图</a>
+  <a onclick="showPage('config')" data-page="config">配置</a>
+  <a onclick="showPage('history')" data-page="history">历史</a>
+  <a onclick="showPage('stats')" data-page="stats">统计</a>
+  <a onclick="showPage('scores')" data-page="scores">评分</a>
+  <a onclick="showPage('experience')" data-page="experience">经验</a>
 </nav>
 <div class="container" id="page-content"></div>
 
 <script>
 const API='';let refreshTimer=null;const pages={};
+let renderer3d=null,animId=null; // 3D renderer management
 
 // ====== 翻译字典 ======
 const T={
@@ -87,16 +90,13 @@ const T={
     gascan:'汽油桶',propanetank:'丙烷罐',oxygentank:'氧气罐',fireworkcrate:'烟花箱',
     ammo_stock:'弹药堆',none:'无','':'无'
   },
-  action:{
-    follow_team:'跟随队伍',attack_si:'攻击特感',attack_tank:'集火Tank',attack_witch:'攻击女巫',
+  action:{follow_team:'跟随队伍',attack_si:'攻击特感',attack_tank:'集火Tank',attack_witch:'攻击女巫',
     help_teammate:'救助队友',heal_teammate:'治疗队友',evade_threat:'躲避威胁',
     hold_position:'原地防守',throw_grenade:'投掷手雷',pick_up_item:'拾取物品',
-    give_item:'给队友物品',cover_fire:'掩护射击',use_defib:'使用除颤器'
-  },
+    give_item:'给队友物品',cover_fire:'掩护射击',use_defib:'使用除颤器'},
   si:{smoker:'烟鬼',hunter:'猎人',jockey:'骑乘者',charger:'冲锋者',spitter:'喷吐者',boomer:'呕吐者',tank:'坦克',witch:'女巫'},
   pin:{smoker:'烟鬼拉扯',hunter:'猎人扑倒',jockey:'骑乘者骑乘',charger:'冲锋者冲撞'},
-  map:{
-    c1m1_hotel:'死亡中心-旅馆',c1m2_streets:'死亡中心-街道',c1m3_mall:'死亡中心-商场',c1m4_atrium:'死亡中心-中庭',
+  map:{c1m1_hotel:'死亡中心-旅馆',c1m2_streets:'死亡中心-街道',c1m3_mall:'死亡中心-商场',c1m4_atrium:'死亡中心-中庭',
     c2m1_highway:'黑色狂欢节-公路',c2m2_fairgrounds:'黑色狂欢节-游乐场',c2m3_coaster:'黑色狂欢节-过山车',c2m4_barns:'黑色狂欢节-谷仓',c2m5_concert:'黑色狂欢节-演唱会',
     c3m1_plankcountry:'沼泽激战-木屋',c3m2_swamp:'沼泽激战-沼泽',c3m3_shantytown:'沼泽激战-棚户区',c3m4_plantation:'沼泽激战-种植园',
     c4m1_milltown_a:'血腥收获-小镇',c4m2_sugarmill_a:'血腥收获-糖厂',c4m3_sugarmill_b:'血腥收获-磨坊',c4m4_milltown_b:'血腥收获-工厂',c4m5_milltown_escape:'血腥收获-撤离',
@@ -105,18 +105,13 @@ const T={
     c7m1_docks:'牺牲-码头',c7m2_barge:'牺牲-驳船',c7m3_port:'牺牲-港口',
     c8m1_apartment:'毫不留情-公寓',c8m2_subway:'毫不留情-地铁',c8m3_sewers:'毫不留情-下水道',c8m4_interior:'毫不留情-医院',c8m5_rooftop:'毫不留情-天台',
     c9m1_alleys:'坠机险途-小巷',c9m2_lots:'坠机险途-工地',
-    c13m1_alpinecreek:'临死一博-溪谷',c13m2_southpinestream:'临死一博-溪流',c13m3_muxymill:'临死一博-磨坊',c13m4_cutthecreek:'临死一博-截流'
-  },
+    c13m1_alpinecreek:'临死一博-溪谷',c13m2_southpinestream:'临死一博-溪流',c13m3_muxymill:'临死一博-磨坊',c13m4_cutthecreek:'临死一博-截流'},
   diff:{Easy:'简单',Normal:'普通',Hard:'困难',Impossible:'专家'},
   mode:{coop:'合作',versus:'对抗',survival:'生存',realism:'写实',scavenge:'搜刮',
     mutation1:'出血不止',mutation2:'坦克大战',mutation3:'限定油桶',mutation4:'绝境求生',
-    mutation5:'碎尸盛宴',mutation6:'油桶赛跑',mutation7:'侏儒接力',mutation8:'铁人三项',
-    mutation9:'最后生还者',mutation10:'无人生还',mutation11:'单人副本',mutation12:'一人一桶',
-    mutation13:'仅限一人',mutation15:'对抗生存'},
+    mutation5:'碎尸盛宴',mutation9:'最后生还者',mutation11:'单人副本',mutation13:'仅限一人',mutation15:'对抗生存'},
   director:{relax:'休整',build:'蓄势',peak:'高峰',sustain:'持续'}
 };
-
-function tr(d,k){return d[k]||k}
 function trChar(n){return T.char[n]||n}
 function trWeapon(w){if(!w||w==='none')return'无';return T.weapon[w.replace('weapon_','')]||w.replace('weapon_','')}
 function trAction(a){return T.action[a]||a}
@@ -125,32 +120,35 @@ function trPin(t){return T.pin[t]||t||''}
 function trMap(m){return T.map[m]||m}
 function trDiff(d){return T.diff[d]||d}
 function trMode(m){return T.mode[m]||m}
-function trDirector(d){return T.director[d]||d}
+function trDir(d){return T.director[d]||d}
 
 function showPage(name){
+  // 销毁旧的3D renderer防止WebGL上下文泄漏
+  destroy3D();
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===name));
   const el=document.getElementById('page-content');el.style.display='block';
   if(refreshTimer)clearInterval(refreshTimer);
   if(pages[name])pages[name]();
   refreshTimer=setInterval(()=>{if(pages[name])pages[name]()},3000);
 }
+function destroy3D(){
+  if(animId){cancelAnimationFrame(animId);animId=null}
+  if(renderer3d){renderer3d.dispose();renderer3d.domElement=null;renderer3d=null}
+}
 async function api(path){const r=await fetch(API+path);return r.json()}
 function hpClass(hp){return hp>60?'hp-high':hp>30?'hp-mid':'hp-low'}
 function hpBar(hp,max=100){return`<div class="hp-bar"><div class="fill ${hpClass(hp)}" style="width:${Math.min(hp/max*100,100)}%"></div></div>`}
 function tag(t,c){return`<span class="tag tag-${c}">${t}</span>`}
 function distColor(d){return d<300?'#f44336':d<800?'#ff9800':'#4caf50'}
-function statusLabel(m){return m.pinned?'被控':m.incap?'倒地':'正常'}
-function statusClass(m){return m.pinned?'critical':m.incap?'high':'low'}
-function srcLabel(s){return s==='rule'?'规则':s==='llm'?'LLM':s==='fallback'?'回退':s==='skipped'?'跳过':s}
-function ghostL(g){return g?'幽灵':'实体'}
-function angryL(a){return a?'暴怒':'平静'}
-function outcomeL(o){return o==='survived'?'存活':o==='team_wipe'?'团灭':o==='escaped'?'逃脱':o}
+function statusL(m){return m.pinned?'被控':m.incap?'倒地':'正常'}
+function statusC(m){return m.pinned?'critical':m.incap?'high':'low'}
+function srcL(s){return s==='rule'?'规则':s==='llm'?'LLM':s==='fallback'?'回退':s==='skipped'?'跳过':s}
 function hpVC(v){return v>60?'ok':v>30?'warn':'danger'}
 
 // ====== 仪表盘 ======
 pages.index=async()=>{
   const[d,s,h]=[await api('/api/status'),await api('/api/stats'),await api('/api/history?count=5')];
-  const hh=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(srcLabel(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),'high')}</td><td style="color:#888;font-size:10px">${e.decision.reason?.slice(0,50)||''}</td></tr>`).join('');
+  const hh=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(srcL(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),'high')}</td><td style="color:#888;font-size:10px">${e.decision.reason?.slice(0,50)||''}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
     <h2>仪表盘 <button class="refresh-btn" onclick="pages.index()">刷新</button></h2>
     <div class="stat-grid">
@@ -166,497 +164,175 @@ pages.index=async()=>{
     <div class="card"><h3>最近决策</h3><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th></tr>${hh}</table></div>`;
 };
 
-// ====== 机器人 ======
+// ====== 机器人 + AI视角 (合并页) ======
 pages.bot=async()=>{
-  const d=await api('/api/bot');
-  const mH=(d.teammates||[]).map(m=>`<tr><td>${trChar(m.name)}</td><td>${m.hp}${hpBar(m.hp)}</td><td>${tag(statusLabel(m),statusClass(m))}${m.pinned&&m.pin_type?'('+trPin(m.pin_type)+')':''}</td><td style="color:${distColor(m.dist)}">${m.dist?.toFixed(0)||'?'}</td><td>${trWeapon(m.weapon)}</td></tr>`).join('');
+  const[bd,ad]=[await api('/api/bot'),await api('/api/ai-view')];
+  const d=bd,state=ad.raw_state||{},decision=ad.last_decision||{},bot=state.bot||{};
+  const mH=(d.teammates||[]).map(m=>`<tr><td>${trChar(m.name)}</td><td>${m.hp}${hpBar(m.hp)}</td><td>${tag(statusL(m),statusC(m))}${m.pinned&&m.pin_type?'('+trPin(m.pin_type)+')':''}</td><td style="color:${distColor(m.dist)}">${m.dist?.toFixed(0)||'?'}</td><td>${trWeapon(m.weapon)}</td></tr>`).join('');
+  const t=state.terrain||{};
   document.getElementById('page-content').innerHTML=`
-    <h2>机器人信息</h2>
+    <h2>机器人 + AI视角 <button class="refresh-btn" onclick="pages.bot()">刷新</button></h2>
     <div class="stat-grid">
       <div class="card stat-item"><div class="value">${trChar(d.name||'?')}</div><div class="label">名称</div></div>
-      <div class="card stat-item"><div class="value">${d.hp||0}</div><div class="label">生命值</div>${hpBar(d.hp||0)}</div>
-      <div class="card stat-item"><div class="value">${d.temp_hp||0}</div><div class="label">临时生命</div></div>
-      <div class="card stat-item"><div class="value">${tag(trAction(d.current_action||'?'),d.pinned?'critical':d.incap?'high':'medium')}</div><div class="label">当前动作</div></div>
+      <div class="card stat-item"><div class="value">${d.hp||0}</div><div class="label">HP</div>${hpBar(d.hp||0)}</div>
+      <div class="card stat-item"><div class="value">${d.temp_hp||0}</div><div class="label">临时HP</div></div>
+      <div class="card stat-item"><div class="value">${tag(trAction(d.current_action||'?'),d.pinned?'critical':d.incap?'high':'medium')}</div><div class="label">动作</div></div>
     </div>
-    ${d.pinned?`<div class="card" style="border-color:#f44336"><h3 style="color:#f44336">被控状态</h3><p>被 <strong>${trPin(d.pin_type)||'未知'}</strong> 控制</p></div>`:''}
-    <div class="card"><h3>武器装备</h3>
-      <table><tr><th>槽位</th><th>物品</th><th>弹药</th></tr>
-        <tr><td>主武器</td><td>${trWeapon(d.weapons?.primary)}</td><td>${d.ammo||0}+${d.reserve||0}</td></tr>
-        <tr><td>副武器</td><td>${trWeapon(d.weapons?.secondary)}</td><td>-</td></tr>
-        <tr><td>投掷物</td><td>${trWeapon(d.weapons?.grenade)}</td><td>-</td></tr>
-        <tr><td>医疗品</td><td>${trWeapon(d.weapons?.health)}</td><td>-</td></tr>
-        <tr><td>止痛药</td><td>${trWeapon(d.weapons?.pills)}</td><td>-</td></tr>
-      </table>
+    ${d.pinned?`<div class="card" style="border-color:#f44336"><h3 style="color:#f44336">被控</h3><p>被 <strong>${trPin(d.pin_type)||'未知'}</strong> 控制</p></div>`:''}
+    <div class="two-col">
+      <div class="card"><h3>武器装备</h3>
+        <table><tr><th>槽位</th><th>物品</th><th>弹药</th></tr>
+          <tr><td>主武器</td><td>${trWeapon(d.weapons?.primary)}</td><td>${d.ammo||0}+${d.reserve||0}</td></tr>
+          <tr><td>副武器</td><td>${trWeapon(d.weapons?.secondary)}</td><td>-</td></tr>
+          <tr><td>投掷物</td><td>${trWeapon(d.weapons?.grenade)}</td><td>-</td></tr>
+          <tr><td>医疗品</td><td>${trWeapon(d.weapons?.health)}</td><td>-</td></tr>
+          <tr><td>止痛药</td><td>${trWeapon(d.weapons?.pills)}</td><td>-</td></tr>
+        </table>
+      </div>
+      <div class="card"><h3>当前决策</h3>
+        <div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div>
+        <div class="row"><span class="k">目标</span><span class="v">${decision.target||'-'}</span></div>
+        <div class="row"><span class="k">优先级</span><span class="v">${decision.priority||'-'}</span></div>
+        <div class="row"><span class="k">来源</span><span class="v">${srcL(ad.decision_source||'')}</span></div>
+        <div class="row"><span class="k">原因</span><span class="v" style="font-size:11px;line-height:1.3">${decision.reason||'-'}</span></div>
+      </div>
     </div>
     <div class="card"><h3>队友</h3><table><tr><th>名称</th><th>HP</th><th>状态</th><th>距离</th><th>武器</th></tr>${mH}</table></div>
-    <div class="card"><h3>当前决策</h3><p><strong>${trAction(d.current_action||'无')}</strong> ${d.current_priority?'('+d.current_priority+')':''} — ${d.current_reason||''}</p></div>
-    <div class="card" style="border-color:#555"><h3 style="color:#888">多机器人控制</h3><p style="color:#666;font-size:12px">当前仅支持单机器人控制（由 SourceMod 插件决定控制哪位 Bot）。如需切换控制对象或同时控制全部 Bot，需在 SourceMod 插件端实现多 Bot 轮询或广播机制，属于下一阶段开发内容。</p></div>`;
+    <div class="two-col">
+      <div class="card"><h3>AI感知 — 环境</h3>
+        <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')} ${trMode(state.mode||'')}</span></div>
+        <div class="row"><span class="k">难度/导演</span><span class="v">${trDiff(state.difficulty||'')} / ${trDir(state.director||'')}</span></div>
+        <div class="row"><span class="k">地形</span><span class="v">窄:${t.narrow?'是':'否'} 崖:${t.ledge?'是':'否'} 车:${t.alarm_car?'是':'否'} 事件:${t.crescendo?'是':'否'} 终局:${t.finale?'是':'否'}</span></div>
+        <div class="row"><span class="k">普通尸</span><span class="v">${state.common_count||0}</span></div>
+        <div class="row"><span class="k">火/酸区</span><span class="v">${(state.fire_areas||[]).length}/${(state.acid_areas||[]).length}</span></div>
+        <div class="row"><span class="k">友伤</span><span class="v">${state.server?.ff?'是':'否'}</span></div>
+      </div>
+      <div class="card"><h3>AI感知 — 威胁/物品</h3>
+        ${(state.threats||[]).map(t2=>`<div class="row"><span class="k">${trSI(t2.type)}</span><span class="v danger">${t2.hp}HP d=${t2.dist?.toFixed(0)||'?'} ${t2.ghost?'幽灵':'实体'}</span></div>`).join('')}
+        ${(state.witches||[]).map(w=>`<div class="row"><span class="k">女巫</span><span class="v ${w.angry?'danger':'warn'}">${w.angry?'暴怒':'平静'} d=${w.dist?.toFixed(0)||'?'}</span></div>`).join('')}
+        ${!(state.threats||[]).length&&!state.witches?.length?'<div class="row"><span class="k">威胁</span><span class="v ok">无</span></div>':''}
+        ${(state.items||[]).slice(0,6).map(i=>`<div class="row"><span class="k">${trWeapon(i.name)}</span><span class="v" style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}u</span></div>`).join('')}
+      </div>
+    </div>
+    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">用户提示词（发给LLM的当前局势）</h3><div><pre>${(ad.user_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
+    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">LLM原始决策</h3><div><pre>${JSON.stringify(decision,null,2)}</pre></div></div>
+    <div class="card" style="border-color:#555"><h3 style="color:#888">多Bot控制</h3><p style="color:#666;font-size:11px">游戏内控制台: sm_llm_switch 列出Bot, sm_llm_switch Nick 切换, sm_llm_control_all 全员</p></div>`;
 };
 
 // ====== 地图 ======
 pages.map=async()=>{
   const d=await api('/api/map');
-  const thH=(d.threats||[]).map(t=>`<tr><td>${trSI(t.type)}</td><td>${t.hp}</td><td style="color:${distColor(t.dist)}">${t.dist?.toFixed(0)||'?'}</td><td>${ghostL(t.ghost)}</td></tr>`).join('');
-  const wH=(d.witches||[]).map(w=>`<tr><td>女巫</td><td>${w.hp}</td><td style="color:${distColor(w.dist)}">${w.dist?.toFixed(0)||'?'}</td><td>${angryL(w.angry)}</td></tr>`).join('');
+  const thH=(d.threats||[]).map(t=>`<tr><td>${trSI(t.type)}</td><td>${t.hp}</td><td style="color:${distColor(t.dist)}">${t.dist?.toFixed(0)||'?'}</td><td>${t.ghost?'幽灵':'实体'}</td></tr>`).join('');
+  const wH=(d.witches||[]).map(w=>`<tr><td>女巫</td><td>${w.hp}</td><td style="color:${distColor(w.dist)}">${w.dist?.toFixed(0)||'?'}</td><td>${w.angry?'暴怒':'平静'}</td></tr>`).join('');
   const iH=(d.items||[]).map(i=>`<tr><td>${trWeapon(i.name)}</td><td style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}</td></tr>`).join('');
   const t=d.terrain||{};
   document.getElementById('page-content').innerHTML=`
-    <h2>地图信息</h2>
+    <h2>地图信息 <button class="refresh-btn" onclick="pages.map()">刷新</button></h2>
     <div class="stat-grid">
       <div class="card stat-item"><div class="value" style="font-size:14px">${trMap(d.map||'?')}</div><div class="label">地图</div></div>
       <div class="card stat-item"><div class="value" style="font-size:14px">${trMode(d.mode||'?')}</div><div class="label">模式</div></div>
       <div class="card stat-item"><div class="value">${trDiff(d.difficulty||'?')}</div><div class="label">难度</div></div>
-      <div class="card stat-item"><div class="value">${trDirector(d.director||'?')}</div><div class="label">导演</div></div>
+      <div class="card stat-item"><div class="value">${trDir(d.director||'?')}</div><div class="label">导演</div></div>
     </div>
     <div class="card"><h3>地形</h3><p>狭窄:${t.narrow?'是':'否'} 悬崖:${t.ledge?'是':'否'} 警报车:${t.alarm_car?'是':'否'} 事件:${t.crescendo?'是':'否'} 终局:${t.finale?'是':'否'}</p></div>
     <div class="two-col">
       <div class="card"><h3>威胁${(d.threats||[]).length?' ('+(d.threats||[]).length+')':''}</h3>${thH?`<table><tr><th>类型</th><th>HP</th><th>距离</th><th>状态</th></tr>${thH}</table>`:'<p style="color:#555">无可见威胁</p>'}</div>
-      <div class="card"><h3>女巫${(d.witches||[]).length?' ('+(d.witches||[]).length+')':''}</h3>${wH?`<table><tr><th>HP</th><th>距离</th><th>状态</th></tr>${wH}</table>`:'<p style="color:#555">无</p>'}</div>
+      <div class="card"><h3>女巫</h3>${wH?`<table><tr><th>HP</th><th>距离</th><th>状态</th></tr>${wH}</table>`:'<p style="color:#555">无</p>'}</div>
     </div>
-    <div class="card"><h3>附近物品 (${(d.items||[]).length})</h3>${iH?`<table><tr><th>物品</th><th>距离</th></tr>${iH}</table>`:'<p style="color:#555">无</p>'}</div>`;
+    <div class="card"><h3>物品 (${(d.items||[]).length})</h3>${iH?`<table><tr><th>物品</th><th>距离</th></tr>${iH}</table>`:'<p style="color:#555">无</p>'}</div>`;
 };
 
-// ====== 2D/3D 战术沙盘 ======
-let scene3d=null,renderer3d=null,camera3d=null,animId=null;
-let sandboxMode='2d'; // '2d' or '3d'
+// ====== 沙盘 (2D/3D切换) ======
+let sandboxMode='2d';
 pages.sandbox=async()=>{
   const d=await api('/api/ai-view');
   const state=d.raw_state||{},decision=d.last_decision||{},bot=state.bot||{};
+  const modeBtn=`<button onclick="sandboxMode=sandboxMode==='2d'?'3d':'2d';pages.sandbox()" style="margin-left:8px;font-size:11px;padding:3px 10px">${sandboxMode==='2d'?'切换3D':'切换2D'}</button>`;
 
-  const modeBtn=sandboxMode==='2d'?
-    '<button onclick="sandboxMode=\'3d\';pages.sandbox()" style="margin-left:8px;font-size:11px;padding:3px 10px">切换3D</button>':
-    '<button onclick="sandboxMode=\'2d\';pages.sandbox()" style="margin-left:8px;font-size:11px;padding:3px 10px">切换2D</button>';
-
-  const spectateInfo=`
-    <div class="card" style="border-color:#4fc3f7">
-      <h3 style="color:#4fc3f7">游戏内观战（推荐 — 效果远优于网页沙盘）</h3>
-      <p style="font-size:12px;line-height:1.6">
-        网页沙盘仅为数据概览，<strong>游戏内观战可看到完整战场</strong>。<br>
-        <strong>1. 连接服务器：</strong>在 L4D2 开发者控制台(~)输入 <code>connect 服务器IP:27017</code><br>
-        <strong>2. 进入观战：</strong>连接后按 <code>M</code> 切换到感染者队伍即可自由观战，或按 <code>E</code> 跟随特定Bot视角<br>
-        <strong>3. 切换Bot控制：</strong>控制台输入 <code>sm_llm_switch</code> 列出可用Bot，<code>sm_llm_switch Nick</code> 切换到指定Bot<br>
-        <strong>4. 全员控制：</strong><code>sm_llm_control_all</code> 开关LLM控制所有Bot
-      </p>
-    </div>`;
+  const spectateInfo=`<div class="card" style="border-color:#4fc3f7"><h3 style="color:#4fc3f7">游戏内观战（效果远优于网页沙盘）</h3><p style="font-size:11px;line-height:1.5">L4D2控制台: <code>connect 服务器IP:27017</code> → M键切换观战队伍 → E键跟随Bot视角 | <code>sm_llm_switch Nick</code> 切换Bot | <code>sm_llm_control_all</code> 全员控制</p></div>`;
 
   if(sandboxMode==='2d'){
-    document.getElementById('page-content').innerHTML=`
-      <h2>2D 战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>
-      ${spectateInfo}
-      <div class="card" style="padding:0;overflow:hidden">
-        <div class="sandbox-wrap" style="aspect-ratio:16/9"><canvas id="sandbox2d-canvas"></canvas></div>
-        <div class="legend" style="padding:6px 10px">
-          <span><span class="ld" style="background:#4fc3f7"></span>Bot</span>
-          <span><span class="ld" style="background:#4caf50"></span>队友</span>
-          <span><span class="ld" style="background:#f44336"></span>特感</span>
-          <span><span class="ld" style="background:#9c27b0"></span>女巫</span>
-          <span><span class="ld" style="background:#666"></span>普通尸</span>
-          <span><span class="ld" style="background:#ff9800"></span>物品</span>
-          <span><span class="ld" style="background:#ff5722"></span>火焰</span>
-          <span><span class="ld" style="background:#8bc34a"></span>酸液</span>
-          <span><span class="ld" style="background:#ffd700"></span>决策</span>
-        </div>
-      </div>`;
+    document.getElementById('page-content').innerHTML=`<h2>2D 沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>${spectateInfo}<div class="card" style="padding:0;overflow:hidden"><div class="sandbox-wrap"><canvas id="sandbox2d"></canvas></div><div class="legend" style="padding:6px 10px"><span><span class="ld" style="background:#4fc3f7"></span>Bot</span><span><span class="ld" style="background:#4caf50"></span>队友</span><span><span class="ld" style="background:#f44336"></span>特感</span><span><span class="ld" style="background:#9c27b0"></span>女巫</span><span><span class="ld" style="background:#666"></span>尸</span><span><span class="ld" style="background:#ff9800"></span>物品</span><span><span class="ld" style="background:#ffd700"></span>决策</span></div></div>`;
     draw2D(state,decision);
   } else {
-    document.getElementById('page-content').innerHTML=`
-      <h2>3D 战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>
-      ${spectateInfo}
-      <div class="card" style="padding:0;overflow:hidden">
-        <div id="sandbox3d"></div>
-        <div class="legend" style="padding:6px 10px">
-          <span><span class="ld" style="background:#4fc3f7"></span>Bot</span>
-          <span><span class="ld" style="background:#4caf50"></span>队友</span>
-          <span><span class="ld" style="background:#f44336"></span>特感</span>
-          <span><span class="ld" style="background:#9c27b0"></span>女巫</span>
-          <span><span class="ld" style="background:#666"></span>普通尸</span>
-          <span><span class="ld" style="background:#2196f3"></span>枪械</span>
-          <span><span class="ld" style="background:#4caf50"></span>医疗</span>
-          <span><span class="ld" style="background:#ff9800"></span>投掷</span>
-          <span><span class="ld" style="background:#ffd700"></span>决策</span>
-          拖拽旋转 | 滚轮缩放
-        </div>
-      </div>`;
+    document.getElementById('page-content').innerHTML=`<h2>3D 沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>${spectateInfo}<div class="card" style="padding:0;overflow:hidden"><div id="sandbox3d"></div><div class="legend" style="padding:6px 10px"><span><span class="ld" style="background:#4fc3f7"></span>Bot</span><span><span class="ld" style="background:#4caf50"></span>队友</span><span><span class="ld" style="background:#f44336"></span>特感</span><span><span class="ld" style="background:#9c27b0"></span>女巫</span><span><span class="ld" style="background:#2196f3"></span>枪</span><span><span class="ld" style="background:#4caf50"></span>医</span><span><span class="ld" style="background:#ff9800"></span>投</span><span><span class="ld" style="background:#ffd700"></span>决策</span> 拖拽旋转|滚轮缩放</div></div>`;
     build3D(state,decision);
   }
-
-  // Common data panel below the map
-  document.getElementById('page-content').innerHTML+=`
-    <div class="two-col">
-      <div class="card"><h3>Bot</h3>
-        <div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div>
-        <div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div>
-        <div class="row"><span class="k">武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div>
-        <div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
-      </div>
-      <div class="card"><h3>战场</h3>
-        <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')}</span></div>
-        <div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')}/${trDiff(state.difficulty||'')}</span></div>
-        <div class="row"><span class="k">导演</span><span class="v">${trDirector(state.director||'')}</span></div>
-        <div class="row"><span class="k">特感/普通尸</span><span class="v">${(state.threats||[]).length}/${state.common_count||0}</span></div>
-      </div>
-    </div>
-    <div class="card"><h3>当前决策</h3>
-      <div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div>
-      <div class="row"><span class="k">目标/来源</span><span class="v">${decision.target||'-'} / ${srcLabel(d.decision_source||'')}</span></div>
-      <div class="row"><span class="k">原因</span><span class="v" style="font-size:11px">${decision.reason||'-'}</span></div>
-    </div>`;
+  document.getElementById('page-content').innerHTML+=`<div class="two-col"><div class="card"><h3>Bot</h3><div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div><div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div><div class="row"><span class="k">武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div><div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div></div><div class="card"><h3>战场</h3><div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')}</span></div><div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')}/${trDiff(state.difficulty||'')}</span></div><div class="row"><span class="k">导演</span><span class="v">${trDir(state.director||'')}</span></div><div class="row"><span class="k">特感/尸</span><span class="v">${(state.threats||[]).length}/${state.common_count||0}</span></div></div></div><div class="card"><h3>决策</h3><div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div><div class="row"><span class="k">目标/来源</span><span class="v">${decision.target||'-'} / ${srcL(d.decision_source||'')}</span></div><div class="row"><span class="k">原因</span><span class="v" style="font-size:11px">${decision.reason||'-'}</span></div></div>`;
 };
 
 function draw2D(state,decision){
-  const canvas=document.getElementById('sandbox2d-canvas');
+  const canvas=document.getElementById('sandbox2d');
   if(!canvas)return;
   const rect=canvas.parentElement.getBoundingClientRect();
   canvas.width=rect.width*2;canvas.height=rect.height*2;
   const ctx=canvas.getContext('2d');ctx.scale(2,2);
   const W=rect.width,H=rect.height,cx=W/2,cy=H/2;
-  const scale=Math.min(W,H)/2200;
-
+  const sc=Math.min(W,H)/2200;
   ctx.fillStyle='#0a0a0f';ctx.fillRect(0,0,W,H);
-  // Grid
   ctx.strokeStyle='#151525';ctx.lineWidth=0.5;
   for(let x=0;x<W;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
   for(let y=0;y<H;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
-
-  // Distance rings
-  [300,800,1500].forEach(r=>{
-    ctx.beginPath();ctx.arc(cx,cy,r*scale,0,Math.PI*2);
-    ctx.strokeStyle=r===300?'#f4433660':r===800?'#ff980060':'#4caf5040';
-    ctx.lineWidth=1.5;ctx.setLineDash([6,4]);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle=r===300?'#f44336':r===800?'#ff9800':'#4caf50';
-    ctx.font='10px sans-serif';ctx.fillText(r+'u',cx+r*scale+4,cy-2);
-  });
-
-  const bot=state.bot||{},yaw=((bot.angles||[])[0]||0)*Math.PI/180;
-  const terrain=state.terrain||{};
-
-  // Terrain
-  if(terrain.narrow){ctx.fillStyle='#ff980015';ctx.fillRect(cx-100*scale,cy-100*scale,200*scale,200*scale);ctx.fillStyle='#ff9800';ctx.font='11px sans-serif';ctx.fillText('狭窄',cx-8,cy-110*scale)}
-  if(terrain.ledge){ctx.fillStyle='#f4433615';ctx.fillRect(cx+50*scale,cy-80*scale,100*scale,160*scale);ctx.fillStyle='#f44336';ctx.font='11px sans-serif';ctx.fillText('悬崖',cx+60*scale,cy-90*scale)}
+  [300,800,1500].forEach(r=>{ctx.beginPath();ctx.arc(cx,cy,r*sc,0,Math.PI*2);ctx.strokeStyle=r===300?'#f4433660':r===800?'#ff980060':'#4caf5040';ctx.lineWidth=1.5;ctx.setLineDash([6,4]);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=r===300?'#f44336':r===800?'#ff9800':'#4caf50';ctx.font='10px sans-serif';ctx.fillText(r+'u',cx+r*sc+4,cy-2)});
+  const bot=state.bot||{},yaw=((bot.angles||[])[0]||0)*Math.PI/180,terrain=state.terrain||{};
+  if(terrain.narrow){ctx.fillStyle='#ff980015';ctx.fillRect(cx-100*sc,cy-100*sc,200*sc,200*sc);ctx.fillStyle='#ff9800';ctx.font='11px sans-serif';ctx.fillText('狭窄',cx-8,cy-110*sc)}
+  if(terrain.ledge){ctx.fillStyle='#f4433615';ctx.fillRect(cx+50*sc,cy-80*sc,100*sc,160*sc);ctx.fillStyle='#f44336';ctx.font='11px sans-serif';ctx.fillText('悬崖',cx+60*sc,cy-90*sc)}
   if(terrain.finale){ctx.fillStyle='#9c27b020';ctx.fillRect(0,0,W,H);ctx.fillStyle='#9c27b0';ctx.font='14px sans-serif';ctx.fillText('终局',8,20)}
   if(terrain.crescendo){ctx.fillStyle='#ff572220';ctx.fillRect(0,0,W,H);ctx.fillStyle='#ff5722';ctx.font='14px sans-serif';ctx.fillText('事件',8,38)}
-
-  // Fire/acid areas
-  (state.fire_areas||[]).forEach(f=>{ctx.beginPath();ctx.arc(cx+(f.dist||0)*scale*Math.cos(1),cy+(f.dist||0)*scale*Math.sin(1),20*scale,0,Math.PI*2);ctx.fillStyle='#ff572240';ctx.fill();ctx.strokeStyle='#ff5722';ctx.lineWidth=1;ctx.stroke();ctx.fillStyle='#ff5722';ctx.font='10px sans-serif';ctx.fillText('🔥',cx+(f.dist||0)*scale*Math.cos(1)-5,cy+(f.dist||0)*scale*Math.sin(1)+4)});
-  (state.acid_areas||[]).forEach(a=>{ctx.beginPath();ctx.arc(cx+(a.dist||0)*scale*Math.cos(2),cy+(a.dist||0)*scale*Math.sin(2),18*scale,0,Math.PI*2);ctx.fillStyle='#8bc34a30';ctx.fill();ctx.strokeStyle='#8bc34a';ctx.lineWidth=1;ctx.stroke()});
-
-  // Items (small dots)
-  (state.items||[]).forEach((item,i)=>{
-    const a=(i+0.5)*Math.PI*2/Math.max((state.items||[]).length,1);
-    const d=item.dist||100;
-    const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
-    if(x<0||x>W||y<0||y>H)return;
-    const n=item.name||'';
-    const cat=n.includes('rifle')||n.includes('shotgun')||n.includes('sniper')||n.includes('smg')||n.includes('pistol')||n.includes('melee')?'#2196f3':
-             n.includes('first_aid')||n.includes('pills')||n.includes('adrenaline')?'#4caf50':
-             n.includes('molotov')||n.includes('pipe')||n.includes('vomit')?'#ff9800':'#888';
-    ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=cat;ctx.fill();
-  });
-
-  // Common infected
-  const cc=state.common_count||0;
-  for(let i=0;i<Math.min(cc,20);i++){
-    const a=Math.random()*Math.PI*2,d=80+Math.random()*500*scale;
-    ctx.beginPath();ctx.arc(cx+Math.cos(a)*d,cy+Math.sin(a)*d,2,0,Math.PI*2);ctx.fillStyle='#555';ctx.fill();
-  }
-
-  // SI (triangles)
-  (state.threats||[]).forEach((t,i)=>{
-    const a=(i+1)*Math.PI*2/Math.max((state.threats||[]).length,1)+0.5;
-    const d=t.dist||200;const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
-    ctx.beginPath();ctx.moveTo(x,y-8);ctx.lineTo(x-6,y+5);ctx.lineTo(x+6,y+5);ctx.closePath();
-    ctx.fillStyle=t.ghost?'#f4433650':'#f44336';ctx.fill();
-    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
-    ctx.fillText(trSI(t.type),x,y+16);ctx.textAlign='left';
-  });
-
-  // Witches
-  (state.witches||[]).forEach((w,i)=>{
-    const a=(i+3)*Math.PI*0.7;const d=w.dist||300;
-    const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
-    ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fillStyle=w.angry?'#9c27b0':'#9c27b060';ctx.fill();
-    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
-    ctx.fillText(w.angry?'暴怒':'平静',x,y+14);ctx.textAlign='left';
-  });
-
-  // Teammates
-  (state.teammates||[]).forEach((m,i)=>{
-    const a=(i*2+1)*Math.PI/4;const d=m.dist||50;
-    const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
-    ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);
-    ctx.fillStyle=m.pinned?'#f44336':m.incap?'#ff9800':'#4caf50';ctx.fill();
-    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
-    ctx.fillText(trChar(m.name),x,y-10);ctx.fillText(m.hp+'HP',x,y+16);ctx.textAlign='left';
-  });
-
-  // Bot (large center)
+  (state.fire_areas||[]).forEach((f,i)=>{ctx.beginPath();ctx.arc(cx+((f.dist||0)*sc)*Math.cos(i),cy+((f.dist||0)*sc)*Math.sin(i),20*sc,0,Math.PI*2);ctx.fillStyle='#ff572240';ctx.fill();ctx.strokeStyle='#ff5722';ctx.lineWidth=1;ctx.stroke()});
+  (state.acid_areas||[]).forEach((a,i)=>{ctx.beginPath();ctx.arc(cx+((a.dist||0)*sc)*Math.cos(i+2),cy+((a.dist||0)*sc)*Math.sin(i+2),18*sc,0,Math.PI*2);ctx.fillStyle='#8bc34a30';ctx.fill();ctx.strokeStyle='#8bc34a';ctx.lineWidth=1;ctx.stroke()});
+  (state.items||[]).forEach((item,i)=>{const a=(i+0.5)*Math.PI*2/Math.max((state.items||[]).length,1);const dd=item.dist||100;const x=cx+Math.cos(a)*dd*sc,y=cy+Math.sin(a)*dd*sc;if(x<0||x>W||y<0||y>H)return;const n=item.name||'';const c=n.includes('rifle')||n.includes('shotgun')||n.includes('sniper')||n.includes('smg')||n.includes('pistol')||n.includes('melee')?'#2196f3':n.includes('first_aid')||n.includes('pills')||n.includes('adrenaline')?'#4caf50':n.includes('molotov')||n.includes('pipe')||n.includes('vomit')?'#ff9800':'#888';ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=c;ctx.fill()});
+  const cc=state.common_count||0;for(let i=0;i<Math.min(cc,20);i++){const a=Math.random()*Math.PI*2,dd=80+Math.random()*500*sc;ctx.beginPath();ctx.arc(cx+Math.cos(a)*dd,cy+Math.sin(a)*dd,2,0,Math.PI*2);ctx.fillStyle='#555';ctx.fill()}
+  (state.threats||[]).forEach((t,i)=>{const a=(i+1)*Math.PI*2/Math.max((state.threats||[]).length,1)+0.5;const dd=t.dist||200;const x=cx+Math.cos(a)*dd*sc,y=cy+Math.sin(a)*dd*sc;ctx.beginPath();ctx.moveTo(x,y-8);ctx.lineTo(x-6,y+5);ctx.lineTo(x+6,y+5);ctx.closePath();ctx.fillStyle=t.ghost?'#f4433650':'#f44336';ctx.fill();ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText(trSI(t.type),x,y+16);ctx.textAlign='left'});
+  (state.witches||[]).forEach((w,i)=>{const a=(i+3)*Math.PI*0.7;const dd=w.dist||300;const x=cx+Math.cos(a)*dd*sc,y=cy+Math.sin(a)*dd*sc;ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fillStyle=w.angry?'#9c27b0':'#9c27b060';ctx.fill();ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText(w.angry?'暴怒':'平静',x,y+14);ctx.textAlign='left'});
+  (state.teammates||[]).forEach((m,i)=>{const a=(i*2+1)*Math.PI/4;const dd=m.dist||50;const x=cx+Math.cos(a)*dd*sc,y=cy+Math.sin(a)*dd*sc;ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);ctx.fillStyle=m.pinned?'#f44336':m.incap?'#ff9800':'#4caf50';ctx.fill();ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText(trChar(m.name),x,y-10);ctx.fillText(m.hp+'HP',x,y+16);ctx.textAlign='left'});
   ctx.beginPath();ctx.arc(cx,cy,10,0,Math.PI*2);ctx.fillStyle='#4fc3f7';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
-  // Direction
   ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(yaw)*25,cy-Math.sin(yaw)*25);ctx.strokeStyle='#4fc3f7';ctx.lineWidth=2;ctx.stroke();
   ctx.fillStyle='#fff';ctx.font='11px sans-serif';ctx.textAlign='center';ctx.fillText(trChar(bot.name||'Bot'),cx,cy-16);ctx.textAlign='left';
-
-  // Decision arrow
-  if(decision.action){
-    const dy=decision.action.includes('attack')||decision.action==='throw_grenade'?-yaw:decision.action==='follow_team'?0:-yaw+Math.PI;
-    ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(dy)*40,cy+Math.sin(dy)*40);
-    ctx.strokeStyle='#ffd700';ctx.lineWidth=3;ctx.setLineDash([8,4]);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle='#ffd700';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(trAction(decision.action),cx,cy+28);ctx.textAlign='left';
-  }
-
-  // Info overlay
-  ctx.fillStyle='#888';ctx.font='10px sans-serif';
-  ctx.fillText(trMap(state.map||'')+' | '+trMode(state.mode||'')+' | '+trDiff(state.difficulty||''),8,H-8);
-  ctx.fillText('导演:'+trDirector(state.director||'')+' | 特感:'+(state.threats||[]).length,8,H-22);
+  if(decision.action){const dy=decision.action.includes('attack')||decision.action==='throw_grenade'?-yaw:decision.action==='follow_team'?0:-yaw+Math.PI;ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(dy)*40,cy+Math.sin(dy)*40);ctx.strokeStyle='#ffd700';ctx.lineWidth=3;ctx.setLineDash([8,4]);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#ffd700';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(trAction(decision.action),cx,cy+28);ctx.textAlign='left'}
+  ctx.fillStyle='#888';ctx.font='10px sans-serif';ctx.fillText(trMap(state.map||'')+' | '+trMode(state.mode||'')+' | '+trDiff(state.difficulty||''),8,H-8);ctx.fillText('导演:'+trDir(state.director||'')+' | 特感:'+(state.threats||[]).length,8,H-22);
 }
 
 function build3D(state,decision){
-  if(animId)cancelAnimationFrame(animId);
+  destroy3D();
   const container=document.getElementById('sandbox3d');
   if(!container)return;
   const W=container.clientWidth,H=container.clientHeight;
-
-  scene3d=new THREE.Scene();
-  scene3d.background=new THREE.Color(0x0a0a12);
-  scene3d.fog=new THREE.Fog(0x0a0a12,800,2000);
-
-  camera3d=new THREE.PerspectiveCamera(60,W/H,1,5000);
-  camera3d.position.set(0,400,500);
-  camera3d.lookAt(0,0,0);
-
-  renderer3d=new THREE.WebGLRenderer({antialias:true});
-  renderer3d.setSize(W,H);
-  renderer3d.setPixelRatio(window.devicePixelRatio);
-  container.innerHTML='';
-  container.appendChild(renderer3d.domElement);
-
-  // 光照
-  scene3d.add(new THREE.AmbientLight(0x404060,1));
-  const dl=new THREE.DirectionalLight(0xffffff,0.6);dl.position.set(200,400,200);scene3d.add(dl);
-
-  // 地面
-  const ground=new THREE.Mesh(new THREE.PlaneGeometry(3000,3000),new THREE.MeshLambertMaterial({color:0x1a1a2e}));
-  ground.rotation.x=-Math.PI/2;scene3d.add(ground);
-
-  // 网格
-  const grid=new THREE.GridHelper(3000,30,0x222244,0x111133);scene3d.add(grid);
-
-  // 距离圈
-  [300,800,1500].forEach(r=>{
-    const c=new THREE.Mesh(new THREE.RingGeometry(r-1,r+1,64),new THREE.MeshBasicMaterial({color:r===300?0xf44336:r===800?0xff9800:0x4caf50,side:THREE.DoubleSide,transparent:true,opacity:0.4}));
-    c.rotation.x=-Math.PI/2;c.position.y=1;scene3d.add(c);
-  });
-
-  const bot=state.bot||{};
-  const yaw=((bot.angles||[])[0]||0)*Math.PI/180;
-
-  // ====== 模型工厂 ======
-  function makeBot(x,z,color,name,hp){
-    const g=new THREE.Group();
-    // 身体
-    const body=new THREE.Mesh(new THREE.CylinderGeometry(8,8,20,8),new THREE.MeshLambertMaterial({color}));
-    body.position.y=10;g.add(body);
-    // 头
-    const head=new THREE.Mesh(new THREE.SphereGeometry(6,8,8),new THREE.MeshLambertMaterial({color}));
-    head.position.y=24;g.add(head);
-    // 名牌
-    const canvas=document.createElement('canvas');canvas.width=128;canvas.height=32;
-    const ctx=canvas.getContext('2d');ctx.fillStyle='#000';ctx.fillRect(0,0,128,32);
-    ctx.fillStyle='#fff';ctx.font='bold 18px sans-serif';ctx.textAlign='center';
-    ctx.fillText(name||'?',64,22);
-    const tex=new THREE.CanvasTexture(canvas);
-    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));
-    label.position.y=36;label.scale.set(40,10,1);g.add(label);
-    // HP条
-    if(hp!==undefined){
-      const bg=new THREE.Mesh(new THREE.PlaneGeometry(20,3),new THREE.MeshBasicMaterial({color:0x333333}));
-      bg.position.y=-2;bg.rotation.x=-Math.PI/2;g.add(bg);
-      const pct=Math.max(hp/100,0);
-      const bar=new THREE.Mesh(new THREE.PlaneGeometry(20*pct,3),new THREE.MeshBasicMaterial({color:hp>60?0x4caf50:hp>30?0xff9800:0xf44336}));
-      bar.position.set(-10*(1-pct),-2,0.1);bar.rotation.x=-Math.PI/2;g.add(bar);
-    }
-    g.position.set(x,0,z);
-    scene3d.add(g);return g;
-  }
-
-  function makeSI(x,z,type,ghost){
-    const color=ghost?0x882222:0xf44336;
-    const g=new THREE.Group();
-    const body=new THREE.Mesh(new THREE.ConeGeometry(8,18,6),new THREE.MeshLambertMaterial({color,transparent:ghost,opacity:ghost?0.4:1}));
-    body.position.y=9;g.add(body);
-    // 标签
-    const canvas=document.createElement('canvas');canvas.width=128;canvas.height=24;
-    const ctx=canvas.getContext('2d');ctx.fillStyle='#f44336';ctx.fillRect(0,0,128,24);
-    ctx.fillStyle='#fff';ctx.font='bold 16px sans-serif';ctx.textAlign='center';
-    ctx.fillText(trSI(type)+(ghost?'(幽灵)':''),64,18);
-    const tex=new THREE.CanvasTexture(canvas);
-    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));
-    label.position.y=24;label.scale.set(40,8,1);g.add(label);
-    g.position.set(x,0,z);scene3d.add(g);return g;
-  }
-
-  function makeWitch(x,z,angry){
-    const g=new THREE.Group();
-    const body=new THREE.Mesh(new THREE.SphereGeometry(10,8,8),new THREE.MeshLambertMaterial({color:angry?0x9c27b0:0x6622aa}));
-    body.position.y=8;g.add(body);
-    const canvas=document.createElement('canvas');canvas.width=128;canvas.height=24;
-    const ctx=canvas.getContext('2d');ctx.fillStyle=angry?0x9c27b0:'#6622aa';ctx.fillRect(0,0,128,24);
-    ctx.fillStyle='#fff';ctx.font='bold 16px sans-serif';ctx.textAlign='center';
-    ctx.fillText(angry?'女巫(暴怒)':'女巫(平静)',64,18);
-    const tex=new THREE.CanvasTexture(canvas);
-    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));
-    label.position.y=22;label.scale.set(40,8,1);g.add(label);
-    g.position.set(x,0,z);scene3d.add(g);return g;
-  }
-
-  function makeCommon(x,z){
-    const body=new THREE.Mesh(new THREE.BoxGeometry(6,12,6),new THREE.MeshLambertMaterial({color:0x555555}));
-    body.position.set(x,6,z);scene3d.add(body);return body;
-  }
-
-  function makeItem(x,z,cat){
-    const colors={weapon:0x2196f3,health:0x4caf50,grenade:0xff9800,ammo:0x888888,other:0x999999};
-    const c=colors[cat]||colors.other;
-    const item=new THREE.Mesh(new THREE.BoxGeometry(4,8,4),new THREE.MeshLambertMaterial({color:c,emissive:c,emissiveIntensity:0.3}));
-    item.position.set(x,4,z);scene3d.add(item);
-    // 发光指示
-    const glow=new THREE.PointLight(c,0.5,30);glow.position.set(x,6,z);scene3d.add(glow);
-    return item;
-  }
-
-  function makeArea(x,z,r,color){
-    const a=new THREE.Mesh(new THREE.CircleGeometry(r,16),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.3,side:THREE.DoubleSide}));
-    a.rotation.x=-Math.PI/2;a.position.set(x,0.5,z);scene3d.add(a);return a;
-  }
-
-  // Bot
-  makeBot(0,0,0x4fc3f7,trChar(bot.name||'Bot'),bot.hp);
-  // 朝向箭头
-  const arrDir=new THREE.ArrowHelper(new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)).normalize(),new THREE.Vector3(0,15,0),40,0x4fc3f7,8,6);
-  scene3d.add(arrDir);
-
-  // 决策箭头(金色)
-  if(decision.action){
-    const dv=decision.action.includes('attack')||decision.action==='throw_grenade'?
-      new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)):
-      decision.action==='follow_team'?new THREE.Vector3(0,0,-1):new THREE.Vector3(Math.cos(yaw+Math.PI),0,-Math.sin(yaw+Math.PI));
-    const arrDec=new THREE.ArrowHelper(dv.normalize(),new THREE.Vector3(0,25,0),60,0xffd700,10,8);
-    scene3d.add(arrDec);
-  }
-
-  // 队友
-  (state.teammates||[]).forEach((m,i)=>{
-    const a=(i*2+1)*Math.PI/4;
-    const d=m.dist||50;
-    const c=m.pinned?0xf44336:m.incap?0xff9800:0x4caf50;
-    makeBot(Math.sin(a)*d,-Math.cos(a)*d,c,trChar(m.name),m.hp);
-  });
-
-  // 特感
-  (state.threats||[]).forEach((t,i)=>{
-    const a=(i+1)*Math.PI*2/Math.max((state.threats||[]).length,1)+0.5;
-    const d=t.dist||200;
-    makeSI(Math.sin(a)*d,-Math.cos(a)*d,t.type,t.ghost);
-  });
-
-  // 女巫
-  (state.witches||[]).forEach((w,i)=>{
-    const a=(i+3)*Math.PI*0.7;
-    const d=w.dist||300;
-    makeWitch(Math.sin(a)*d,-Math.cos(a)*d,w.angry);
-  });
-
-  // 普通僵尸
-  const cc=state.common_count||0;
-  for(let i=0;i<Math.min(cc,15);i++){
-    const a=Math.random()*Math.PI*2,d=100+Math.random()*400;
-    makeCommon(Math.sin(a)*d,-Math.cos(a)*d);
-  }
-
-  // 物品
-  (state.items||[]).forEach((item,i)=>{
-    const a=(i+0.5)*Math.PI*2/Math.max((state.items||[]).length,1);
-    const d=item.dist||100;
-    const n=item.name||'';
-    const cat=n.includes('rifle')||n.includes('shotgun')||n.includes('sniper')||n.includes('smg')||n.includes('pistol')||n.includes('melee')?'weapon':
-             n.includes('first_aid')||n.includes('pills')||n.includes('adrenaline')||n.includes('defib')?'health':
-             n.includes('molotov')||n.includes('pipe')||n.includes('vomit')?'grenade':'other';
-    makeItem(Math.sin(a)*d,-Math.cos(a)*d,cat);
-  });
-
-  // 火焰区域
-  (state.fire_areas||[]).forEach(f=>makeArea(Math.sin(1)*f.dist||0,-Math.cos(1)*(f.dist||0),30,0xff5722));
-  // 酸液区域
-  (state.acid_areas||[]).forEach(a=>makeArea(Math.sin(2)*(a.dist||0),-Math.cos(2)*(a.dist||0),25,0x8bc34a));
-
-  // 地形标记
-  const t=state.terrain||{};
-  if(t.narrow){const w=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshBasicMaterial({color:0xff9800,transparent:true,opacity:0.1,side:THREE.DoubleSide}));w.rotation.x=-Math.PI/2;w.position.y=0.3;scene3d.add(w)}
-  if(t.ledge){const l=new THREE.Mesh(new THREE.BoxGeometry(300,4,20),new THREE.MeshLambertMaterial({color:0xf44336,transparent:true,opacity:0.4}));l.position.set(100,2,0);scene3d.add(l)}
-
-  // 鼠标控制
+  const scene=new THREE.Scene();scene.background=new THREE.Color(0x0a0a12);scene.fog=new THREE.Fog(0x0a0a12,800,2000);
+  const camera=new THREE.PerspectiveCamera(60,W/H,1,5000);camera.position.set(0,400,500);camera.lookAt(0,0,0);
+  renderer3d=new THREE.WebGLRenderer({antialias:true});renderer3d.setSize(W,H);renderer3d.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  container.innerHTML='';container.appendChild(renderer3d.domElement);
+  scene.add(new THREE.AmbientLight(0x404060,1));const dl=new THREE.DirectionalLight(0xffffff,0.6);dl.position.set(200,400,200);scene.add(dl);
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(3000,3000),new THREE.MeshLambertMaterial({color:0x1a1a2e}));ground.rotation.x=-Math.PI/2;scene.add(ground);
+  scene.add(new THREE.GridHelper(3000,30,0x222244,0x111133));
+  [300,800,1500].forEach(r=>{const c=new THREE.Mesh(new THREE.RingGeometry(r-1,r+1,64),new THREE.MeshBasicMaterial({color:r===300?0xf44336:r===800?0xff9800:0x4caf50,side:THREE.DoubleSide,transparent:true,opacity:0.4}));c.rotation.x=-Math.PI/2;c.position.y=1;scene.add(c)});
+  const bot=state.bot||{},yaw=((bot.angles||[])[0]||0)*Math.PI/180;
+  function makeFigure(x,z,color,name,hp){const g=new THREE.Group();const body=new THREE.Mesh(new THREE.CylinderGeometry(8,8,20,8),new THREE.MeshLambertMaterial({color}));body.position.y=10;g.add(body);const head=new THREE.Mesh(new THREE.SphereGeometry(6,8,8),new THREE.MeshLambertMaterial({color}));head.position.y=24;g.add(head);const cv=document.createElement('canvas');cv.width=128;cv.height=32;const cx=cv.getContext('2d');cx.fillStyle='#000';cx.fillRect(0,0,128,32);cx.fillStyle='#fff';cx.font='bold 18px sans-serif';cx.textAlign='center';cx.fillText(name||'?',64,22);const tex=new THREE.CanvasTexture(cv);const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));label.position.y=36;label.scale.set(40,10,1);g.add(label);g.position.set(x,0,z);scene.add(g);return g}
+  makeFigure(0,0,0x4fc3f7,trChar(bot.name||'Bot'),bot.hp);
+  scene.add(new THREE.ArrowHelper(new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)).normalize(),new THREE.Vector3(0,15,0),40,0x4fc3f7,8,6));
+  if(decision.action){const dv=decision.action.includes('attack')||decision.action==='throw_grenade'?new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)):new THREE.Vector3(0,0,-1);scene.add(new THREE.ArrowHelper(dv.normalize(),new THREE.Vector3(0,25,0),60,0xffd700,10,8))}
+  (state.teammates||[]).forEach((m,i)=>{const a=(i*2+1)*Math.PI/4;const dd=m.dist||50;makeFigure(Math.sin(a)*dd,-Math.cos(a)*dd,m.pinned?0xf44336:m.incap?0xff9800:0x4caf50,trChar(m.name),m.hp)});
+  (state.threats||[]).forEach((t,i)=>{const a=(i+1)*Math.PI*2/Math.max((state.threats||[]).length,1)+0.5;const dd=t.dist||200;const g=new THREE.Group();const cone=new THREE.Mesh(new THREE.ConeGeometry(8,18,6),new THREE.MeshLambertMaterial({color:t.ghost?0x882222:0xf44336,transparent:!!t.ghost,opacity:t.ghost?0.4:1}));cone.position.y=9;g.add(cone);const cv=document.createElement('canvas');cv.width=128;cv.height=24;const cx=cv.getContext('2d');cx.fillStyle='#f44336';cx.fillRect(0,0,128,24);cx.fillStyle='#fff';cx.font='bold 16px sans-serif';cx.textAlign='center';cx.fillText(trSI(t.type)+(t.ghost?'(幽灵)':''),64,18);const tex=new THREE.CanvasTexture(cv);const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));label.position.y=24;label.scale.set(40,8,1);g.add(label);g.position.set(Math.sin(a)*dd,0,-Math.cos(a)*dd);scene.add(g)});
+  (state.witches||[]).forEach((w,i)=>{const a=(i+3)*Math.PI*0.7;const dd=w.dist||300;const g=new THREE.Group();const sp=new THREE.Mesh(new THREE.SphereGeometry(10,8,8),new THREE.MeshLambertMaterial({color:w.angry?0x9c27b0:0x6622aa}));sp.position.y=8;g.add(sp);g.position.set(Math.sin(a)*dd,0,-Math.cos(a)*dd);scene.add(g)});
+  const ccount=state.common_count||0;for(let i=0;i<Math.min(ccount,15);i++){const a=Math.random()*Math.PI*2,dd=100+Math.random()*400;const b=new THREE.Mesh(new THREE.BoxGeometry(6,12,6),new THREE.MeshLambertMaterial({color:0x555555}));b.position.set(Math.sin(a)*dd,6,-Math.cos(a)*dd);scene.add(b)}
+  (state.items||[]).forEach((item,i)=>{const a=(i+0.5)*Math.PI*2/Math.max((state.items||[]).length,1);const dd=item.dist||100;const n=item.name||'';const c=n.includes('rifle')||n.includes('shotgun')||n.includes('sniper')||n.includes('smg')||n.includes('pistol')?0x2196f3:n.includes('first_aid')||n.includes('pills')||n.includes('adrenaline')?0x4caf50:n.includes('molotov')||n.includes('pipe')?0xff9800:0x888888;const m=new THREE.Mesh(new THREE.BoxGeometry(4,8,4),new THREE.MeshLambertMaterial({color:c,emissive:c,emissiveIntensity:0.3}));m.position.set(Math.sin(a)*dd,4,-Math.cos(a)*dd);scene.add(m)});
+  (state.fire_areas||[]).forEach((f,i)=>{const a=new THREE.Mesh(new THREE.CircleGeometry(30,16),new THREE.MeshBasicMaterial({color:0xff5722,transparent:true,opacity:0.3,side:THREE.DoubleSide}));a.rotation.x=-Math.PI/2;a.position.set(Math.sin(i)*(f.dist||0),0.5,-Math.cos(i)*(f.dist||0));scene.add(a)});
+  (state.acid_areas||[]).forEach((a2,i)=>{const a=new THREE.Mesh(new THREE.CircleGeometry(25,16),new THREE.MeshBasicMaterial({color:0x8bc34a,transparent:true,opacity:0.3,side:THREE.DoubleSide}));a.rotation.x=-Math.PI/2;a.position.set(Math.sin(i+2)*(a2.dist||0),0.5,-Math.cos(i+2)*(a2.dist||0));scene.add(a)});
   let isDown=false,prevX=0,prevY=0,rotY=0,rotX=0.6,dist=600;
   container.onmousedown=e=>{isDown=true;prevX=e.clientX;prevY=e.clientY};
-  container.onmouseup=()=>isDown=false;
-  container.onmouseleave=()=>isDown=false;
+  container.onmouseup=()=>isDown=false;container.onmouseleave=()=>isDown=false;
   container.onmousemove=e=>{if(!isDown)return;rotY+=(e.clientX-prevX)*0.01;rotX=Math.max(0.1,Math.min(1.5,rotX+(e.clientY-prevY)*0.005));prevX=e.clientX;prevY=e.clientY};
   container.onwheel=e=>{dist=Math.max(200,Math.min(2000,dist+e.deltaY))};
-
-  function animate(){
-    animId=requestAnimationFrame(animate);
-    camera3d.position.set(Math.sin(rotY)*dist*Math.cos(rotX),Math.sin(rotX)*dist,Math.cos(rotY)*dist*Math.cos(rotX));
-    camera3d.lookAt(0,0,0);
-    renderer3d.render(scene3d,camera3d);
-  }
+  function animate(){animId=requestAnimationFrame(animate);camera.position.set(Math.sin(rotY)*dist*Math.cos(rotX),Math.sin(rotX)*dist,Math.cos(rotY)*dist*Math.cos(rotX));camera.lookAt(0,0,0);if(renderer3d)renderer3d.render(scene,camera)}
   animate();
 }
 
-// ====== AI 视角 ======
-pages.ai_view=async()=>{
-  const d=await api('/api/ai-view');
-  const state=d.raw_state||{},bot=state.bot||{},teammates=state.teammates||[];
-  document.getElementById('page-content').innerHTML=`
-    <h2>AI 视角 <button class="refresh-btn" onclick="pages.ai_view()">刷新</button></h2>
-    <div class="two-col">
-      <div class="card"><h3>Bot 感知</h3>
-        <div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div>
-        <div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div>
-        <div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
-        <div class="row"><span class="k">倒地/黑白</span><span class="v">${bot.incap?'倒地':'否'} / ${bot.bw?'黑白':'否'}</span></div>
-        <div class="row"><span class="k">主武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div>
-        <div class="row"><span class="k">弹药</span><span class="v">${bot.ammo||0}/${bot.reserve||0}</span></div>
-        <div class="row"><span class="k">进度/朝向</span><span class="v">${bot.flow||0} / ${(bot.angles||[])[0]?.toFixed(0)||'?'}°</span></div>
-      </div>
-      <div class="card"><h3>环境感知</h3>
-        <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')} ${trMode(state.mode||'')}</span></div>
-        <div class="row"><span class="k">难度/导演</span><span class="v">${trDiff(state.difficulty||'')} / ${trDirector(state.director||'')}</span></div>
-        <div class="row"><span class="k">地形</span><span class="v">窄:${state.terrain?.narrow?'是':'否'} 崖:${state.terrain?.ledge?'是':'否'} 车:${state.terrain?.alarm_car?'是':'否'} 事件:${state.terrain?.crescendo?'是':'否'} 终局:${state.terrain?.finale?'是':'否'}</span></div>
-        <div class="row"><span class="k">普通尸</span><span class="v">${state.common_count||0}</span></div>
-        <div class="row"><span class="k">火/酸区</span><span class="v">${(state.fire_areas||[]).length}/${(state.acid_areas||[]).length}</span></div>
-        <div class="row"><span class="k">友伤</span><span class="v">${state.server?.ff?'是':'否'}</span></div>
-      </div>
-    </div>
-    <div class="two-col">
-      <div class="card"><h3>队友感知</h3>
-        ${teammates.map(m=>`<div class="row"><span class="k">${trChar(m.name)}</span><span class="v ${hpVC(m.hp)}">${m.hp}HP ${m.pinned?'<span class="danger">被控('+trPin(m.pin_type)+')</span>':m.incap?'<span class="warn">倒地</span>':'OK'} d=${m.dist?.toFixed(0)||'?'} ${trWeapon(m.weapon)}</span></div>`).join('')}
-      </div>
-      <div class="card"><h3>威胁/物品</h3>
-        ${(state.threats||[]).map(t=>`<div class="row"><span class="k">${trSI(t.type)}</span><span class="v danger">${t.hp}HP d=${t.dist?.toFixed(0)||'?'} ${t.ghost?'幽灵':'实体'}</span></div>`).join('')}
-        ${(state.witches||[]).map(w=>`<div class="row"><span class="k">女巫</span><span class="v ${w.angry?'danger':'warn'}">${w.angry?'暴怒':'平静'} d=${w.dist?.toFixed(0)||'?'}</span></div>`).join('')}
-        ${!(state.threats||[]).length&&!(state.witches||[]).length?'<div class="row"><span class="k">威胁</span><span class="v ok">无</span></div>':''}
-        ${(state.items||[]).slice(0,8).map(i=>`<div class="row"><span class="k">${trWeapon(i.name)}</span><span class="v" style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}u</span></div>`).join('')}
-      </div>
-    </div>
-    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">系统提示词（LLM 角色设定）</h3><div><pre>${(d.system_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
-    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">用户提示词（LLM 当前局势输入）</h3><div><pre>${(d.user_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
-    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">LLM 原始决策输出</h3><div><pre>${JSON.stringify(d.last_decision,null,2)}</pre></div></div>`;
-};
-
-// ====== 配置 ======
+// ====== 配置 (含系统提示词) ======
 pages.config=async()=>{
   const d=await api('/api/config');
   document.getElementById('page-content').innerHTML=`
     <h2>配置</h2>
-    <div class="card"><h3>系统提示词</h3>
+    <div class="card"><h3>系统提示词（LLM角色设定）</h3>
       <textarea id="prompt-editor">${(d.system_prompt||'').replace(/</g,'&lt;')}</textarea><br><br>
       <button onclick="savePrompt()">保存提示词</button><span id="save-status" style="margin-left:12px"></span>
     </div>
@@ -671,7 +347,7 @@ async function savePrompt(){
 // ====== 历史 ======
 pages.history=async()=>{
   const h=await api('/api/history?count=50');
-  const rows=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(srcLabel(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),e.decision.priority||'medium')}</td><td style="font-size:10px;color:#888">${e.decision.reason?.slice(0,60)||''}</td><td>${e.elapsed_ms||0}ms</td><td style="font-size:10px">${e.state?.threat_count||0}敌${e.state?.pinned_count||0}控</td></tr>`).join('');
+  const rows=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(srcL(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),e.decision.priority||'medium')}</td><td style="font-size:10px;color:#888">${e.decision.reason?.slice(0,60)||''}</td><td>${e.elapsed_ms||0}ms</td><td style="font-size:10px">${e.state?.threat_count||0}敌${e.state?.pinned_count||0}控</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`<h2>决策历史</h2><div class="card"><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th><th>延迟</th><th>状态</th></tr>${rows}</table></div>`;
 };
 
@@ -698,10 +374,7 @@ pages.stats=async()=>{
 pages.scores=async()=>{
   const d=await api('/api/player-scores');
   const players=d.players||[],team=d.team||{};
-  const rows=players.map(p=>{
-    const rc=`rating-${p.rating}`,comp=p.composite>=0?'+'+p.composite:p.composite;
-    return`<tr><td>${trChar(p.name)}</td><td class="${rc}">${tag(p.rating,p.rating)}</td><td>${comp}</td><td style="color:#4caf50">${p.heal}</td><td style="color:#2196f3">${p.revive}</td><td style="color:#ff9800">${p.si_kills}</td><td style="color:#f44336">${p.incap}</td><td style="color:#ff5722">${p.pinned}</td></tr>`;
-  }).join('');
+  const rows=players.map(p=>{const rc=`rating-${p.rating}`,comp=p.composite>=0?'+'+p.composite:p.composite;return`<tr><td>${trChar(p.name)}</td><td class="${rc}">${tag(p.rating,p.rating)}</td><td>${comp}</td><td style="color:#4caf50">${p.heal}</td><td style="color:#2196f3">${p.revive}</td><td style="color:#ff9800">${p.si_kills}</td><td style="color:#f44336">${p.incap}</td><td style="color:#ff5722">${p.pinned}</td></tr>`}).join('');
   document.getElementById('page-content').innerHTML=`
     <h2>评分</h2>
     <div class="stat-grid">
@@ -718,7 +391,7 @@ pages.scores=async()=>{
 pages.experience=async()=>{
   const d=await api('/api/map-experience');
   const exps=d.experiences||[],ms=d.map_stats||{};
-  const rows=exps.map(e=>`<tr><td>${tag(trAction(e.action),'medium')}</td><td>${e.target||'-'}</td><td>${tag(outcomeL(e.outcome),e.outcome==='survived'?'rule':e.outcome==='team_wipe'?'critical':'low')}</td><td>${e.count}</td><td>${(e.survival_rate*100).toFixed(0)}%</td><td>${e.avg_survival||0}s</td></tr>`).join('');
+  const rows=exps.map(e=>`<tr><td>${tag(trAction(e.action),'medium')}</td><td>${e.target||'-'}</td><td>${tag(e.outcome==='survived'?'存活':e.outcome==='team_wipe'?'团灭':e.outcome,e.outcome==='survived'?'rule':e.outcome==='team_wipe'?'critical':'low')}</td><td>${e.count}</td><td>${(e.survival_rate*100).toFixed(0)}%</td><td>${e.avg_survival||0}s</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
     <h2>经验</h2>
     <div class="stat-grid">
@@ -732,7 +405,6 @@ pages.experience=async()=>{
     <div class="card"><h3>经验记录</h3>${rows?`<table><tr><th>动作</th><th>目标</th><th>结果</th><th>次数</th><th>存活率</th><th>平均存活</th></tr>${rows}</table>`:'<p style="color:#555">暂无</p>'}</div>`;
 };
 
-// 启动
 showPage('index');
 </script>
 </body>
