@@ -44,7 +44,9 @@ button:hover{background:#81d4fa}
 .collapsible.closed::before{content:'▶ '}.collapsible.closed+div{display:none}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 @media(max-width:768px){.two-col{grid-template-columns:1fr}}
-#sandbox3d{width:100%;height:400px;border:1px solid #333;border-radius:6px;overflow:hidden;position:relative}
+.sandbox-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#0a0a0f;border:1px solid #333;border-radius:6px;overflow:hidden}
+.sandbox-wrap canvas{width:100%;height:100%;display:block}
+#sandbox3d{width:100%;height:400px;border:1px solid #333;border-radius:6px;overflow:hidden;position:relative;background:#0a0a0f}
 #sandbox3d canvas{width:100%!important;height:100%!important}
 .legend{display:flex;gap:10px;padding:4px 0;font-size:11px;flex-wrap:wrap}
 .legend span{display:flex;align-items:center;gap:3px}
@@ -227,13 +229,13 @@ pages.sandbox=async()=>{
 
   const spectateInfo=`
     <div class="card" style="border-color:#4fc3f7">
-      <h3 style="color:#4fc3f7">游戏内观战（推荐）</h3>
+      <h3 style="color:#4fc3f7">游戏内观战（推荐 — 效果远优于网页沙盘）</h3>
       <p style="font-size:12px;line-height:1.6">
-        网页沙盘仅为数据概览，<strong>游戏内观战效果远优于网页</strong>。<br>
-        <strong>连接方式：</strong>在 L4D2 控制台输入 <code>connect 服务器IP:27017</code> 进入观战模式<br>
-        <strong>切换Bot控制：</strong>游戏内控制台输入 <code>sm_llm_switch</code> 查看可用Bot，<code>sm_llm_switch Nick</code> 切换到指定Bot<br>
-        <strong>全员控制：</strong><code>sm_llm_control_all</code> 切换LLM控制所有Bot<br>
-        <strong>SourceTV观战：</strong>连接 <code>服务器IP:27020</code> 可延迟观战
+        网页沙盘仅为数据概览，<strong>游戏内观战可看到完整战场</strong>。<br>
+        <strong>1. 连接服务器：</strong>在 L4D2 开发者控制台(~)输入 <code>connect 服务器IP:27017</code><br>
+        <strong>2. 进入观战：</strong>连接后按 <code>M</code> 切换到感染者队伍即可自由观战，或按 <code>E</code> 跟随特定Bot视角<br>
+        <strong>3. 切换Bot控制：</strong>控制台输入 <code>sm_llm_switch</code> 列出可用Bot，<code>sm_llm_switch Nick</code> 切换到指定Bot<br>
+        <strong>4. 全员控制：</strong><code>sm_llm_control_all</code> 开关LLM控制所有Bot
       </p>
     </div>`;
 
