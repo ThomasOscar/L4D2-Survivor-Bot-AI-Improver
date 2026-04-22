@@ -7946,11 +7946,29 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	ConVar hFF = FindConVar("sv_friendly_fire");
 	if (hFF != null && hFF.BoolValue) friendlyFire = true;
 
+	// Bot pin status
+	bool botPinned = LLM_IsPinned(bot);
+	char botPinType[16]; LLM_GetPinType(bot, botPinType, sizeof(botPinType));
+
 	// Build JSON (with seq + flow)
 	g_iLLM_Seq++;
 	float flowDist = L4D2Direct_GetFlowDistance(bot);
+
+	// Director stage detection
+	char directorStage[16] = "relax";
+	if (g_bLLM_IsFinale)
+		strcopy(directorStage, sizeof(directorStage), "finale");
+	else
+	{
+		int pendingMob = L4D2Direct_GetPendingMobCount();
+		if (pendingMob > 15)
+			strcopy(directorStage, sizeof(directorStage), "peak");
+		else if (pendingMob > 0)
+			strcopy(directorStage, sizeof(directorStage), "build_up");
+	}
+
 	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", g_iLLM_Seq, mapName, gameMode, difficulty);
-	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist);
+	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"pinned\":%s,\"pin_type\":\"%s\",", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist, botPinned?"true":"false", botPinType);
 	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
 	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
 	// Player scores (all alive survivors)
@@ -7971,7 +7989,7 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		sc++;
 	}
 
-	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"player_scores\":[%s],\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", scores, g_sLLM_Action);
+	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":\"%s\",\"player_scores\":[%s],\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", directorStage, scores, g_sLLM_Action);
 }
 
 bool LLM_IsPinned(int client)
