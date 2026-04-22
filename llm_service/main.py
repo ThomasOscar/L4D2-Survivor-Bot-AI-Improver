@@ -59,6 +59,8 @@ class LLMDecisionService:
         self.state_cache: StateCache = None
         self.player_scorer: PlayerScorer = None
         self.map_experience: MapExperienceStore = None
+        self.round_stats = None
+        self.current_round_id = None
         # 经验配置
         exp_cfg = self.config.get("experience", {})
         self.exp_enabled = exp_cfg.get("enabled", True)
@@ -113,12 +115,13 @@ class LLMDecisionService:
                 m.get("bw") != om.get("bw") or
                 abs(m.get("hp", 0) - om.get("hp", 0)) > 20):
                 return True
-        # Bot: hp/incap/bw
+        # Bot: hp/incap/bw/pin_type
         bot = state.get("bot", {})
         old_bot = self.last_state.get("bot", {})
         if (bot.get("hp") != old_bot.get("hp") or
             bot.get("incap") != old_bot.get("incap") or
-            bot.get("bw") != old_bot.get("bw")):
+            bot.get("bw") != old_bot.get("bw") or
+            bot.get("pin_type") != old_bot.get("pin_type")):
             return True
         # Environment: common_count (significant change > 5)
         if abs(state.get("common_count", 0) - self.last_state.get("common_count", 0)) > 5:
@@ -191,6 +194,11 @@ class LLMDecisionService:
         self.map_experience = MapExperienceStore()
         await self.map_experience.connect()
 
+        # Round stats store (SQLite)
+        from round_stats import RoundStatsStore
+        self.round_stats = RoundStatsStore()
+        await self.round_stats.connect()
+
         self.tcp_server.on_message = self._handle_state
         self.tcp_server.on_round_outcome = self._handle_round_outcome
 
@@ -233,6 +241,27 @@ class LLMDecisionService:
             now = time.time()
             self.last_state = state
             req_seq = state.get("seq", 0)  # Extract seq for request-response matching
+
+            # Track round start when map changes
+            current_map = state.get("map", "")
+            if hasattr(self, '_last_map') and current_map != self._last_map and current_map and self.round_stats:
+                if self.current_round_id:
+                    self.round_stats.end_round(self.current_round_id, "map_change", {})
+                self.current_round_id = self.round_stats.start_round(
+                    current_map, state.get("mode", ""), state.get("difficulty", "")
+                )
+                logger.info(f"New round started: {current_map} (round_id={self.current_round_id})")
+            self._last_map = current_map
+            # Save player stats periodically
+            if self.round_stats and self.current_round_id and state.get("player_scores"):
+                if not hasattr(self, '_stats_save_counter'):
+                    self._stats_save_counter = 0
+                self._stats_save_counter += 1
+                if self._stats_save_counter % 10 == 0:
+                    self.round_stats.save_player_stats(self.current_round_id, state["player_scores"])
+                    cs = state.get("chapter_stats", {})
+                    if cs:
+                        self.round_stats.save_chapter_stats(self.current_round_id, cs)
 
             # Log player score summary periodically (every 5th decision)
             if state.get("player_scores") and not hasattr(self, '_score_log_counter'):
@@ -358,6 +387,14 @@ class LLMDecisionService:
         logger.info(f"Round outcome: {map_name} → {outcome}")
         if self.map_experience:
             await self.map_experience.record_round_outcome(map_name, outcome)
+        # Save round stats
+        if self.round_stats and self.current_round_id:
+            totals = {}
+            if self.last_state:
+                cs = self.last_state.get("chapter_stats", {})
+                totals = cs.get("round_totals", {})
+            self.round_stats.end_round(self.current_round_id, outcome, totals)
+            self.current_round_id = None
 
 
 async def main():

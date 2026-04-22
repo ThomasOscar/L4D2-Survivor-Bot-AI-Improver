@@ -54,6 +54,14 @@ class DebugServer:
         self.app.router.add_get("/api/player-scores", self._api_player_scores)
         self.app.router.add_get("/api/map-experience", self._api_map_experience)
         self.app.router.add_get("/api/director", self._api_director)
+        self.app.router.add_get("/api/game-stats", self._api_game_stats)
+        self.app.router.add_get("/api/round-history", self._api_round_history)
+        # Missing SPA page routes
+        self.app.router.add_get("/sandbox", self._page_index)
+        self.app.router.add_get("/scores", self._page_index)
+        self.app.router.add_get("/experience", self._page_index)
+        self.app.router.add_get("/director", self._page_index)
+        self.app.router.add_get("/game-stats", self._page_index)
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, self.host, self.port)
@@ -296,3 +304,47 @@ class DebugServer:
             "mode": state.get("mode", ""),
             "difficulty": state.get("difficulty", ""),
         })
+
+    async def _api_game_stats(self, request):
+        """Return comprehensive game statistics for the stats page."""
+        svc = self.service
+        if not svc or not svc.last_state:
+            return web.json_response({"error": "no data"})
+        state = svc.last_state
+        ps = state.get("player_scores", [])
+        cs = state.get("chapter_stats", {})
+        director = state.get("director", {})
+        if isinstance(director, str):
+            director = {"stage": director, "pending_mob": 0, "flow_percent": 0, "chapter": 0}
+        # Compute team totals from player_scores
+        team_totals = {
+            "deaths": sum(p.get("deaths", 0) for p in ps),
+            "incaps": sum(p.get("incap", 0) for p in ps),
+            "pinned": sum(p.get("pinned", 0) for p in ps),
+            "heals": sum(p.get("heal", 0) for p in ps),
+            "revives": sum(p.get("revive", 0) for p in ps),
+            "si_kills": sum(p.get("si_kills", 0) for p in ps),
+            "common_kills": sum(p.get("common_kills", 0) for p in ps),
+            "item_pickups": sum(p.get("item_pickups", 0) for p in ps),
+        }
+        return web.json_response({
+            "map": state.get("map", ""),
+            "mode": state.get("mode", ""),
+            "difficulty": state.get("difficulty", ""),
+            "chapter": director.get("chapter", cs.get("current_chapter", 0)),
+            "flow_percent": director.get("flow_percent", 0),
+            "director_stage": director.get("stage", "unknown"),
+            "player_stats": ps,
+            "team_totals": team_totals,
+            "round_totals": cs.get("round_totals", {}),
+            "chapter_totals": cs.get("chapter_totals", {}),
+        })
+
+    async def _api_round_history(self, request):
+        """Return historical round data."""
+        svc = self.service
+        if not svc or not svc.round_stats:
+            return web.json_response({"rounds": []})
+        limit = int(request.query.get("limit", "20"))
+        rounds = svc.round_stats.get_round_history(limit)
+        return web.json_response({"rounds": rounds})
