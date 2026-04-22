@@ -107,7 +107,18 @@ int g_iLLM_PlayerPinned[MAXPLAYERS+1];   // pinned count this round
 int g_iLLM_PlayerRevive[MAXPLAYERS+1];   // revive/defib count this round
 int g_iLLM_PlayerHeal[MAXPLAYERS+1];     // heal teammate count this round
 int g_iLLM_PlayerSIKills[MAXPLAYERS+1];  // SI kill count this round
+int g_iLLM_PlayerDeaths[MAXPLAYERS+1];   // death count this round
+int g_iLLM_PlayerCommonKills[MAXPLAYERS+1]; // common infected kills this round
+int g_iLLM_PlayerItemPickups[MAXPLAYERS+1]; // item pickup count this round
 bool g_bLLM_WasPinned[MAXPLAYERS+1];     // previous pin state for edge detection
+
+// Chapter stats tracking
+int g_iLLM_CurrentChapter = 0;           // last known chapter number
+int g_iLLM_ChapDeaths[MAXPLAYERS+1];     // deaths this chapter
+int g_iLLM_ChapIncaps[MAXPLAYERS+1];     // incaps this chapter
+int g_iLLM_ChapHeals[MAXPLAYERS+1];      // heals this chapter
+int g_iLLM_ChapSIKills[MAXPLAYERS+1];    // SI kills this chapter
+int g_iLLM_ChapCommonKills[MAXPLAYERS+1]; // common kills this chapter
 
 // LLM Terrain Awareness
 bool g_bLLM_HasNarrowPassage = false;
@@ -1696,7 +1707,27 @@ void Event_OnPlayerDeath(Event hEvent, const char[] sName, bool bBroadcast)
 	if (iAttacker > 0 && iAttacker <= MaxClients && iVictim > 0 && iVictim <= MaxClients)
 	{
 		if (IsClientInGame(iAttacker) && IsClientSurvivor(iAttacker) && GetClientTeam(iVictim) == 3)
+		{
 			g_iLLM_PlayerSIKills[iAttacker]++;
+			g_iLLM_ChapSIKills[iAttacker]++;
+		}
+	}
+
+	// LLM score: track survivor deaths
+	if (iVictim > 0 && iVictim <= MaxClients && IsClientInGame(iVictim) && IsClientSurvivor(iVictim))
+	{
+		g_iLLM_PlayerDeaths[iVictim]++;
+		g_iLLM_ChapDeaths[iVictim]++;
+	}
+
+	// LLM score: track common infected kills by survivor
+	if (iAttacker > 0 && iAttacker <= MaxClients && IsClientInGame(iAttacker) && IsClientSurvivor(iAttacker))
+	{
+		if (iVictim <= 0 || iVictim > MaxClients) // non-player victim = common infected
+		{
+			g_iLLM_PlayerCommonKills[iAttacker]++;
+			g_iLLM_ChapCommonKills[iAttacker]++;
+		}
 	}
 
 	int iCurTarget = g_iBot_TargetInfected[iAttacker];
@@ -1721,7 +1752,10 @@ void Event_OnIncap(Event hEvent, const char[] sName, bool bBroadcast)
 
 	// LLM score: track incap
 	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+	{
 		g_iLLM_PlayerIncap[iClient]++;
+		g_iLLM_ChapIncaps[iClient]++;
+	}
 
 	iSecondarySlot = GetWeaponInInventory(iClient, 1);
 	if (iSecondarySlot)
@@ -1761,7 +1795,18 @@ void Event_OnHealSuccess(Event hEvent, const char[] sName, bool bBroadcast)
 	int subject = GetClientOfUserId(hEvent.GetInt("subject"));
 	int healer = GetClientOfUserId(hEvent.GetInt("userid"));
 	if (healer > 0 && healer <= MaxClients && IsClientInGame(healer) && subject != healer)
+	{
 		g_iLLM_PlayerHeal[healer]++;
+		g_iLLM_ChapHeals[healer]++;
+	}
+}
+
+// LLM: Track item pickups for statistics
+void LLM_EventItemPickup(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int client = GetClientOfUserId(hEvent.GetInt("userid"));
+	if (client > 0 && client <= MaxClients && IsClientInGame(client) && IsClientSurvivor(client))
+		g_iLLM_PlayerItemPickups[client]++;
 }
 
 // LLM: Send round outcome to Python service for experience learning
@@ -7536,6 +7581,7 @@ void LLM_Init()
 	HookEvent("lunge_pounce", LLM_EventLungePounce);
 	HookEvent("jockey_ride", LLM_EventJockeyRide);
 	HookEvent("charger_pummel_start", LLM_EventChargerPummel);
+	HookEvent("item_pickup", LLM_EventItemPickup);
 
 	PrintToServer("[LLM] Module initialized (ib_llm_enabled=%d)", g_hCvar_LLM_Enabled.IntValue);
 }
@@ -7562,8 +7608,18 @@ void LLM_OnMapStart()
 		g_iLLM_PlayerRevive[i] = 0;
 		g_iLLM_PlayerHeal[i] = 0;
 		g_iLLM_PlayerSIKills[i] = 0;
+		g_iLLM_PlayerDeaths[i] = 0;
+		g_iLLM_PlayerCommonKills[i] = 0;
+		g_iLLM_PlayerItemPickups[i] = 0;
 		g_bLLM_WasPinned[i] = false;
+		// Chapter stats
+		g_iLLM_ChapDeaths[i] = 0;
+		g_iLLM_ChapIncaps[i] = 0;
+		g_iLLM_ChapHeals[i] = 0;
+		g_iLLM_ChapSIKills[i] = 0;
+		g_iLLM_ChapCommonKills[i] = 0;
 	}
+	g_iLLM_CurrentChapter = 0;
 
 	// Force game start: L4D2 doesn't spawn survivor bots without a human player.
 	// Create a temporary fake client to trigger the game round, then kick it.
@@ -7984,9 +8040,26 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"pinned\":%s,\"pin_type\":\"%s\",", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist, botPinned?"true":"false", botPinType);
 	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
 	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
-	// Player scores (all alive survivors)
-	char scores[1024]="";
+	// Player scores (all alive survivors) — now includes deaths, common_kills, item_pickups
+	char scores[2048]="";
 	int sc = 0;
+	// Track chapter change and reset chapter stats
+	int curChapter = L4D_GetCurrentChapter();
+	if (g_iLLM_CurrentChapter > 0 && curChapter != g_iLLM_CurrentChapter)
+	{
+		// Chapter changed — reset chapter stats
+		for (int i = 0; i <= MAXPLAYERS; i++)
+		{
+			g_iLLM_ChapDeaths[i] = 0;
+			g_iLLM_ChapIncaps[i] = 0;
+			g_iLLM_ChapHeals[i] = 0;
+			g_iLLM_ChapSIKills[i] = 0;
+			g_iLLM_ChapCommonKills[i] = 0;
+		}
+	}
+	g_iLLM_CurrentChapter = curChapter;
+	// Round totals
+	int totalDeaths = 0, totalIncaps = 0, totalHeals = 0, totalSIKills = 0, totalCommonKills = 0, totalPickups = 0;
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i)) continue;
@@ -7997,12 +8070,30 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		g_bLLM_WasPinned[i] = nowPinned;
 		char sn[64]; GetClientName(i, sn, sizeof(sn));
 		if (sc > 0) Format(scores, sizeof(scores), "%s,", scores);
-		Format(scores, sizeof(scores), "%s{\"name\":\"%s\",\"incap\":%d,\"pinned\":%d,\"revive\":%d,\"heal\":%d,\"si_kills\":%d}",
-			scores, sn, g_iLLM_PlayerIncap[i], g_iLLM_PlayerPinned[i], g_iLLM_PlayerRevive[i], g_iLLM_PlayerHeal[i], g_iLLM_PlayerSIKills[i]);
+		Format(scores, sizeof(scores), "%s{\"name\":\"%s\",\"incap\":%d,\"pinned\":%d,\"revive\":%d,\"heal\":%d,\"si_kills\":%d,\"deaths\":%d,\"common_kills\":%d,\"item_pickups\":%d}",
+			scores, sn, g_iLLM_PlayerIncap[i], g_iLLM_PlayerPinned[i], g_iLLM_PlayerRevive[i], g_iLLM_PlayerHeal[i], g_iLLM_PlayerSIKills[i], g_iLLM_PlayerDeaths[i], g_iLLM_PlayerCommonKills[i], g_iLLM_PlayerItemPickups[i]);
+		totalDeaths += g_iLLM_PlayerDeaths[i];
+		totalIncaps += g_iLLM_PlayerIncap[i];
+		totalHeals += g_iLLM_PlayerHeal[i];
+		totalSIKills += g_iLLM_PlayerSIKills[i];
+		totalCommonKills += g_iLLM_PlayerCommonKills[i];
+		totalPickups += g_iLLM_PlayerItemPickups[i];
 		sc++;
 	}
 
-	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", directorJSON, scores, g_sLLM_Action);
+	// Chapter stats JSON
+	char chapStats[512]="";
+	Format(chapStats, sizeof(chapStats), "{\"current_chapter\":%d,\"round_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d,\"item_pickups\":%d},\"chapter_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d}}",
+		curChapter, totalDeaths, totalIncaps, totalHeals, totalSIKills, totalCommonKills, totalPickups,
+		g_iLLM_ChapDeaths[0], g_iLLM_ChapIncaps[0], g_iLLM_ChapHeals[0], g_iLLM_ChapSIKills[0], g_iLLM_ChapCommonKills[0]);
+	// Note: chapter_totals[0] is a placeholder; we aggregate per-player chapter data below
+	int chapDeaths=0, chapIncaps=0, chapHeals=0, chapSIKills=0, chapCommonKills=0;
+	for (int i = 1; i <= MAXPLAYERS; i++) { chapDeaths+=g_iLLM_ChapDeaths[i]; chapIncaps+=g_iLLM_ChapIncaps[i]; chapHeals+=g_iLLM_ChapHeals[i]; chapSIKills+=g_iLLM_ChapSIKills[i]; chapCommonKills+=g_iLLM_ChapCommonKills[i]; }
+	Format(chapStats, sizeof(chapStats), "{\"current_chapter\":%d,\"round_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d,\"item_pickups\":%d},\"chapter_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d}}",
+		curChapter, totalDeaths, totalIncaps, totalHeals, totalSIKills, totalCommonKills, totalPickups,
+		chapDeaths, chapIncaps, chapHeals, chapSIKills, chapCommonKills);
+
+	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"chapter_stats\":%s,\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", directorJSON, scores, chapStats, g_sLLM_Action);
 }
 
 bool LLM_IsPinned(int client)
