@@ -4,80 +4,61 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>L4D2 LLM 机器人决策系统</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Microsoft YaHei','PingFang SC',sans-serif;background:#0f0f0f;color:#e0e0e0;min-height:100vh}
-nav{background:#1a1a2e;padding:12px 24px;display:flex;align-items:center;gap:20px;border-bottom:1px solid #333;flex-wrap:wrap}
-nav .logo{color:#4fc3f7;font-weight:700;font-size:18px}
-nav a{color:#aaa;text-decoration:none;font-size:14px;padding:6px 12px;border-radius:4px;transition:all .2s}
+nav{background:#1a1a2e;padding:8px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #333;flex-wrap:wrap}
+nav .logo{color:#4fc3f7;font-weight:700;font-size:16px}
+nav a{color:#aaa;text-decoration:none;font-size:13px;padding:4px 8px;border-radius:4px;transition:all .2s}
 nav a:hover,nav a.active{color:#fff;background:#333}
-.container{max-width:1200px;margin:0 auto;padding:20px}
-h2{color:#4fc3f7;margin-bottom:16px;font-size:20px}
-.card{background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;margin-bottom:12px}
-.card h3{color:#4fc3f7;font-size:14px;margin-bottom:8px;letter-spacing:1px}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.stat-item{text-align:center;padding:12px}
-.stat-item .value{font-size:28px;font-weight:700;color:#4fc3f7}
-.stat-item .label{font-size:12px;color:#888;margin-top:4px}
-.hp-bar{height:8px;background:#333;border-radius:4px;overflow:hidden;margin:4px 0}
-.hp-bar .fill{height:100%;border-radius:4px;transition:width .3s}
+.container{max-width:1200px;margin:0 auto;padding:12px}
+h2{color:#4fc3f7;margin-bottom:10px;font-size:18px}
+.card{background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:12px;margin-bottom:8px}
+.card h3{color:#4fc3f7;font-size:13px;margin-bottom:6px;letter-spacing:0.5px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.stat-item{text-align:center;padding:8px}
+.stat-item .value{font-size:24px;font-weight:700;color:#4fc3f7}
+.stat-item .label{font-size:11px;color:#888;margin-top:2px}
+.hp-bar{height:6px;background:#333;border-radius:3px;overflow:hidden;margin:2px 0}
+.hp-bar .fill{height:100%;border-radius:3px;transition:width .3s}
 .hp-high{background:#4caf50}.hp-mid{background:#ff9800}.hp-low{background:#f44336}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #333}
-th{color:#4fc3f7;font-weight:600}
-.tag{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600}
-.tag-critical{background:#f44336;color:#fff}
-.tag-high{background:#ff9800;color:#fff}
-.tag-medium{background:#2196f3;color:#fff}
-.tag-low{background:#666;color:#fff}
-.tag-rule{background:#4caf50;color:#fff}
-.tag-llm{background:#9c27b0;color:#fff}
-.tag-fallback{background:#795548;color:#fff}
-.tag-skipped{background:#555;color:#ccc}
-pre{background:#111;border:1px solid #333;border-radius:4px;padding:12px;overflow-x:auto;font-size:12px;line-height:1.5;max-height:500px;overflow-y:auto}
-textarea{width:100%;min-height:300px;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:4px;padding:12px;font-family:monospace;font-size:13px;resize:vertical}
-button{background:#4fc3f7;color:#000;border:none;padding:8px 20px;border-radius:4px;cursor:pointer;font-weight:600;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:4px 8px;border-bottom:1px solid #222}
+th{color:#4fc3f7;font-weight:600;font-size:11px}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600}
+.tag-critical{background:#f44336;color:#fff}.tag-high{background:#ff9800;color:#fff}.tag-medium{background:#2196f3;color:#fff}.tag-low{background:#666;color:#fff}
+.tag-rule{background:#4caf50;color:#fff}.tag-llm{background:#9c27b0;color:#fff}.tag-fallback{background:#795548;color:#fff}
+pre{background:#111;border:1px solid #222;border-radius:4px;padding:8px;overflow-x:auto;font-size:11px;line-height:1.4;max-height:300px;overflow-y:auto}
+textarea{width:100%;min-height:200px;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;font-size:12px;resize:vertical}
+button{background:#4fc3f7;color:#000;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px}
 button:hover{background:#81d4fa}
-.refresh-btn{float:right;font-size:12px;padding:4px 12px}
+.refresh-btn{float:right;font-size:11px;padding:3px 10px}
 #page-content{display:none}
 .rating-S{color:#ffd700;font-weight:700}.rating-A{color:#4caf50;font-weight:700}.rating-B{color:#2196f3;font-weight:700}.rating-C{color:#888}.rating-D{color:#f44336;font-weight:700}
 .tag-S{background:#ffd700;color:#000}.tag-A{background:#4caf50;color:#fff}.tag-B{background:#2196f3;color:#fff}.tag-C{background:#666;color:#ccc}.tag-D{background:#f44336;color:#fff}
-/* 沙盘样式 */
-.sandbox-wrap{position:relative;width:100%;aspect-ratio:4/3;background:#0a0a0a;border:1px solid #333;border-radius:8px;overflow:hidden}
-.sandbox-wrap canvas{width:100%;height:100%}
-.sandbox-legend{display:flex;gap:16px;padding:8px 0;font-size:12px;flex-wrap:wrap}
-.sandbox-legend span{display:flex;align-items:center;gap:4px}
-.legend-dot{width:10px;height:10px;border-radius:50%;display:inline-block}
-/* AI视角增强 */
-.ai-flow{display:flex;gap:8px;align-items:stretch;margin-bottom:12px}
-.ai-flow .flow-step{flex:1;background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;text-align:center}
-.ai-flow .flow-step.active{border-color:#4fc3f7;box-shadow:0 0 10px rgba(79,195,247,.3)}
-.ai-flow .flow-arrow{display:flex;align-items:center;color:#4fc3f7;font-size:24px}
-.state-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-@media(max-width:768px){.state-grid{grid-template-columns:1fr}.ai-flow{flex-direction:column}.ai-flow .flow-arrow{justify-content:center}}
-.state-section{background:#111;border:1px solid #333;border-radius:4px;padding:10px}
-.state-section h4{color:#4fc3f7;margin-bottom:6px;font-size:12px}
-.state-section .row{display:flex;justify-content:space-between;padding:2px 0;font-size:12px;border-bottom:1px solid #1a1a1a}
-.state-section .row:last-child{border:none}
-.state-section .key{color:#888}
-.state-section .val{color:#e0e0e0;font-weight:500}
-.state-section .val.danger{color:#f44336}
-.state-section .val.warn{color:#ff9800}
-.state-section .val.ok{color:#4caf50}
-.collapsible{cursor:pointer;user-select:none}
-.collapsible::before{content:'▼ ';font-size:10px}
-.collapsible.closed::before{content:'▶ '}
-.collapsible.closed+div{display:none}
+.row{display:flex;justify-content:space-between;padding:2px 0;font-size:12px;border-bottom:1px solid #1a1a1a}
+.row:last-child{border:none}.row .k{color:#888}.row .v{color:#e0e0e0;font-weight:500}
+.row .v.danger{color:#f44336}.row .v.warn{color:#ff9800}.row .v.ok{color:#4caf50}
+.collapsible{cursor:pointer;user-select:none}.collapsible::before{content:'▼ ';font-size:9px}
+.collapsible.closed::before{content:'▶ '}.collapsible.closed+div{display:none}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media(max-width:768px){.two-col{grid-template-columns:1fr}}
+#sandbox3d{width:100%;height:400px;border:1px solid #333;border-radius:6px;overflow:hidden;position:relative}
+#sandbox3d canvas{width:100%!important;height:100%!important}
+.legend{display:flex;gap:10px;padding:4px 0;font-size:11px;flex-wrap:wrap}
+.legend span{display:flex;align-items:center;gap:3px}
+.ld{width:8px;height:8px;border-radius:50%;display:inline-block}
 </style>
 </head>
 <body>
 <nav>
-  <div class="logo">L4D2 LLM 机器人</div>
+  <div class="logo">L4D2 LLM</div>
   <a href="#" onclick="showPage('index')" class="active" data-page="index">仪表盘</a>
   <a href="#" onclick="showPage('bot')" data-page="bot">机器人</a>
   <a href="#" onclick="showPage('map')" data-page="map">地图</a>
   <a href="#" onclick="showPage('sandbox')" data-page="sandbox">沙盘</a>
-  <a href="#" onclick="showPage('ai-view')" data-page="ai-view">AI 视角</a>
+  <a href="#" onclick="showPage('ai_view')" data-page="ai_view">AI视角</a>
   <a href="#" onclick="showPage('config')" data-page="config">配置</a>
   <a href="#" onclick="showPage('history')" data-page="history">历史</a>
   <a href="#" onclick="showPage('stats')" data-page="stats">统计</a>
@@ -87,43 +68,31 @@ button:hover{background:#81d4fa}
 <div class="container" id="page-content"></div>
 
 <script>
-const API='';
-let refreshTimer=null;
-const pages={};
+const API='';let refreshTimer=null;const pages={};
 
 // ====== 翻译字典 ======
 const T={
-  // 角色名
   char:{Nick:'尼克',Rochelle:'罗谢尔',Coach:'教练',Ellis:'埃利斯',Bill:'比尔',Zoey:'佐伊',Francis:'弗朗西斯',Louis:'路易斯'},
-  // 武器名（去掉weapon_前缀后的）
   weapon:{
     rifle:'步枪',rifle_ak47:'AK-47',rifle_desert:'沙漠步枪',rifle_m60:'M60',rifle_sg552:'SG552',
-    shotgun:'霰弹枪',shotgun_chrome:'铬管霰弹枪',pumpshotgun:'泵动霰弹枪',autoshotgun:'自动霰弹枪',shotgun_spas:'战术霰弹枪',
-    sniper_military:'军用狙击枪',sniper_scout:'侦察狙击枪',sniper_awp:'AWP',hunting_rifle:'狩猎步枪',
-    smg:'冲锋枪',smg_silenced:'消音冲锋枪',smg_mp5:'MP5',
-    pistol:'手枪',pistol_magnum:'马格南手枪',melee:'近战武器',
+    shotgun:'霰弹枪',shotgun_chrome:'铬管霰弹',pumpshotgun:'泵动霰弹',autoshotgun:'自动霰弹',shotgun_spas:'战术霰弹',
+    sniper_military:'军用狙击',sniper_scout:'侦察狙击',sniper_awp:'AWP',hunting_rifle:'狩猎步枪',
+    smg:'冲锋枪',smg_silenced:'消音冲锋',smg_mp5:'MP5',
+    pistol:'手枪',pistol_magnum:'马格南',melee:'近战',
     grenade_launcher:'榴弹发射器',chainsaw:'电锯',
     first_aid_kit:'急救包',defibrillator:'除颤器',pain_pills:'止痛药',adrenaline:'肾上腺素',
     molotov:'燃烧瓶',pipe_bomb:'管状炸弹',vomitjar:'胆汁瓶',
     gascan:'汽油桶',propanetank:'丙烷罐',oxygentank:'氧气罐',fireworkcrate:'烟花箱',
-    ammo_stock:'弹药堆',weapon_ammo_spawner:'弹药箱',
-    upgradepack_incendiary:'燃烧弹升级包',upgradepack_explosive:'高爆弹升级包',
-    laser_sight:'激光瞄准器',incendiary_ammo:'燃烧弹',explosive_ammo:'高爆弹',
-    none:'无','':'无'
+    ammo_stock:'弹药堆',none:'无','':'无'
   },
-  // 动作名
   action:{
     follow_team:'跟随队伍',attack_si:'攻击特感',attack_tank:'集火Tank',attack_witch:'攻击女巫',
     help_teammate:'救助队友',heal_teammate:'治疗队友',evade_threat:'躲避威胁',
     hold_position:'原地防守',throw_grenade:'投掷手雷',pick_up_item:'拾取物品',
     give_item:'给队友物品',cover_fire:'掩护射击',use_defib:'使用除颤器'
   },
-  // 特感类型
-  si:{smoker:'烟鬼',hunter:'猎人',jockey:'骑乘者',charger:'冲锋者',spitter:'喷吐者',boomer:'呕吐者',tank:'坦克',witch:'女巫',
-      hunter_l:'猎人(幽灵)',smoker_l:'烟鬼(幽灵)',jockey_l:'骑乘者(幽灵)',charger_l:'冲锋者(幽灵)',spitter_l:'喷吐者(幽灵)',boomer_l:'呕吐者(幽灵)'},
-  // 被控类型
+  si:{smoker:'烟鬼',hunter:'猎人',jockey:'骑乘者',charger:'冲锋者',spitter:'喷吐者',boomer:'呕吐者',tank:'坦克',witch:'女巫'},
   pin:{smoker:'烟鬼拉扯',hunter:'猎人扑倒',jockey:'骑乘者骑乘',charger:'冲锋者冲撞'},
-  // 地图名
   map:{
     c1m1_hotel:'死亡中心-旅馆',c1m2_streets:'死亡中心-街道',c1m3_mall:'死亡中心-商场',c1m4_atrium:'死亡中心-中庭',
     c2m1_highway:'黑色狂欢节-公路',c2m2_fairgrounds:'黑色狂欢节-游乐场',c2m3_coaster:'黑色狂欢节-过山车',c2m4_barns:'黑色狂欢节-谷仓',c2m5_concert:'黑色狂欢节-演唱会',
@@ -134,28 +103,20 @@ const T={
     c7m1_docks:'牺牲-码头',c7m2_barge:'牺牲-驳船',c7m3_port:'牺牲-港口',
     c8m1_apartment:'毫不留情-公寓',c8m2_subway:'毫不留情-地铁',c8m3_sewers:'毫不留情-下水道',c8m4_interior:'毫不留情-医院',c8m5_rooftop:'毫不留情-天台',
     c9m1_alleys:'坠机险途-小巷',c9m2_lots:'坠机险途-工地',
-    c10m1_caves:'牺牲-洞穴',c10m2_drainage:'牺牲-排水',c10m3_ranchhouse:'牺牲-农场',c10m4_mainstreet:'牺牲-主街',c10m5_houseboat:'牺牲-船屋',
-    c11m1_greenhouse:'无人永生-温室',c11m2_offices:'无人永生-办公楼',c11m3_garage:'无人永生-车库',c11m4_terminal:'无人永生-航站楼',c11m5_runway:'无人永生-跑道',
-    c12m1_hilltop:'血腥收获-山丘',c12m2_traintunnel:'血腥收获-火车隧道',c12m3_bridge:'血腥收获-桥',c12m4_barn:'血腥收获-谷仓',c12m5_cornfield:'血腥收获-玉米地',
-    c13m1_alpinecreek:'临死一博-溪谷',c13m2_southpinestream:'临死一博-溪流',c13m3_muxymill:'临死一博-磨坊',c13m4_cutthecreek:'临死一博-截流',
+    c13m1_alpinecreek:'临死一博-溪谷',c13m2_southpinestream:'临死一博-溪流',c13m3_muxymill:'临死一博-磨坊',c13m4_cutthecreek:'临死一博-截流'
   },
-  // 难度
   diff:{Easy:'简单',Normal:'普通',Hard:'困难',Impossible:'专家'},
-  // 游戏模式
-  mode:{coop:'合作模式',versus:'对抗模式',survival:'生存模式',realism:'写实模式',scavenge:'搜刮模式',
+  mode:{coop:'合作',versus:'对抗',survival:'生存',realism:'写实',scavenge:'搜刮',
     mutation1:'出血不止',mutation2:'坦克大战',mutation3:'限定油桶',mutation4:'绝境求生',
     mutation5:'碎尸盛宴',mutation6:'油桶赛跑',mutation7:'侏儒接力',mutation8:'铁人三项',
     mutation9:'最后生还者',mutation10:'无人生还',mutation11:'单人副本',mutation12:'一人一桶',
-    mutation13:'仅限一人',mutation14:' bleeding',mutation15:'对抗生存',mutation16:'出血2',
-    mutation17:'出血3',mutation18:'出血4',mutation19:'出血5',mutation20:'出血6'},
-  // 导演阶段
+    mutation13:'仅限一人',mutation15:'对抗生存'},
   director:{relax:'休整',build:'蓄势',peak:'高峰',sustain:'持续'}
 };
 
-// 翻译函数
-function tr(dict,key){return dict[key]||key}
+function tr(d,k){return d[k]||k}
 function trChar(n){return T.char[n]||n}
-function trWeapon(w){if(!w||w==='none')return '无';const k=w.replace('weapon_','');return T.weapon[k]||k}
+function trWeapon(w){if(!w||w==='none')return'无';return T.weapon[w.replace('weapon_','')]||w.replace('weapon_','')}
 function trAction(a){return T.action[a]||a}
 function trSI(t){return T.si[t]||t}
 function trPin(t){return T.pin[t]||t||''}
@@ -166,55 +127,47 @@ function trDirector(d){return T.director[d]||d}
 
 function showPage(name){
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===name));
-  const el=document.getElementById('page-content');
-  el.style.display='block';
+  const el=document.getElementById('page-content');el.style.display='block';
   if(refreshTimer)clearInterval(refreshTimer);
   if(pages[name])pages[name]();
   refreshTimer=setInterval(()=>{if(pages[name])pages[name]()},3000);
 }
-
-async function api(path){
-  const r=await fetch(API+path);
-  return r.json();
-}
-
+async function api(path){const r=await fetch(API+path);return r.json()}
 function hpClass(hp){return hp>60?'hp-high':hp>30?'hp-mid':'hp-low'}
-function hpBar(hp,max=100){return `<div class="hp-bar"><div class="fill ${hpClass(hp)}" style="width:${Math.min(hp/max*100,100)}%"></div></div>`}
-function tag(text,cls){return `<span class="tag tag-${cls}">${text}</span>`}
+function hpBar(hp,max=100){return`<div class="hp-bar"><div class="fill ${hpClass(hp)}" style="width:${Math.min(hp/max*100,100)}%"></div></div>`}
+function tag(t,c){return`<span class="tag tag-${c}">${t}</span>`}
 function distColor(d){return d<300?'#f44336':d<800?'#ff9800':'#4caf50'}
 function statusLabel(m){return m.pinned?'被控':m.incap?'倒地':'正常'}
 function statusClass(m){return m.pinned?'critical':m.incap?'high':'low'}
-function sourceLabel(s){return s==='rule'?'规则':s==='llm'?'LLM':s==='fallback'?'回退':s==='skipped'?'跳过':s}
-function ghostLabel(g){return g?'幽灵':'实体'}
-function angryLabel(a){return a?'暴怒':'平静'}
-function outcomeLabel(o){return o==='survived'?'存活':o==='team_wipe'?'团灭':o==='escaped'?'逃脱':o}
-function hpValClass(v){return v>60?'ok':v>30?'warn':'danger'}
+function srcLabel(s){return s==='rule'?'规则':s==='llm'?'LLM':s==='fallback'?'回退':s==='skipped'?'跳过':s}
+function ghostL(g){return g?'幽灵':'实体'}
+function angryL(a){return a?'暴怒':'平静'}
+function outcomeL(o){return o==='survived'?'存活':o==='team_wipe'?'团灭':o==='escaped'?'逃脱':o}
+function hpVC(v){return v>60?'ok':v>30?'warn':'danger'}
 
-// 仪表盘
+// ====== 仪表盘 ======
 pages.index=async()=>{
-  const d=await api('/api/status');
-  const s=await api('/api/stats');
-  const h=await api('/api/history?count=5');
-  let histHtml=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(sourceLabel(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),'high')}</td><td style="color:#888;font-size:11px">${e.decision.reason?.slice(0,60)||''}</td></tr>`).join('');
+  const[d,s,h]=[await api('/api/status'),await api('/api/stats'),await api('/api/history?count=5')];
+  const hh=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(srcLabel(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),'high')}</td><td style="color:#888;font-size:10px">${e.decision.reason?.slice(0,50)||''}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
     <h2>仪表盘 <button class="refresh-btn" onclick="pages.index()">刷新</button></h2>
     <div class="stat-grid">
       <div class="card stat-item"><div class="value">${trChar(d.bot_name||'?')}</div><div class="label">机器人</div></div>
       <div class="card stat-item"><div class="value" style="color:${hpClass(d.bot_hp||0).replace('hp-','#').replace('high','4caf50').replace('mid','ff9800').replace('low','f44336')}">${d.bot_hp||0}</div><div class="label">生命值</div></div>
-      <div class="card stat-item"><div class="value">${d.threats_visible||0}</div><div class="label">可见威胁</div></div>
-      <div class="card stat-item"><div class="value" style="font-size:16px">${trMap(d.current_map||'?')}</div><div class="label">当前地图</div></div>
-      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">规则决策</div></div>
-      <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM 决策</div></div>
+      <div class="card stat-item"><div class="value">${d.threats_visible||0}</div><div class="label">威胁</div></div>
+      <div class="card stat-item"><div class="value" style="font-size:14px">${trMap(d.current_map||'?')}</div><div class="label">地图</div></div>
+      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">规则</div></div>
+      <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM</div></div>
       <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">跳过</div></div>
-      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">平均 API 耗时</div></div>
+      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">API耗时</div></div>
     </div>
-    <div class="card"><h3>最近决策</h3><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th></tr>${histHtml}</table></div>`;
+    <div class="card"><h3>最近决策</h3><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th></tr>${hh}</table></div>`;
 };
 
-// 机器人
+// ====== 机器人 ======
 pages.bot=async()=>{
   const d=await api('/api/bot');
-  const matesHtml=(d.teammates||[]).map(m=>`<tr><td>${trChar(m.name)}</td><td>${m.hp}${hpBar(m.hp)}</td><td>${tag(statusLabel(m),statusClass(m))}${m.pinned&&m.pin_type?` (${trPin(m.pin_type)})`:''}</td><td style="color:${distColor(m.dist)}">${m.dist?.toFixed(0)||'?'}</td><td>${trWeapon(m.weapon)}</td></tr>`).join('');
+  const mH=(d.teammates||[]).map(m=>`<tr><td>${trChar(m.name)}</td><td>${m.hp}${hpBar(m.hp)}</td><td>${tag(statusLabel(m),statusClass(m))}${m.pinned&&m.pin_type?'('+trPin(m.pin_type)+')':''}</td><td style="color:${distColor(m.dist)}">${m.dist?.toFixed(0)||'?'}</td><td>${trWeapon(m.weapon)}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
     <h2>机器人信息</h2>
     <div class="stat-grid">
@@ -223,7 +176,7 @@ pages.bot=async()=>{
       <div class="card stat-item"><div class="value">${d.temp_hp||0}</div><div class="label">临时生命</div></div>
       <div class="card stat-item"><div class="value">${tag(trAction(d.current_action||'?'),d.pinned?'critical':d.incap?'high':'medium')}</div><div class="label">当前动作</div></div>
     </div>
-    ${d.pinned?`<div class="card" style="border-color:#f44336"><h3 style="color:#f44336">被控状态</h3><p>被 <strong>${trPin(d.pin_type)||'未知'}</strong> 控制，无法自主行动</p></div>`:''}
+    ${d.pinned?`<div class="card" style="border-color:#f44336"><h3 style="color:#f44336">被控状态</h3><p>被 <strong>${trPin(d.pin_type)||'未知'}</strong> 控制</p></div>`:''}
     <div class="card"><h3>武器装备</h3>
       <table><tr><th>槽位</th><th>物品</th><th>弹药</th></tr>
         <tr><td>主武器</td><td>${trWeapon(d.weapons?.primary)}</td><td>${d.ammo||0}+${d.reserve||0}</td></tr>
@@ -233,388 +186,406 @@ pages.bot=async()=>{
         <tr><td>止痛药</td><td>${trWeapon(d.weapons?.pills)}</td><td>-</td></tr>
       </table>
     </div>
-    <div class="card"><h3>队友</h3><table><tr><th>名称</th><th>生命值</th><th>状态</th><th>距离</th><th>主武器</th></tr>${matesHtml}</table></div>
-    <div class="card"><h3>当前决策</h3><p><strong>${trAction(d.current_action||'无')}</strong> (${d.current_priority||'?'}) - ${d.current_reason||''}</p></div>`;
+    <div class="card"><h3>队友</h3><table><tr><th>名称</th><th>HP</th><th>状态</th><th>距离</th><th>武器</th></tr>${mH}</table></div>
+    <div class="card"><h3>当前决策</h3><p><strong>${trAction(d.current_action||'无')}</strong> ${d.current_priority?'('+d.current_priority+')':''} — ${d.current_reason||''}</p></div>
+    <div class="card" style="border-color:#555"><h3 style="color:#888">多机器人控制</h3><p style="color:#666;font-size:12px">当前仅支持单机器人控制（由 SourceMod 插件决定控制哪位 Bot）。如需切换控制对象或同时控制全部 Bot，需在 SourceMod 插件端实现多 Bot 轮询或广播机制，属于下一阶段开发内容。</p></div>`;
 };
 
-// 地图
+// ====== 地图 ======
 pages.map=async()=>{
   const d=await api('/api/map');
-  const thHtml=(d.threats||[]).map(t=>`<tr><td>${trSI(t.type)}</td><td>${t.hp}</td><td style="color:${distColor(t.dist)}">${t.dist?.toFixed(0)||'?'}</td><td>${ghostLabel(t.ghost)}</td></tr>`).join('');
-  const wHtml=(d.witches||[]).map(w=>`<tr><td>女巫</td><td>${w.hp}</td><td style="color:${distColor(w.dist)}">${w.dist?.toFixed(0)||'?'}</td><td>${angryLabel(w.angry)}</td></tr>`).join('');
-  const iHtml=(d.items||[]).map(i=>`<tr><td>${trWeapon(i.name)}</td><td style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}</td></tr>`).join('');
+  const thH=(d.threats||[]).map(t=>`<tr><td>${trSI(t.type)}</td><td>${t.hp}</td><td style="color:${distColor(t.dist)}">${t.dist?.toFixed(0)||'?'}</td><td>${ghostL(t.ghost)}</td></tr>`).join('');
+  const wH=(d.witches||[]).map(w=>`<tr><td>女巫</td><td>${w.hp}</td><td style="color:${distColor(w.dist)}">${w.dist?.toFixed(0)||'?'}</td><td>${angryL(w.angry)}</td></tr>`).join('');
+  const iH=(d.items||[]).map(i=>`<tr><td>${trWeapon(i.name)}</td><td style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}</td></tr>`).join('');
   const t=d.terrain||{};
   document.getElementById('page-content').innerHTML=`
     <h2>地图信息</h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value" style="font-size:16px">${trMap(d.map||'?')}</div><div class="label">地图</div></div>
-      <div class="card stat-item"><div class="value" style="font-size:16px">${trMode(d.mode||'?')}</div><div class="label">模式</div></div>
+      <div class="card stat-item"><div class="value" style="font-size:14px">${trMap(d.map||'?')}</div><div class="label">地图</div></div>
+      <div class="card stat-item"><div class="value" style="font-size:14px">${trMode(d.mode||'?')}</div><div class="label">模式</div></div>
       <div class="card stat-item"><div class="value">${trDiff(d.difficulty||'?')}</div><div class="label">难度</div></div>
-      <div class="card stat-item"><div class="value">${trDirector(d.director||'?')}</div><div class="label">导演阶段</div></div>
+      <div class="card stat-item"><div class="value">${trDirector(d.director||'?')}</div><div class="label">导演</div></div>
     </div>
-    <div class="card"><h3>地形</h3><p>狭窄: ${t.narrow?'是':'否'} | 悬崖: ${t.ledge?'是':'否'} | 警报车: ${t.alarm_car?'是':'否'} | 事件: ${t.crescendo?'是':'否'} | 终局: ${t.finale?'是':'否'}</p></div>
-    <div class="card"><h3>威胁</h3>${thHtml?`<table><tr><th>类型</th><th>生命值</th><th>距离</th><th>状态</th></tr>${thHtml}</table>`:'<p style="color:#666">无可见威胁</p>'}</div>
-    <div class="card"><h3>女巫</h3>${wHtml?`<table><tr><th>类型</th><th>生命值</th><th>距离</th><th>状态</th></tr>${wHtml}</table>`:'<p style="color:#666">附近无女巫</p>'}</div>
-    <div class="card"><h3>附近物品</h3>${iHtml?`<table><tr><th>物品</th><th>距离</th></tr>${iHtml}</table>`:'<p style="color:#666">附近无物品</p>'}</div>
-    <div class="card"><h3>事件</h3><p>${(d.events||[]).join('、')||'无'}</p></div>`;
+    <div class="card"><h3>地形</h3><p>狭窄:${t.narrow?'是':'否'} 悬崖:${t.ledge?'是':'否'} 警报车:${t.alarm_car?'是':'否'} 事件:${t.crescendo?'是':'否'} 终局:${t.finale?'是':'否'}</p></div>
+    <div class="two-col">
+      <div class="card"><h3>威胁${(d.threats||[]).length?' ('+(d.threats||[]).length+')':''}</h3>${thH?`<table><tr><th>类型</th><th>HP</th><th>距离</th><th>状态</th></tr>${thH}</table>`:'<p style="color:#555">无可见威胁</p>'}</div>
+      <div class="card"><h3>女巫${(d.witches||[]).length?' ('+(d.witches||[]).length+')':''}</h3>${wH?`<table><tr><th>HP</th><th>距离</th><th>状态</th></tr>${wH}</table>`:'<p style="color:#555">无</p>'}</div>
+    </div>
+    <div class="card"><h3>附近物品 (${(d.items||[]).length})</h3>${iH?`<table><tr><th>物品</th><th>距离</th></tr>${iH}</table>`:'<p style="color:#555">无</p>'}</div>`;
 };
 
-// ====== 沙盘 ======
+// ====== 3D 战术沙盘 ======
+let scene3d=null,renderer3d=null,camera3d=null,animId=null;
 pages.sandbox=async()=>{
   const d=await api('/api/ai-view');
-  const state=d.raw_state||{};
-  const decision=d.last_decision||{};
-  const bot=state.bot||{};
-  const teammates=state.teammates||[];
-  const threats=state.threats||[];
-  const witches=state.witches||[];
-  const items=state.items||[];
-  const terrain=state.terrain||{};
-  const pos=bot.pos||[0,0,0];
+  const state=d.raw_state||{},decision=d.last_decision||{},bot=state.bot||{};
 
   document.getElementById('page-content').innerHTML=`
-    <h2>战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button></h2>
-    <div class="card">
-      <h3>实时态势</h3>
-      <div class="sandbox-wrap"><canvas id="sandbox-canvas"></canvas></div>
-      <div class="sandbox-legend">
-        <span><span class="legend-dot" style="background:#4fc3f7"></span>Bot</span>
-        <span><span class="legend-dot" style="background:#4caf50"></span>队友</span>
-        <span><span class="legend-dot" style="background:#f44336"></span>特感</span>
-        <span><span class="legend-dot" style="background:#9c27b0"></span>女巫</span>
-        <span><span class="legend-dot" style="background:#ff9800"></span>物品</span>
-        <span><span class="legend-dot" style="background:#ff5722"></span>火焰</span>
-        <span><span class="legend-dot" style="background:#8bc34a"></span>酸液</span>
+    <h2>3D 战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button></h2>
+    <div class="card" style="padding:0;overflow:hidden">
+      <div id="sandbox3d"></div>
+      <div class="legend" style="padding:6px 10px">
+        <span><span class="ld" style="background:#4fc3f7"></span>Bot</span>
+        <span><span class="ld" style="background:#4caf50"></span>队友</span>
+        <span><span class="ld" style="background:#f44336"></span>特感</span>
+        <span><span class="ld" style="background:#9c27b0"></span>女巫</span>
+        <span><span class="ld" style="background:#666"></span>普通尸</span>
+        <span><span class="ld" style="background:#ff9800"></span>物品</span>
+        <span><span class="ld" style="background:#2196f3"></span>枪械</span>
+        <span><span class="ld" style="background:#4caf50"></span>医疗</span>
+        <span><span class="ld" style="background:#ff5722"></span>火焰</span>
+        <span><span class="ld" style="background:#8bc34a"></span>酸液</span>
+        <span><span class="ld" style="background:#ffd700"></span>决策</span>
+        鼠标拖拽旋转 | 滚轮缩放
       </div>
     </div>
-    <div class="card"><h3>数据流</h3>
-      <div class="ai-flow">
-        <div class="flow-step ${d.decision_source?'':'active'}"><div style="font-size:24px;color:#4fc3f7">&#9881;</div><div style="font-size:11px;color:#888">游戏状态</div><div style="font-size:12px">${Object.keys(state).length} 字段</div></div>
-        <div class="flow-arrow">&#10145;</div>
-        <div class="flow-step"><div style="font-size:24px;color:#9c27b0">&#129504;</div><div style="font-size:11px;color:#888">规则引擎</div><div style="font-size:12px">${d.decision_source==='rule'?'匹配':'跳过'}</div></div>
-        <div class="flow-arrow">&#10145;</div>
-        <div class="flow-step ${d.decision_source==='llm'?'active':''}"><div style="font-size:24px;color:#9c27b0">&#128300;</div><div style="font-size:11px;color:#888">LLM 推理</div><div style="font-size:12px">${d.decision_source==='llm'?'触发':'跳过'}</div></div>
-        <div class="flow-arrow">&#10145;</div>
-        <div class="flow-step"><div style="font-size:24px;color:#4caf50">&#9989;</div><div style="font-size:11px;color:#888">决策验证</div><div style="font-size:12px">${decision.action||'-'}</div></div>
-        <div class="flow-arrow">&#10145;</div>
-        <div class="flow-step active"><div style="font-size:24px;color:#ff9800">&#127918;</div><div style="font-size:11px;color:#888">执行</div><div style="font-size:12px">${trAction(decision.action||'')}</div></div>
+    <div class="two-col">
+      <div class="card"><h3>Bot 状态</h3>
+        <div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div>
+        <div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div>
+        <div class="row"><span class="k">武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div>
+        <div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
+        <div class="row"><span class="k">进度</span><span class="v">${bot.flow||0}</span></div>
+      </div>
+      <div class="card"><h3>战场</h3>
+        <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')}</span></div>
+        <div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')} / ${trDiff(state.difficulty||'')}</span></div>
+        <div class="row"><span class="k">导演</span><span class="v">${trDirector(state.director||'')}</span></div>
+        <div class="row"><span class="k">特感</span><span class="v ${(state.threats||[]).length?'danger':'ok'}">${(state.threats||[]).length}</span></div>
+        <div class="row"><span class="k">普通尸</span><span class="v">${state.common_count||0}</span></div>
       </div>
     </div>
-    <div class="state-grid">
-      <div class="card"><div class="state-section"><h4>Bot 状态</h4>
-        <div class="row"><span class="key">名称</span><span class="val">${trChar(bot.name||'?')}</span></div>
-        <div class="row"><span class="key">生命值</span><span class="val ${hpValClass(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?`(+${bot.temp_hp})`:''}</span></div>
-        <div class="row"><span class="key">主武器</span><span class="val">${trWeapon(bot.weapons?.primary)}</span></div>
-        <div class="row"><span class="key">被控</span><span class="val ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
-        <div class="row"><span class="key">倒地</span><span class="val ${bot.incap?'danger':'ok'}">${bot.incap?'是':'否'}</span></div>
-        <div class="row"><span class="key">进度</span><span class="val">${bot.flow||0}</span></div>
-        <div class="row"><span class="key">朝向</span><span class="val">${(bot.angles||[])[0]?.toFixed(0)||'?'}°</span></div>
-      </div></div>
-      <div class="card"><div class="state-section"><h4>战场概况</h4>
-        <div class="row"><span class="key">地图</span><span class="val">${trMap(state.map||'')}</span></div>
-        <div class="row"><span class="key">模式/难度</span><span class="val">${trMode(state.mode||'')} / ${trDiff(state.difficulty||'')}</span></div>
-        <div class="row"><span class="key">导演</span><span class="val">${trDirector(state.director||'')}</span></div>
-        <div class="row"><span class="key">特感数</span><span class="val ${threats.length>0?'danger':'ok'}">${threats.length}</span></div>
-        <div class="row"><span class="key">普通尸数</span><span class="val">${state.common_count||0}</span></div>
-        <div class="row"><span class="key">女巫</span><span class="val">${witches.length}</span></div>
-        <div class="row"><span class="key">附近物品</span><span class="val">${items.length}</span></div>
-        <div class="row"><span class="key">友伤</span><span class="val">${state.server?.ff?'是':'否'}</span></div>
-      </div></div>
-      <div class="card"><div class="state-section"><h4>队友状态</h4>
-        ${teammates.map(m=>`<div class="row"><span class="key">${trChar(m.name)}</span><span class="val ${hpValClass(m.hp)}">${m.hp}HP ${m.pinned?'被控('+trPin(m.pin_type)+')':m.incap?'倒地':'正常'} d=${m.dist?.toFixed(0)||'?'}</span></div>`).join('')}
-      </div></div>
-      <div class="card"><div class="state-section"><h4>当前决策</h4>
-        <div class="row"><span class="key">动作</span><span class="val" style="color:#4fc3f7">${trAction(decision.action||'')}</span></div>
-        <div class="row"><span class="key">目标</span><span class="val">${decision.target||'-'}</span></div>
-        <div class="row"><span class="key">优先级</span><span class="val">${decision.priority||'-'}</span></div>
-        <div class="row"><span class="key">来源</span><span class="val">${sourceLabel(d.decision_source||'')}</span></div>
-        <div class="row"><span class="key">原因</span><span class="val" style="font-size:11px;line-height:1.4;max-width:200px;display:inline-block">${decision.reason||'-'}</span></div>
-      </div></div>
-    </div>
-    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">原始数据（JSON）</h3><div><pre>${JSON.stringify({state,decision},null,2)}</pre></div></div>`;
+    <div class="card"><h3>当前决策</h3>
+      <div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div>
+      <div class="row"><span class="k">目标</span><span class="v">${decision.target||'-'}</span></div>
+      <div class="row"><span class="k">来源</span><span class="v">${srcLabel(d.decision_source||'')}</span></div>
+      <div class="row"><span class="k">原因</span><span class="v" style="font-size:11px">${decision.reason||'-'}</span></div>
+    </div>`;
 
-  // 绘制沙盘
-  drawSandbox(state,decision);
+  build3D(state,decision);
 };
 
-function drawSandbox(state,decision){
-  const canvas=document.getElementById('sandbox-canvas');
-  if(!canvas)return;
-  const rect=canvas.parentElement.getBoundingClientRect();
-  canvas.width=rect.width*2;canvas.height=rect.height*2;
-  const ctx=canvas.getContext('2d');
-  ctx.scale(2,2);
-  const W=rect.width,H=rect.height;
-  const cx=W/2,cy=H/2;
+function build3D(state,decision){
+  if(animId)cancelAnimationFrame(animId);
+  const container=document.getElementById('sandbox3d');
+  if(!container)return;
+  const W=container.clientWidth,H=container.clientHeight;
 
-  // 背景
-  ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,W,H);
+  scene3d=new THREE.Scene();
+  scene3d.background=new THREE.Color(0x0a0a12);
+  scene3d.fog=new THREE.Fog(0x0a0a12,800,2000);
+
+  camera3d=new THREE.PerspectiveCamera(60,W/H,1,5000);
+  camera3d.position.set(0,400,500);
+  camera3d.lookAt(0,0,0);
+
+  renderer3d=new THREE.WebGLRenderer({antialias:true});
+  renderer3d.setSize(W,H);
+  renderer3d.setPixelRatio(window.devicePixelRatio);
+  container.innerHTML='';
+  container.appendChild(renderer3d.domElement);
+
+  // 光照
+  scene3d.add(new THREE.AmbientLight(0x404060,1));
+  const dl=new THREE.DirectionalLight(0xffffff,0.6);dl.position.set(200,400,200);scene3d.add(dl);
+
+  // 地面
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(3000,3000),new THREE.MeshLambertMaterial({color:0x1a1a2e}));
+  ground.rotation.x=-Math.PI/2;scene3d.add(ground);
 
   // 网格
-  ctx.strokeStyle='#1a1a2e';ctx.lineWidth=0.5;
-  for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
-  for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+  const grid=new THREE.GridHelper(3000,30,0x222244,0x111133);scene3d.add(grid);
 
   // 距离圈
-  const scale=Math.min(W,H)/2400; // 2400单位 = canvas最短边
   [300,800,1500].forEach(r=>{
-    ctx.beginPath();ctx.arc(cx,cy,r*scale,0,Math.PI*2);
-    ctx.strokeStyle=r===300?'#f4433640':r===800?'#ff980040':'#4caf5030';
-    ctx.lineWidth=1;ctx.setLineDash([4,4]);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle=r===300?'#f44336':r===800?'#ff9800':'#4caf50';
-    ctx.font='9px sans-serif';ctx.fillText(r+'u',cx+r*scale+2,cy-2);
+    const c=new THREE.Mesh(new THREE.RingGeometry(r-1,r+1,64),new THREE.MeshBasicMaterial({color:r===300?0xf44336:r===800?0xff9800:0x4caf50,side:THREE.DoubleSide,transparent:true,opacity:0.4}));
+    c.rotation.x=-Math.PI/2;c.position.y=1;scene3d.add(c);
   });
 
-  // 地形标记
-  const terrain=state.terrain||{};
-  if(terrain.narrow){ctx.fillStyle='#ff980030';ctx.fillRect(cx-80,cy-80,160,160);ctx.fillStyle='#ff9800';ctx.font='10px sans-serif';ctx.fillText('狭窄',cx-12,cy-90)}
-  if(terrain.ledge){ctx.fillStyle='#f4433630';ctx.fillRect(cx+40,cy-80,120,160);ctx.fillStyle='#f44336';ctx.font='10px sans-serif';ctx.fillText('悬崖',cx+80,cy-90)}
-  if(terrain.alarm_car){ctx.fillStyle='#ffd70030';ctx.fillRect(cx-120,cy+40,80,80);ctx.fillStyle='#ffd700';ctx.font='10px sans-serif';ctx.fillText('警报车',cx-115,cy+55)}
-  if(terrain.finale){ctx.fillStyle='#9c27b030';ctx.fillRect(0,0,W,H);ctx.fillStyle='#9c27b0';ctx.font='16px sans-serif';ctx.fillText('终局',10,25)}
-  if(terrain.crescendo){ctx.fillStyle='#ff572230';ctx.fillRect(0,0,W,H);ctx.fillStyle='#ff5722';ctx.font='16px sans-serif';ctx.fillText('事件',10,45)}
+  const bot=state.bot||{};
+  const yaw=((bot.angles||[])[0]||0)*Math.PI/180;
 
-  // 火焰区域
-  (state.fire_areas||[]).forEach(f=>{
-    const dx=f.dist||f.x||0;const dy=f.dist_y||0;
-    ctx.beginPath();ctx.arc(cx+dx*scale,cy+dy*scale,20,0,Math.PI*2);
-    ctx.fillStyle='#ff572240';ctx.fill();ctx.strokeStyle='#ff5722';ctx.lineWidth=1;ctx.stroke();
-    ctx.fillStyle='#ff5722';ctx.font='9px sans-serif';ctx.fillText('火',cx+dx*scale-4,cy+dy*scale+3);
-  });
-  // 酸液区域
-  (state.acid_areas||[]).forEach(a=>{
-    const dx=a.dist||a.x||0;const dy=a.dist_y||0;
-    ctx.beginPath();ctx.arc(cx+dx*scale,cy+dy*scale,20,0,Math.PI*2);
-    ctx.fillStyle='#8bc34a30';ctx.fill();ctx.strokeStyle='#8bc34a';ctx.lineWidth=1;ctx.stroke();
-    ctx.fillStyle='#8bc34a';ctx.font='9px sans-serif';ctx.fillText('酸',cx+dx*scale-4,cy+dy*scale+3);
-  });
-
-  // 物品（黄色菱形）
-  (state.items||[]).forEach(item=>{
-    const dist=item.dist||0;
-    const angle=Math.atan2((item.y||0)-(state.bot?.pos?.[1]||0),(item.x||0)-(state.bot?.pos?.[0]||0));
-    const x=cx+Math.cos(angle)*dist*scale;
-    const y=cy+Math.sin(angle)*dist*scale;
-    if(x<0||x>W||y<0||y>H)return;
-    ctx.save();ctx.translate(x,y);ctx.rotate(Math.PI/4);
-    ctx.fillStyle='#ff980080';ctx.fillRect(-4,-4,8,8);ctx.restore();
-  });
-
-  // 特感（红色三角）
-  (state.threats||[]).forEach(t=>{
-    const dist=t.dist||0;
-    const x=cx+(Math.random()-0.5)*dist*scale;
-    const y=cy+(Math.random()-0.5)*dist*scale;
-    ctx.beginPath();ctx.moveTo(x,y-8);ctx.lineTo(x-6,y+5);ctx.lineTo(x+6,y+5);ctx.closePath();
-    ctx.fillStyle=t.ghost?'#f4433640':'#f44336';ctx.fill();
-    ctx.fillStyle='#fff';ctx.font='9px sans-serif';ctx.fillText(trSI(t.type),x-10,y+14);
-  });
-
-  // 女巫（紫色圆）
-  (state.witches||[]).forEach(w=>{
-    const dist=w.dist||0;
-    const x=cx+(Math.random()-0.5)*dist*scale;
-    const y=cy+(Math.random()-0.5)*dist*scale;
-    ctx.beginPath();ctx.arc(x,y,8,0,Math.PI*2);
-    ctx.fillStyle=w.angry?'#9c27b0':'#9c27b060';ctx.fill();
-    ctx.fillStyle='#fff';ctx.font='9px sans-serif';ctx.fillText(w.angry?'暴怒':'平静',x-10,y+14);
-  });
-
-  // 队友（绿色圆）
-  (state.teammates||[]).forEach(m=>{
-    const dist=m.dist||0;
-    const x=cx+(Math.random()-0.5)*dist*scale;
-    const y=cy+(Math.random()-0.5)*dist*scale;
-    ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);
-    ctx.fillStyle=m.pinned?'#f44336':m.incap?'#ff9800':'#4caf50';ctx.fill();
-    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
-    ctx.fillText(trChar(m.name),x,y-10);
-    ctx.fillText(m.hp+'HP',x,y+18);
-    ctx.textAlign='left';
-  });
-
-  // Bot（蓝色大圆 + 朝向箭头）
-  ctx.beginPath();ctx.arc(cx,cy,12,0,Math.PI*2);
-  ctx.fillStyle='#4fc3f7';ctx.fill();
-  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
-  const angles=state.bot?.angles||[0,0];
-  const yaw=(angles[0]||0)*Math.PI/180;
-  ctx.beginPath();ctx.moveTo(cx,cy);
-  ctx.lineTo(cx+Math.cos(yaw)*25,cy+Math.sin(yaw)*25);
-  ctx.strokeStyle='#4fc3f7';ctx.lineWidth=2;ctx.stroke();
-  ctx.fillStyle='#fff';ctx.font='11px sans-serif';ctx.textAlign='center';
-  ctx.fillText(trChar(state.bot?.name||'Bot'),cx,cy-18);
-  ctx.textAlign='left';
-
-  // 决策箭头
-  if(decision.action){
-    const actionDir=decision.action.includes('attack')||decision.action==='throw_grenade'?yaw:
-                    decision.action==='follow_team'?Math.atan2(Math.random()-0.5,1):yaw+Math.PI;
-    ctx.beginPath();ctx.moveTo(cx,cy);
-    ctx.lineTo(cx+Math.cos(actionDir)*40,cy+Math.sin(actionDir)*40);
-    ctx.strokeStyle='#ffd700';ctx.lineWidth=3;ctx.setLineDash([6,3]);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle='#ffd700';ctx.font='12px sans-serif';ctx.textAlign='center';
-    ctx.fillText(trAction(decision.action),cx,cy+30);
-    ctx.textAlign='left';
+  // ====== 模型工厂 ======
+  function makeBot(x,z,color,name,hp){
+    const g=new THREE.Group();
+    // 身体
+    const body=new THREE.Mesh(new THREE.CylinderGeometry(8,8,20,8),new THREE.MeshLambertMaterial({color}));
+    body.position.y=10;g.add(body);
+    // 头
+    const head=new THREE.Mesh(new THREE.SphereGeometry(6,8,8),new THREE.MeshLambertMaterial({color}));
+    head.position.y=24;g.add(head);
+    // 名牌
+    const canvas=document.createElement('canvas');canvas.width=128;canvas.height=32;
+    const ctx=canvas.getContext('2d');ctx.fillStyle='#000';ctx.fillRect(0,0,128,32);
+    ctx.fillStyle='#fff';ctx.font='bold 18px sans-serif';ctx.textAlign='center';
+    ctx.fillText(name||'?',64,22);
+    const tex=new THREE.CanvasTexture(canvas);
+    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));
+    label.position.y=36;label.scale.set(40,10,1);g.add(label);
+    // HP条
+    if(hp!==undefined){
+      const bg=new THREE.Mesh(new THREE.PlaneGeometry(20,3),new THREE.MeshBasicMaterial({color:0x333333}));
+      bg.position.y=-2;bg.rotation.x=-Math.PI/2;g.add(bg);
+      const pct=Math.max(hp/100,0);
+      const bar=new THREE.Mesh(new THREE.PlaneGeometry(20*pct,3),new THREE.MeshBasicMaterial({color:hp>60?0x4caf50:hp>30?0xff9800:0xf44336}));
+      bar.position.set(-10*(1-pct),-2,0.1);bar.rotation.x=-Math.PI/2;g.add(bar);
+    }
+    g.position.set(x,0,z);
+    scene3d.add(g);return g;
   }
 
-  // 导演阶段
-  ctx.fillStyle='#888';ctx.font='10px sans-serif';
-  ctx.fillText('导演: '+trDirector(state.director||''),8,H-8);
-  ctx.fillText('地图: '+trMap(state.map||''),8,H-22);
+  function makeSI(x,z,type,ghost){
+    const color=ghost?0x882222:0xf44336;
+    const g=new THREE.Group();
+    const body=new THREE.Mesh(new THREE.ConeGeometry(8,18,6),new THREE.MeshLambertMaterial({color,transparent:ghost,opacity:ghost?0.4:1}));
+    body.position.y=9;g.add(body);
+    // 标签
+    const canvas=document.createElement('canvas');canvas.width=128;canvas.height=24;
+    const ctx=canvas.getContext('2d');ctx.fillStyle='#f44336';ctx.fillRect(0,0,128,24);
+    ctx.fillStyle='#fff';ctx.font='bold 16px sans-serif';ctx.textAlign='center';
+    ctx.fillText(trSI(type)+(ghost?'(幽灵)':''),64,18);
+    const tex=new THREE.CanvasTexture(canvas);
+    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));
+    label.position.y=24;label.scale.set(40,8,1);g.add(label);
+    g.position.set(x,0,z);scene3d.add(g);return g;
+  }
+
+  function makeWitch(x,z,angry){
+    const g=new THREE.Group();
+    const body=new THREE.Mesh(new THREE.SphereGeometry(10,8,8),new THREE.MeshLambertMaterial({color:angry?0x9c27b0:0x6622aa}));
+    body.position.y=8;g.add(body);
+    const canvas=document.createElement('canvas');canvas.width=128;canvas.height=24;
+    const ctx=canvas.getContext('2d');ctx.fillStyle=angry?0x9c27b0:'#6622aa';ctx.fillRect(0,0,128,24);
+    ctx.fillStyle='#fff';ctx.font='bold 16px sans-serif';ctx.textAlign='center';
+    ctx.fillText(angry?'女巫(暴怒)':'女巫(平静)',64,18);
+    const tex=new THREE.CanvasTexture(canvas);
+    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));
+    label.position.y=22;label.scale.set(40,8,1);g.add(label);
+    g.position.set(x,0,z);scene3d.add(g);return g;
+  }
+
+  function makeCommon(x,z){
+    const body=new THREE.Mesh(new THREE.BoxGeometry(6,12,6),new THREE.MeshLambertMaterial({color:0x555555}));
+    body.position.set(x,6,z);scene3d.add(body);return body;
+  }
+
+  function makeItem(x,z,cat){
+    const colors={weapon:0x2196f3,health:0x4caf50,grenade:0xff9800,ammo:0x888888,other:0x999999};
+    const c=colors[cat]||colors.other;
+    const item=new THREE.Mesh(new THREE.BoxGeometry(4,8,4),new THREE.MeshLambertMaterial({color:c,emissive:c,emissiveIntensity:0.3}));
+    item.position.set(x,4,z);scene3d.add(item);
+    // 发光指示
+    const glow=new THREE.PointLight(c,0.5,30);glow.position.set(x,6,z);scene3d.add(glow);
+    return item;
+  }
+
+  function makeArea(x,z,r,color){
+    const a=new THREE.Mesh(new THREE.CircleGeometry(r,16),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.3,side:THREE.DoubleSide}));
+    a.rotation.x=-Math.PI/2;a.position.set(x,0.5,z);scene3d.add(a);return a;
+  }
+
+  // Bot
+  makeBot(0,0,0x4fc3f7,trChar(bot.name||'Bot'),bot.hp);
+  // 朝向箭头
+  const arrDir=new THREE.ArrowHelper(new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)).normalize(),new THREE.Vector3(0,15,0),40,0x4fc3f7,8,6);
+  scene3d.add(arrDir);
+
+  // 决策箭头(金色)
+  if(decision.action){
+    const dv=decision.action.includes('attack')||decision.action==='throw_grenade'?
+      new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw)):
+      decision.action==='follow_team'?new THREE.Vector3(0,0,-1):new THREE.Vector3(Math.cos(yaw+Math.PI),0,-Math.sin(yaw+Math.PI));
+    const arrDec=new THREE.ArrowHelper(dv.normalize(),new THREE.Vector3(0,25,0),60,0xffd700,10,8);
+    scene3d.add(arrDec);
+  }
+
+  // 队友
+  (state.teammates||[]).forEach((m,i)=>{
+    const a=(i*2+1)*Math.PI/4;
+    const d=m.dist||50;
+    const c=m.pinned?0xf44336:m.incap?0xff9800:0x4caf50;
+    makeBot(Math.sin(a)*d,-Math.cos(a)*d,c,trChar(m.name),m.hp);
+  });
+
+  // 特感
+  (state.threats||[]).forEach((t,i)=>{
+    const a=(i+1)*Math.PI*2/Math.max((state.threats||[]).length,1)+0.5;
+    const d=t.dist||200;
+    makeSI(Math.sin(a)*d,-Math.cos(a)*d,t.type,t.ghost);
+  });
+
+  // 女巫
+  (state.witches||[]).forEach((w,i)=>{
+    const a=(i+3)*Math.PI*0.7;
+    const d=w.dist||300;
+    makeWitch(Math.sin(a)*d,-Math.cos(a)*d,w.angry);
+  });
+
+  // 普通僵尸
+  const cc=state.common_count||0;
+  for(let i=0;i<Math.min(cc,15);i++){
+    const a=Math.random()*Math.PI*2,d=100+Math.random()*400;
+    makeCommon(Math.sin(a)*d,-Math.cos(a)*d);
+  }
+
+  // 物品
+  (state.items||[]).forEach((item,i)=>{
+    const a=(i+0.5)*Math.PI*2/Math.max((state.items||[]).length,1);
+    const d=item.dist||100;
+    const n=item.name||'';
+    const cat=n.includes('rifle')||n.includes('shotgun')||n.includes('sniper')||n.includes('smg')||n.includes('pistol')||n.includes('melee')?'weapon':
+             n.includes('first_aid')||n.includes('pills')||n.includes('adrenaline')||n.includes('defib')?'health':
+             n.includes('molotov')||n.includes('pipe')||n.includes('vomit')?'grenade':'other';
+    makeItem(Math.sin(a)*d,-Math.cos(a)*d,cat);
+  });
+
+  // 火焰区域
+  (state.fire_areas||[]).forEach(f=>makeArea(Math.sin(1)*f.dist||0,-Math.cos(1)*(f.dist||0),30,0xff5722));
+  // 酸液区域
+  (state.acid_areas||[]).forEach(a=>makeArea(Math.sin(2)*(a.dist||0),-Math.cos(2)*(a.dist||0),25,0x8bc34a));
+
+  // 地形标记
+  const t=state.terrain||{};
+  if(t.narrow){const w=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshBasicMaterial({color:0xff9800,transparent:true,opacity:0.1,side:THREE.DoubleSide}));w.rotation.x=-Math.PI/2;w.position.y=0.3;scene3d.add(w)}
+  if(t.ledge){const l=new THREE.Mesh(new THREE.BoxGeometry(300,4,20),new THREE.MeshLambertMaterial({color:0xf44336,transparent:true,opacity:0.4}));l.position.set(100,2,0);scene3d.add(l)}
+
+  // 鼠标控制
+  let isDown=false,prevX=0,prevY=0,rotY=0,rotX=0.6,dist=600;
+  container.onmousedown=e=>{isDown=true;prevX=e.clientX;prevY=e.clientY};
+  container.onmouseup=()=>isDown=false;
+  container.onmouseleave=()=>isDown=false;
+  container.onmousemove=e=>{if(!isDown)return;rotY+=(e.clientX-prevX)*0.01;rotX=Math.max(0.1,Math.min(1.5,rotX+(e.clientY-prevY)*0.005));prevX=e.clientX;prevY=e.clientY};
+  container.onwheel=e=>{dist=Math.max(200,Math.min(2000,dist+e.deltaY))};
+
+  function animate(){
+    animId=requestAnimationFrame(animate);
+    camera3d.position.set(Math.sin(rotY)*dist*Math.cos(rotX),Math.sin(rotX)*dist,Math.cos(rotY)*dist*Math.cos(rotX));
+    camera3d.lookAt(0,0,0);
+    renderer3d.render(scene3d,camera3d);
+  }
+  animate();
 }
 
-// AI 视角（增强版）
+// ====== AI 视角 ======
 pages.ai_view=async()=>{
   const d=await api('/api/ai-view');
-  const state=d.raw_state||{};
-  const bot=state.bot||{};
-  const teammates=state.teammates||[];
-
+  const state=d.raw_state||{},bot=state.bot||{},teammates=state.teammates||[];
   document.getElementById('page-content').innerHTML=`
     <h2>AI 视角 <button class="refresh-btn" onclick="pages.ai_view()">刷新</button></h2>
-    <div class="ai-flow">
-      <div class="flow-step active"><div style="font-size:24px">&#128202;</div><div style="font-size:11px;color:#888">STATE 输入</div><div style="font-size:12px">${Object.keys(state).length} 字段</div></div>
-      <div class="flow-arrow">&#10145;</div>
-      <div class="flow-step"><div style="font-size:24px">&#128196;</div><div style="font-size:11px;color:#888">构建提示词</div><div style="font-size:12px">system+user</div></div>
-      <div class="flow-arrow">&#10145;</div>
-      <div class="flow-step ${d.decision_source==='llm'?'active':''}"><div style="font-size:24px">&#129504;</div><div style="font-size:11px;color:#888">LLM 推理</div><div style="font-size:12px">${d.decision_source==='llm'?'LLM':'规则/跳过'}</div></div>
-      <div class="flow-arrow">&#10145;</div>
-      <div class="flow-step active"><div style="font-size:24px">&#9989;</div><div style="font-size:11px;color:#888">输出决策</div><div style="font-size:12px">${trAction(d.last_decision?.action||'')}</div></div>
+    <div class="two-col">
+      <div class="card"><h3>Bot 感知</h3>
+        <div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div>
+        <div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div>
+        <div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
+        <div class="row"><span class="k">倒地/黑白</span><span class="v">${bot.incap?'倒地':'否'} / ${bot.bw?'黑白':'否'}</span></div>
+        <div class="row"><span class="k">主武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div>
+        <div class="row"><span class="k">弹药</span><span class="v">${bot.ammo||0}/${bot.reserve||0}</span></div>
+        <div class="row"><span class="k">进度/朝向</span><span class="v">${bot.flow||0} / ${(bot.angles||[])[0]?.toFixed(0)||'?'}°</span></div>
+      </div>
+      <div class="card"><h3>环境感知</h3>
+        <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')} ${trMode(state.mode||'')}</span></div>
+        <div class="row"><span class="k">难度/导演</span><span class="v">${trDiff(state.difficulty||'')} / ${trDirector(state.director||'')}</span></div>
+        <div class="row"><span class="k">地形</span><span class="v">窄:${state.terrain?.narrow?'是':'否'} 崖:${state.terrain?.ledge?'是':'否'} 车:${state.terrain?.alarm_car?'是':'否'} 事件:${state.terrain?.crescendo?'是':'否'} 终局:${state.terrain?.finale?'是':'否'}</span></div>
+        <div class="row"><span class="k">普通尸</span><span class="v">${state.common_count||0}</span></div>
+        <div class="row"><span class="k">火/酸区</span><span class="v">${(state.fire_areas||[]).length}/${(state.acid_areas||[]).length}</span></div>
+        <div class="row"><span class="k">友伤</span><span class="v">${state.server?.ff?'是':'否'}</span></div>
+      </div>
     </div>
-    <div class="state-grid">
-      <div class="card"><div class="state-section"><h4>Bot 状态 (AI 感知)</h4>
-        <div class="row"><span class="key">名称</span><span class="val">${trChar(bot.name||'?')}</span></div>
-        <div class="row"><span class="key">生命值</span><span class="val ${hpValClass(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?` (+${bot.temp_hp}临时)`:''}</span></div>
-        <div class="row"><span class="key">被控</span><span class="val ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
-        <div class="row"><span class="key">倒地</span><span class="val ${bot.incap?'danger':'ok'}">${bot.incap?'是':'否'}</span></div>
-        <div class="row"><span class="key">黑白</span><span class="val ${bot.bw?'danger':'ok'}">${bot.bw?'是':'否'}</span></div>
-        <div class="row"><span class="key">主武器</span><span class="val">${trWeapon(bot.weapons?.primary)}</span></div>
-        <div class="row"><span class="key">弹药</span><span class="val">${bot.ammo||0} / ${bot.reserve||0}</span></div>
-        <div class="row"><span class="key">进度</span><span class="val">${bot.flow||0}</span></div>
-        <div class="row"><span class="key">朝向</span><span class="val">${(bot.angles||[])[0]?.toFixed(1)||'?'}° / ${(bot.angles||[])[1]?.toFixed(1)||'?'}°</span></div>
-      </div></div>
-      <div class="card"><div class="state-section"><h4>环境感知</h4>
-        <div class="row"><span class="key">地图</span><span class="val">${trMap(state.map||'')} (${state.mode||''})</span></div>
-        <div class="row"><span class="key">难度</span><span class="val">${trDiff(state.difficulty||'')}</span></div>
-        <div class="row"><span class="key">导演</span><span class="val">${trDirector(state.director||'')}</span></div>
-        <div class="row"><span class="key">狭窄</span><span class="val">${state.terrain?.narrow?'是':'否'}</span></div>
-        <div class="row"><span class="key">悬崖</span><span class="val">${state.terrain?.ledge?'是':'否'}</span></div>
-        <div class="row"><span class="key">警报车</span><span class="val">${state.terrain?.alarm_car?'是':'否'}</span></div>
-        <div class="row"><span class="key">事件</span><span class="val">${state.terrain?.crescendo?'是':'否'}</span></div>
-        <div class="row"><span class="key">终局</span><span class="val">${state.terrain?.finale?'是':'否'}</span></div>
-        <div class="row"><span class="key">普通尸</span><span class="val">${state.common_count||0}</span></div>
-        <div class="row"><span class="key">火焰区</span><span class="val ${(state.fire_areas||[]).length>0?'warn':''}">${(state.fire_areas||[]).length}处</span></div>
-        <div class="row"><span class="key">酸液区</span><span class="val ${(state.acid_areas||[]).length>0?'warn':''}">${(state.acid_areas||[]).length}处</span></div>
-        <div class="row"><span class="key">友伤</span><span class="val">${state.server?.ff?'是':'否'}</span></div>
-      </div></div>
-      <div class="card"><div class="state-section"><h4>队友感知</h4>
-        ${teammates.map(m=>`<div class="row"><span class="key">${trChar(m.name)}</span><span class="val ${hpValClass(m.hp)}">${m.hp}HP ${m.pinned?'<span class="danger">被控('+trPin(m.pin_type)+')</span>':m.incap?'<span class="warn">倒地</span>':'正常'} d=${m.dist?.toFixed(0)||'?'} ${trWeapon(m.weapon)}</span></div>`).join('')}
-      </div></div>
-      <div class="card"><div class="state-section"><h4>威胁感知</h4>
-        ${(state.threats||[]).length>0?(state.threats||[]).map(t=>`<div class="row"><span class="key">${trSI(t.type)}</span><span class="val danger">${t.hp}HP d=${t.dist?.toFixed(0)||'?'} ${t.ghost?'幽灵':'实体'}</span></div>`).join(''):'<div class="row"><span class="key">无可见威胁</span><span class="val ok">安全</span></div>'}
-        ${(state.witches||[]).length>0?(state.witches||[]).map(w=>`<div class="row"><span class="key">女巫</span><span class="val ${w.angry?'danger':'warn'}">${w.hp}HP d=${w.dist?.toFixed(0)||'?'} ${w.angry?'暴怒':'平静'}</span></div>`).join(''):''}
-      </div></div>
+    <div class="two-col">
+      <div class="card"><h3>队友感知</h3>
+        ${teammates.map(m=>`<div class="row"><span class="k">${trChar(m.name)}</span><span class="v ${hpVC(m.hp)}">${m.hp}HP ${m.pinned?'<span class="danger">被控('+trPin(m.pin_type)+')</span>':m.incap?'<span class="warn">倒地</span>':'OK'} d=${m.dist?.toFixed(0)||'?'} ${trWeapon(m.weapon)}</span></div>`).join('')}
+      </div>
+      <div class="card"><h3>威胁/物品</h3>
+        ${(state.threats||[]).map(t=>`<div class="row"><span class="k">${trSI(t.type)}</span><span class="v danger">${t.hp}HP d=${t.dist?.toFixed(0)||'?'} ${t.ghost?'幽灵':'实体'}</span></div>`).join('')}
+        ${(state.witches||[]).map(w=>`<div class="row"><span class="k">女巫</span><span class="v ${w.angry?'danger':'warn'}">${w.angry?'暴怒':'平静'} d=${w.dist?.toFixed(0)||'?'}</span></div>`).join('')}
+        ${!(state.threats||[]).length&&!(state.witches||[]).length?'<div class="row"><span class="k">威胁</span><span class="v ok">无</span></div>':''}
+        ${(state.items||[]).slice(0,8).map(i=>`<div class="row"><span class="k">${trWeapon(i.name)}</span><span class="v" style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'}u</span></div>`).join('')}
+      </div>
     </div>
-    <div class="card"><div class="state-section"><h4>物品感知</h4>
-      ${(state.items||[]).length>0?(state.items||[]).map(i=>`<div class="row"><span class="key">${trWeapon(i.name)}</span><span class="val" style="color:${distColor(i.dist)}">${i.dist?.toFixed(0)||'?'} 单位</span></div>`).join(''):'<div class="row"><span class="key">附近无物品</span></div>'}
-    </div></div>
-    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">系统提示词（发送给 LLM 的角色设定）</h3><div><pre>${(d.system_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
-    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">用户提示词（发送给 LLM 的当前局势）</h3><div><pre>${(d.user_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
-    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">LLM 返回的原始决策</h3><div><pre>${JSON.stringify(d.last_decision,null,2)}</pre></div></div>`;
+    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">系统提示词（LLM 角色设定）</h3><div><pre>${(d.system_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
+    <div class="card"><h3 class="collapsible" onclick="this.classList.toggle('closed')">用户提示词（LLM 当前局势输入）</h3><div><pre>${(d.user_prompt||'').replace(/</g,'&lt;')}</pre></div></div>
+    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">LLM 原始决策输出</h3><div><pre>${JSON.stringify(d.last_decision,null,2)}</pre></div></div>`;
 };
 
-// 配置
+// ====== 配置 ======
 pages.config=async()=>{
   const d=await api('/api/config');
   document.getElementById('page-content').innerHTML=`
     <h2>配置</h2>
     <div class="card"><h3>系统提示词</h3>
-      <textarea id="prompt-editor">${(d.system_prompt||'').replace(/</g,'&lt;')}</textarea>
-      <br><br><button onclick="savePrompt()">保存提示词</button>
-      <span id="save-status" style="margin-left:12px"></span>
+      <textarea id="prompt-editor">${(d.system_prompt||'').replace(/</g,'&lt;')}</textarea><br><br>
+      <button onclick="savePrompt()">保存提示词</button><span id="save-status" style="margin-left:12px"></span>
     </div>
-    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">服务配置（JSON）</h3><div><pre>${JSON.stringify(d.config,null,2)}</pre></div></div>`;
+    <div class="card"><h3 class="collapsible closed" onclick="this.classList.toggle('closed')">服务配置</h3><div><pre>${JSON.stringify(d.config,null,2)}</pre></div></div>`;
 };
-
 async function savePrompt(){
-  const text=document.getElementById('prompt-editor').value;
-  const r=await fetch('/api/config/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:text})});
-  const j=await r.json();
-  document.getElementById('save-status').textContent=j.status==='ok'?'已保存!':'错误: '+j.error;
+  const r=await fetch('/api/config/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:document.getElementById('prompt-editor').value})});
+  const j=await r.json();document.getElementById('save-status').textContent=j.status==='ok'?'已保存!':'错误:'+j.error;
   setTimeout(()=>{document.getElementById('save-status').textContent=''},3000);
 }
 
-// 历史
+// ====== 历史 ======
 pages.history=async()=>{
   const h=await api('/api/history?count=50');
-  const rows=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(sourceLabel(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),e.decision.priority||'medium')}</td><td style="font-size:11px;color:#888">${e.decision.reason?.slice(0,80)||''}</td><td>${e.elapsed_ms||0}ms</td>
-    <td style="font-size:11px">${e.state?.threat_count||0}敌 ${e.state?.pinned_count||0}控</td></tr>`).join('');
-  document.getElementById('page-content').innerHTML=`
-    <h2>决策历史</h2><div class="card"><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th><th>延迟</th><th>状态</th></tr>${rows}</table></div>`;
+  const rows=h.slice().reverse().map(e=>`<tr><td>${e.time_str}</td><td>${tag(srcLabel(e.source),e.source)}</td><td>${tag(trAction(e.decision.action),e.decision.priority||'medium')}</td><td style="font-size:10px;color:#888">${e.decision.reason?.slice(0,60)||''}</td><td>${e.elapsed_ms||0}ms</td><td style="font-size:10px">${e.state?.threat_count||0}敌${e.state?.pinned_count||0}控</td></tr>`).join('');
+  document.getElementById('page-content').innerHTML=`<h2>决策历史</h2><div class="card"><table><tr><th>时间</th><th>来源</th><th>动作</th><th>原因</th><th>延迟</th><th>状态</th></tr>${rows}</table></div>`;
 };
 
-// 统计
+// ====== 统计 ======
 pages.stats=async()=>{
   const s=await api('/api/stats');
   const dist=Object.entries(s.action_distribution||{}).map(([k,v])=>`<tr><td>${trAction(k)}</td><td>${v}</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>统计数据</h2>
+    <h2>统计</h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">规则 (${s.rule_pct||0}%)</div></div>
-      <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM (${s.llm_pct||0}%)</div></div>
-      <div class="card stat-item"><div class="value">${s.fallback||0}</div><div class="label">回退 (${s.fallback_pct||0}%)</div></div>
+      <div class="card stat-item"><div class="value">${s.rule||0}</div><div class="label">规则(${s.rule_pct||0}%)</div></div>
+      <div class="card stat-item"><div class="value">${s.llm||0}</div><div class="label">LLM(${s.llm_pct||0}%)</div></div>
+      <div class="card stat-item"><div class="value">${s.fallback||0}</div><div class="label">回退(${s.fallback_pct||0}%)</div></div>
       <div class="card stat-item"><div class="value">${s.state_unchanged_skipped||0}</div><div class="label">跳过</div></div>
       <div class="card stat-item"><div class="value">${s.total_decisions||0}</div><div class="label">总计</div></div>
-      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">平均 API</div></div>
-      <div class="card stat-item"><div class="value">${s.api_timeout||0}</div><div class="label">API 超时</div></div>
-      <div class="card stat-item"><div class="value">${s.uptime_seconds||0}s</div><div class="label">运行时间</div></div>
+      <div class="card stat-item"><div class="value">${s.avg_api_time_ms||0}ms</div><div class="label">API</div></div>
+      <div class="card stat-item"><div class="value">${s.api_timeout||0}</div><div class="label">超时</div></div>
+      <div class="card stat-item"><div class="value">${s.uptime_seconds||0}s</div><div class="label">运行</div></div>
     </div>
     <div class="card"><h3>动作分布</h3><table><tr><th>动作</th><th>次数</th></tr>${dist}</table></div>`;
 };
 
-// 评分
+// ====== 评分 ======
 pages.scores=async()=>{
   const d=await api('/api/player-scores');
-  const players=d.players||[];
-  const team=d.team||{};
+  const players=d.players||[],team=d.team||{};
   const rows=players.map(p=>{
-    const rClass=`rating-${p.rating}`;
-    const composite=p.composite>=0?`+${p.composite}`:p.composite;
-    return `<tr><td>${trChar(p.name)}</td><td class="${rClass}">${tag(p.rating,p.rating)}</td><td>${composite}</td>
-      <td style="color:#4caf50">${p.heal}</td><td style="color:#2196f3">${p.revive}</td><td style="color:#ff9800">${p.si_kills}</td>
-      <td style="color:#f44336">${p.incap}</td><td style="color:#ff5722">${p.pinned}</td></tr>`;
+    const rc=`rating-${p.rating}`,comp=p.composite>=0?'+'+p.composite:p.composite;
+    return`<tr><td>${trChar(p.name)}</td><td class="${rc}">${tag(p.rating,p.rating)}</td><td>${comp}</td><td style="color:#4caf50">${p.heal}</td><td style="color:#2196f3">${p.revive}</td><td style="color:#ff9800">${p.si_kills}</td><td style="color:#f44336">${p.incap}</td><td style="color:#ff5722">${p.pinned}</td></tr>`;
   }).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>玩家评分</h2>
+    <h2>评分</h2>
     <div class="stat-grid">
       <div class="card stat-item"><div class="value">${team.team_score||0}</div><div class="label">团队总分</div></div>
-      <div class="card stat-item"><div class="value rating-${team.team_rating||'C'}">${team.team_rating||'C'}</div><div class="label">团队评级</div></div>
+      <div class="card stat-item"><div class="value rating-${team.team_rating||'C'}">${team.team_rating||'C'}</div><div class="label">评级</div></div>
       <div class="card stat-item"><div class="value">${trChar(team.mvp||'-')}</div><div class="label">MVP</div></div>
       <div class="card stat-item"><div class="value" style="color:#f44336">${(team.needs_protection||[]).map(n=>trChar(n)).join('、')||'无'}</div><div class="label">需保护</div></div>
     </div>
-    <div class="card"><h3>玩家详情</h3>
-      <table><tr><th>名称</th><th>评级</th><th>分数</th><th>治疗</th><th>救起</th><th>特感击杀</th><th>倒地</th><th>被控</th></tr>${rows}</table></div>
+    <div class="card"><h3>详情</h3><table><tr><th>名称</th><th>评级</th><th>分数</th><th>治疗</th><th>救起</th><th>特感杀</th><th>倒地</th><th>被控</th></tr>${rows}</table></div>
     ${d.hint?`<div class="card"><h3>AI 建议</h3><p>${d.hint}</p></div>`:''}`;
 };
 
-// 经验
+// ====== 经验 ======
 pages.experience=async()=>{
   const d=await api('/api/map-experience');
-  const exps=d.experiences||[];
-  const ms=d.map_stats||{};
-  const rows=exps.map(e=>`<tr><td>${tag(trAction(e.action),'medium')}</td><td>${e.target||'-'}</td><td>${tag(outcomeLabel(e.outcome),e.outcome==='survived'?'rule':e.outcome==='team_wipe'?'critical':'low')}</td>
-    <td>${e.count}</td><td>${(e.survival_rate*100).toFixed(0)}%</td><td>${e.avg_survival||0}s</td></tr>`).join('');
+  const exps=d.experiences||[],ms=d.map_stats||{};
+  const rows=exps.map(e=>`<tr><td>${tag(trAction(e.action),'medium')}</td><td>${e.target||'-'}</td><td>${tag(outcomeL(e.outcome),e.outcome==='survived'?'rule':e.outcome==='team_wipe'?'critical':'low')}</td><td>${e.count}</td><td>${(e.survival_rate*100).toFixed(0)}%</td><td>${e.avg_survival||0}s</td></tr>`).join('');
   document.getElementById('page-content').innerHTML=`
-    <h2>地图经验</h2>
+    <h2>经验</h2>
     <div class="stat-grid">
-      <div class="card stat-item"><div class="value" style="font-size:16px">${trMap(d.current_map||'?')}</div><div class="label">当前地图</div></div>
-      <div class="card stat-item"><div class="value">${ms.total_decisions||0}</div><div class="label">总决策数</div></div>
-      <div class="card stat-item"><div class="value">${ms.flow_sections||0}</div><div class="label">流程段数</div></div>
+      <div class="card stat-item"><div class="value" style="font-size:14px">${trMap(d.map||'?')}</div><div class="label">当前地图</div></div>
+      <div class="card stat-item"><div class="value">${ms.total_decisions||0}</div><div class="label">总决策</div></div>
+      <div class="card stat-item"><div class="value">${ms.flow_sections||0}</div><div class="label">流程段</div></div>
       <div class="card stat-item"><div class="value">${(ms.survival_rate||0)*100}%</div><div class="label">存活率</div></div>
       <div class="card stat-item"><div class="value">${(ms.escape_rate||0)*100}%</div><div class="label">逃脱率</div></div>
       <div class="card stat-item"><div class="value" style="color:#f44336">${(ms.team_wipe_rate||0)*100}%</div><div class="label">团灭率</div></div>
     </div>
-    <div class="card"><h3>经验记录（当前局势）</h3>${rows?`<table><tr><th>动作</th><th>目标</th><th>结果</th><th>次数</th><th>存活率</th><th>平均存活</th></tr>${rows}</table>`:'<p style="color:#666">当前局势暂无经验记录</p>'}</div>`;
+    <div class="card"><h3>经验记录</h3>${rows?`<table><tr><th>动作</th><th>目标</th><th>结果</th><th>次数</th><th>存活率</th><th>平均存活</th></tr>${rows}</table>`:'<p style="color:#555">暂无</p>'}</div>`;
 };
 
 // 启动
