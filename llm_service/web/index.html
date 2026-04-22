@@ -214,56 +214,198 @@ pages.map=async()=>{
     <div class="card"><h3>附近物品 (${(d.items||[]).length})</h3>${iH?`<table><tr><th>物品</th><th>距离</th></tr>${iH}</table>`:'<p style="color:#555">无</p>'}</div>`;
 };
 
-// ====== 3D 战术沙盘 ======
+// ====== 2D/3D 战术沙盘 ======
 let scene3d=null,renderer3d=null,camera3d=null,animId=null;
+let sandboxMode='2d'; // '2d' or '3d'
 pages.sandbox=async()=>{
   const d=await api('/api/ai-view');
   const state=d.raw_state||{},decision=d.last_decision||{},bot=state.bot||{};
 
-  document.getElementById('page-content').innerHTML=`
-    <h2>3D 战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button></h2>
-    <div class="card" style="padding:0;overflow:hidden">
-      <div id="sandbox3d"></div>
-      <div class="legend" style="padding:6px 10px">
-        <span><span class="ld" style="background:#4fc3f7"></span>Bot</span>
-        <span><span class="ld" style="background:#4caf50"></span>队友</span>
-        <span><span class="ld" style="background:#f44336"></span>特感</span>
-        <span><span class="ld" style="background:#9c27b0"></span>女巫</span>
-        <span><span class="ld" style="background:#666"></span>普通尸</span>
-        <span><span class="ld" style="background:#ff9800"></span>物品</span>
-        <span><span class="ld" style="background:#2196f3"></span>枪械</span>
-        <span><span class="ld" style="background:#4caf50"></span>医疗</span>
-        <span><span class="ld" style="background:#ff5722"></span>火焰</span>
-        <span><span class="ld" style="background:#8bc34a"></span>酸液</span>
-        <span><span class="ld" style="background:#ffd700"></span>决策</span>
-        鼠标拖拽旋转 | 滚轮缩放
-      </div>
-    </div>
+  const modeBtn=sandboxMode==='2d'?
+    '<button onclick="sandboxMode=\'3d\';pages.sandbox()" style="margin-left:8px;font-size:11px;padding:3px 10px">切换3D</button>':
+    '<button onclick="sandboxMode=\'2d\';pages.sandbox()" style="margin-left:8px;font-size:11px;padding:3px 10px">切换2D</button>';
+
+  const spectateInfo=`
+    <div class="card" style="border-color:#4fc3f7">
+      <h3 style="color:#4fc3f7">游戏内观战（推荐）</h3>
+      <p style="font-size:12px;line-height:1.6">
+        网页沙盘仅为数据概览，<strong>游戏内观战效果远优于网页</strong>。<br>
+        <strong>连接方式：</strong>在 L4D2 控制台输入 <code>connect 服务器IP:27017</code> 进入观战模式<br>
+        <strong>切换Bot控制：</strong>游戏内控制台输入 <code>sm_llm_switch</code> 查看可用Bot，<code>sm_llm_switch Nick</code> 切换到指定Bot<br>
+        <strong>全员控制：</strong><code>sm_llm_control_all</code> 切换LLM控制所有Bot<br>
+        <strong>SourceTV观战：</strong>连接 <code>服务器IP:27020</code> 可延迟观战
+      </p>
+    </div>`;
+
+  if(sandboxMode==='2d'){
+    document.getElementById('page-content').innerHTML=`
+      <h2>2D 战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>
+      ${spectateInfo}
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="sandbox-wrap" style="aspect-ratio:16/9"><canvas id="sandbox2d-canvas"></canvas></div>
+        <div class="legend" style="padding:6px 10px">
+          <span><span class="ld" style="background:#4fc3f7"></span>Bot</span>
+          <span><span class="ld" style="background:#4caf50"></span>队友</span>
+          <span><span class="ld" style="background:#f44336"></span>特感</span>
+          <span><span class="ld" style="background:#9c27b0"></span>女巫</span>
+          <span><span class="ld" style="background:#666"></span>普通尸</span>
+          <span><span class="ld" style="background:#ff9800"></span>物品</span>
+          <span><span class="ld" style="background:#ff5722"></span>火焰</span>
+          <span><span class="ld" style="background:#8bc34a"></span>酸液</span>
+          <span><span class="ld" style="background:#ffd700"></span>决策</span>
+        </div>
+      </div>`;
+    draw2D(state,decision);
+  } else {
+    document.getElementById('page-content').innerHTML=`
+      <h2>3D 战术沙盘 <button class="refresh-btn" onclick="pages.sandbox()">刷新</button>${modeBtn}</h2>
+      ${spectateInfo}
+      <div class="card" style="padding:0;overflow:hidden">
+        <div id="sandbox3d"></div>
+        <div class="legend" style="padding:6px 10px">
+          <span><span class="ld" style="background:#4fc3f7"></span>Bot</span>
+          <span><span class="ld" style="background:#4caf50"></span>队友</span>
+          <span><span class="ld" style="background:#f44336"></span>特感</span>
+          <span><span class="ld" style="background:#9c27b0"></span>女巫</span>
+          <span><span class="ld" style="background:#666"></span>普通尸</span>
+          <span><span class="ld" style="background:#2196f3"></span>枪械</span>
+          <span><span class="ld" style="background:#4caf50"></span>医疗</span>
+          <span><span class="ld" style="background:#ff9800"></span>投掷</span>
+          <span><span class="ld" style="background:#ffd700"></span>决策</span>
+          拖拽旋转 | 滚轮缩放
+        </div>
+      </div>`;
+    build3D(state,decision);
+  }
+
+  // Common data panel below the map
+  document.getElementById('page-content').innerHTML+=`
     <div class="two-col">
-      <div class="card"><h3>Bot 状态</h3>
+      <div class="card"><h3>Bot</h3>
         <div class="row"><span class="k">名称</span><span class="v">${trChar(bot.name||'?')}</span></div>
         <div class="row"><span class="k">HP</span><span class="v ${hpVC(bot.hp||0)}">${bot.hp||0}${bot.temp_hp?'(+'+bot.temp_hp+')':''}</span></div>
         <div class="row"><span class="k">武器</span><span class="v">${trWeapon(bot.weapons?.primary)}</span></div>
         <div class="row"><span class="k">被控</span><span class="v ${bot.pinned?'danger':'ok'}">${bot.pinned?trPin(bot.pin_type):'否'}</span></div>
-        <div class="row"><span class="k">进度</span><span class="v">${bot.flow||0}</span></div>
       </div>
       <div class="card"><h3>战场</h3>
         <div class="row"><span class="k">地图</span><span class="v">${trMap(state.map||'')}</span></div>
-        <div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')} / ${trDiff(state.difficulty||'')}</span></div>
+        <div class="row"><span class="k">模式/难度</span><span class="v">${trMode(state.mode||'')}/${trDiff(state.difficulty||'')}</span></div>
         <div class="row"><span class="k">导演</span><span class="v">${trDirector(state.director||'')}</span></div>
-        <div class="row"><span class="k">特感</span><span class="v ${(state.threats||[]).length?'danger':'ok'}">${(state.threats||[]).length}</span></div>
-        <div class="row"><span class="k">普通尸</span><span class="v">${state.common_count||0}</span></div>
+        <div class="row"><span class="k">特感/普通尸</span><span class="v">${(state.threats||[]).length}/${state.common_count||0}</span></div>
       </div>
     </div>
     <div class="card"><h3>当前决策</h3>
       <div class="row"><span class="k">动作</span><span class="v" style="color:#ffd700">${trAction(decision.action||'')}</span></div>
-      <div class="row"><span class="k">目标</span><span class="v">${decision.target||'-'}</span></div>
-      <div class="row"><span class="k">来源</span><span class="v">${srcLabel(d.decision_source||'')}</span></div>
+      <div class="row"><span class="k">目标/来源</span><span class="v">${decision.target||'-'} / ${srcLabel(d.decision_source||'')}</span></div>
       <div class="row"><span class="k">原因</span><span class="v" style="font-size:11px">${decision.reason||'-'}</span></div>
     </div>`;
-
-  build3D(state,decision);
 };
+
+function draw2D(state,decision){
+  const canvas=document.getElementById('sandbox2d-canvas');
+  if(!canvas)return;
+  const rect=canvas.parentElement.getBoundingClientRect();
+  canvas.width=rect.width*2;canvas.height=rect.height*2;
+  const ctx=canvas.getContext('2d');ctx.scale(2,2);
+  const W=rect.width,H=rect.height,cx=W/2,cy=H/2;
+  const scale=Math.min(W,H)/2200;
+
+  ctx.fillStyle='#0a0a0f';ctx.fillRect(0,0,W,H);
+  // Grid
+  ctx.strokeStyle='#151525';ctx.lineWidth=0.5;
+  for(let x=0;x<W;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(let y=0;y<H;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+
+  // Distance rings
+  [300,800,1500].forEach(r=>{
+    ctx.beginPath();ctx.arc(cx,cy,r*scale,0,Math.PI*2);
+    ctx.strokeStyle=r===300?'#f4433660':r===800?'#ff980060':'#4caf5040';
+    ctx.lineWidth=1.5;ctx.setLineDash([6,4]);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=r===300?'#f44336':r===800?'#ff9800':'#4caf50';
+    ctx.font='10px sans-serif';ctx.fillText(r+'u',cx+r*scale+4,cy-2);
+  });
+
+  const bot=state.bot||{},yaw=((bot.angles||[])[0]||0)*Math.PI/180;
+  const terrain=state.terrain||{};
+
+  // Terrain
+  if(terrain.narrow){ctx.fillStyle='#ff980015';ctx.fillRect(cx-100*scale,cy-100*scale,200*scale,200*scale);ctx.fillStyle='#ff9800';ctx.font='11px sans-serif';ctx.fillText('狭窄',cx-8,cy-110*scale)}
+  if(terrain.ledge){ctx.fillStyle='#f4433615';ctx.fillRect(cx+50*scale,cy-80*scale,100*scale,160*scale);ctx.fillStyle='#f44336';ctx.font='11px sans-serif';ctx.fillText('悬崖',cx+60*scale,cy-90*scale)}
+  if(terrain.finale){ctx.fillStyle='#9c27b020';ctx.fillRect(0,0,W,H);ctx.fillStyle='#9c27b0';ctx.font='14px sans-serif';ctx.fillText('终局',8,20)}
+  if(terrain.crescendo){ctx.fillStyle='#ff572220';ctx.fillRect(0,0,W,H);ctx.fillStyle='#ff5722';ctx.font='14px sans-serif';ctx.fillText('事件',8,38)}
+
+  // Fire/acid areas
+  (state.fire_areas||[]).forEach(f=>{ctx.beginPath();ctx.arc(cx+(f.dist||0)*scale*Math.cos(1),cy+(f.dist||0)*scale*Math.sin(1),20*scale,0,Math.PI*2);ctx.fillStyle='#ff572240';ctx.fill();ctx.strokeStyle='#ff5722';ctx.lineWidth=1;ctx.stroke();ctx.fillStyle='#ff5722';ctx.font='10px sans-serif';ctx.fillText('🔥',cx+(f.dist||0)*scale*Math.cos(1)-5,cy+(f.dist||0)*scale*Math.sin(1)+4)});
+  (state.acid_areas||[]).forEach(a=>{ctx.beginPath();ctx.arc(cx+(a.dist||0)*scale*Math.cos(2),cy+(a.dist||0)*scale*Math.sin(2),18*scale,0,Math.PI*2);ctx.fillStyle='#8bc34a30';ctx.fill();ctx.strokeStyle='#8bc34a';ctx.lineWidth=1;ctx.stroke()});
+
+  // Items (small dots)
+  (state.items||[]).forEach((item,i)=>{
+    const a=(i+0.5)*Math.PI*2/Math.max((state.items||[]).length,1);
+    const d=item.dist||100;
+    const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
+    if(x<0||x>W||y<0||y>H)return;
+    const n=item.name||'';
+    const cat=n.includes('rifle')||n.includes('shotgun')||n.includes('sniper')||n.includes('smg')||n.includes('pistol')||n.includes('melee')?'#2196f3':
+             n.includes('first_aid')||n.includes('pills')||n.includes('adrenaline')?'#4caf50':
+             n.includes('molotov')||n.includes('pipe')||n.includes('vomit')?'#ff9800':'#888';
+    ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fillStyle=cat;ctx.fill();
+  });
+
+  // Common infected
+  const cc=state.common_count||0;
+  for(let i=0;i<Math.min(cc,20);i++){
+    const a=Math.random()*Math.PI*2,d=80+Math.random()*500*scale;
+    ctx.beginPath();ctx.arc(cx+Math.cos(a)*d,cy+Math.sin(a)*d,2,0,Math.PI*2);ctx.fillStyle='#555';ctx.fill();
+  }
+
+  // SI (triangles)
+  (state.threats||[]).forEach((t,i)=>{
+    const a=(i+1)*Math.PI*2/Math.max((state.threats||[]).length,1)+0.5;
+    const d=t.dist||200;const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
+    ctx.beginPath();ctx.moveTo(x,y-8);ctx.lineTo(x-6,y+5);ctx.lineTo(x+6,y+5);ctx.closePath();
+    ctx.fillStyle=t.ghost?'#f4433650':'#f44336';ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
+    ctx.fillText(trSI(t.type),x,y+16);ctx.textAlign='left';
+  });
+
+  // Witches
+  (state.witches||[]).forEach((w,i)=>{
+    const a=(i+3)*Math.PI*0.7;const d=w.dist||300;
+    const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
+    ctx.beginPath();ctx.arc(x,y,7,0,Math.PI*2);ctx.fillStyle=w.angry?'#9c27b0':'#9c27b060';ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
+    ctx.fillText(w.angry?'暴怒':'平静',x,y+14);ctx.textAlign='left';
+  });
+
+  // Teammates
+  (state.teammates||[]).forEach((m,i)=>{
+    const a=(i*2+1)*Math.PI/4;const d=m.dist||50;
+    const x=cx+Math.cos(a)*d*scale,y=cy+Math.sin(a)*d*scale;
+    ctx.beginPath();ctx.arc(x,y,6,0,Math.PI*2);
+    ctx.fillStyle=m.pinned?'#f44336':m.incap?'#ff9800':'#4caf50';ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';
+    ctx.fillText(trChar(m.name),x,y-10);ctx.fillText(m.hp+'HP',x,y+16);ctx.textAlign='left';
+  });
+
+  // Bot (large center)
+  ctx.beginPath();ctx.arc(cx,cy,10,0,Math.PI*2);ctx.fillStyle='#4fc3f7';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();
+  // Direction
+  ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(yaw)*25,cy-Math.sin(yaw)*25);ctx.strokeStyle='#4fc3f7';ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle='#fff';ctx.font='11px sans-serif';ctx.textAlign='center';ctx.fillText(trChar(bot.name||'Bot'),cx,cy-16);ctx.textAlign='left';
+
+  // Decision arrow
+  if(decision.action){
+    const dy=decision.action.includes('attack')||decision.action==='throw_grenade'?-yaw:decision.action==='follow_team'?0:-yaw+Math.PI;
+    ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(dy)*40,cy+Math.sin(dy)*40);
+    ctx.strokeStyle='#ffd700';ctx.lineWidth=3;ctx.setLineDash([8,4]);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='#ffd700';ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText(trAction(decision.action),cx,cy+28);ctx.textAlign='left';
+  }
+
+  // Info overlay
+  ctx.fillStyle='#888';ctx.font='10px sans-serif';
+  ctx.fillText(trMap(state.map||'')+' | '+trMode(state.mode||'')+' | '+trDiff(state.difficulty||''),8,H-8);
+  ctx.fillText('导演:'+trDirector(state.director||'')+' | 特感:'+(state.threats||[]).length,8,H-22);
+}
 
 function build3D(state,decision){
   if(animId)cancelAnimationFrame(animId);

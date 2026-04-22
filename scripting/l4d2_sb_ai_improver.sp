@@ -98,6 +98,7 @@ int g_iLLM_OverrideTarget = 0;     // entity ref for target override
 float g_fLLM_OverrideMovePos[3];   // move position override
 bool g_bLLM_OverrideMove = false;  // whether to override movement
 int g_iLLM_TrackedBot = -1;        // which bot LLM controls (-1 = first found)
+bool g_bLLM_ControlAll = false;     // LLM controls all survivor bots
 int g_iLLM_Seq = 0;               // STATE sequence number for request-response matching
 
 // Player scoring (per-client index)
@@ -7525,6 +7526,8 @@ void LLM_Init()
 	RegAdminCmd("sm_llm_spawn_tank", Cmd_LLM_SpawnTank, ADMFLAG_ROOT, "Spawn a tank near survivors");
 	RegAdminCmd("sm_llm_spawn_witch", Cmd_LLM_SpawnWitch, ADMFLAG_ROOT, "Spawn a witch near survivors");
 	RegAdminCmd("sm_llm_status", Cmd_LLM_Status, ADMFLAG_ROOT, "Show LLM module status");
+	RegAdminCmd("sm_llm_switch", Cmd_LLM_SwitchBot, ADMFLAG_ROOT, "Switch which bot LLM controls (name or #id)");
+	RegAdminCmd("sm_llm_control_all", Cmd_LLM_ControlAll, ADMFLAG_ROOT, "Toggle LLM controlling all survivor bots");
 
 	// Hook events for LLM awareness
 	HookEvent("witch_harasser_set", LLM_EventWitchHarassed);
@@ -8341,7 +8344,8 @@ void LLM_ApplyStrategy(const char[] action)
 void LLM_ApplyOverrides(int iClient, int &iButtons, float fVel[3], float fAngles[3])
 {
 	if (!g_hCvar_LLM_Enabled.BoolValue) return;
-	if (iClient != g_iLLM_TrackedBot) return;
+	if (!g_bLLM_ControlAll && iClient != g_iLLM_TrackedBot) return;
+	if (g_bLLM_ControlAll && !(IsFakeClient(iClient) && GetClientTeam(iClient) == 2 && IsPlayerAlive(iClient))) return;
 	if (!g_bLLM_ActionActive) return;
 
 	// Check expiry
@@ -8589,5 +8593,77 @@ public Action Cmd_LLM_Status(int client, int args)
 	}
 	ReplyToCommand(client, "[LLM] Survivors: %d | SI alive: %d | TestMode: %d",
 		survivors, si, g_hCvar_LLM_TestMode.IntValue);
+	return Plugin_Handled;
+}
+
+public Action Cmd_LLM_SwitchBot(int client, int args)
+{
+	if (args < 1)
+	{
+		ReplyToCommand(client, "[LLM] Usage: sm_llm_switch <name|#id>");
+		ReplyToCommand(client, "[LLM] Current tracked bot: %d | ControlAll: %d", g_iLLM_TrackedBot, g_bLLM_ControlAll);
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2)
+			{
+				char name[64]; GetClientName(i, name, sizeof(name));
+				ReplyToCommand(client, "  [#%d] %s %s%s", i, name,
+					i == g_iLLM_TrackedBot ? "(CURRENT)" : "",
+					IsPlayerAlive(i) ? "" : " (DEAD)");
+			}
+		}
+		return Plugin_Handled;
+	}
+
+	char arg[64]; GetCmdArg(1, arg, sizeof(arg));
+	int target = -1;
+
+	if (arg[0] == '#')
+	{
+		target = StringToInt(arg[1]);
+		if (target <= 0 || target > MaxClients || !IsClientInGame(target))
+			target = -1;
+	}
+	else
+	{
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2)
+			{
+				char name[64]; GetClientName(i, name, sizeof(name));
+				if (StrContains(name, arg, false) >= 0)
+				{
+					target = i;
+					break;
+				}
+			}
+		}
+	}
+
+	if (target <= 0 || !IsClientInGame(target) || !IsFakeClient(target) || GetClientTeam(target) != 2)
+	{
+		ReplyToCommand(client, "[LLM] Bot not found: %s", arg);
+		return Plugin_Handled;
+	}
+
+	int oldBot = g_iLLM_TrackedBot;
+	g_iLLM_TrackedBot = target;
+	g_iLLM_Seq = 0;
+	g_bLLM_ControlAll = false;
+
+	char oldName[64] = "none", newName[64];
+	if (oldBot > 0 && IsClientInGame(oldBot)) GetClientName(oldBot, oldName, sizeof(oldName));
+	GetClientName(target, newName, sizeof(newName));
+
+	ReplyToCommand(client, "[LLM] Switched: %s (#%d) -> %s (#%d)", oldName, oldBot, newName, target);
+	PrintToServer("[LLM] Bot switched: %d -> %d (%s)", oldBot, target, newName);
+	return Plugin_Handled;
+}
+
+public Action Cmd_LLM_ControlAll(int client, int args)
+{
+	g_bLLM_ControlAll = !g_bLLM_ControlAll;
+	ReplyToCommand(client, "[LLM] ControlAll: %s", g_bLLM_ControlAll ? "ON (all bots use LLM decisions)" : "OFF (single bot only)");
+	PrintToServer("[LLM] ControlAll toggled: %d", g_bLLM_ControlAll);
 	return Plugin_Handled;
 }
