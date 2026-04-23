@@ -94,6 +94,16 @@ Handle g_hLLM_ConnectTimer = null;
 Handle g_hLLM_TestTimer = null;
 float g_fLLM_LastSendTime = 0.0;
 
+// LLM Heartbeat
+float g_fLLM_LastPingSent = 0.0;
+float g_fLLM_LastPongReceived = 0.0;
+bool g_bLLM_HeartbeatActive = false;
+Handle g_hLLM_HeartbeatTimer = null;
+
+// LLM Director execution
+float g_fLLM_LastDirectorAction = 0.0;
+ConVar g_hCvar_DirectorInterval;
+
 // LLM TCP Retry Buffer (simple ring buffer for failed sends)
 #define LLM_RETRY_BUFFER_MAX 4
 char g_sLLM_RetryBuffer[LLM_RETRY_BUFFER_MAX][LLM_STATE_BUFFER];
@@ -7676,6 +7686,7 @@ void LLM_Init()
 
 	// Test mode: auto-spawn SI for LLM testing without human players
 	g_hCvar_LLM_TestMode = CreateConVar("ib_llm_testmode", "0", "Auto-spawn SI for LLM testing (0=off, 1=on)");
+	g_hCvar_DirectorInterval = CreateConVar("ib_llm_director_interval", "15.0", "Minimum seconds between Director actions from LLM", FCVAR_NOTIFY, true, 5.0, true, 120.0);
 
 	// Admin commands for manual testing
 	RegAdminCmd("sm_llm_spawn_si", Cmd_LLM_SpawnSI, ADMFLAG_ROOT, "Spawn a random SI near survivors");
@@ -8061,24 +8072,47 @@ public void LLM_OnConnected(Socket socket, any arg)
 	delete g_hLLM_ConnectTimer;
 	PrintToServer("[LLM] Connected to Python server!");
 
+	// Start heartbeat timer
+	delete g_hLLM_HeartbeatTimer;
+	g_fLLM_LastPongReceived = GetGameTime();
+	g_bLLM_HeartbeatActive = true;
+	g_hLLM_HeartbeatTimer = CreateTimer(30.0, Timer_LLM_Heartbeat, _, TIMER_REPEAT);
+
 	// Flush retry buffer on reconnect
 	LLM_FlushRetryBuffer();
 }
 
 public void LLM_OnReceive(Socket socket, const char[] data, const int size, any arg)
 {
+	// Handle pong response for heartbeat
+	if (StrContains(data, "\"pong\"") != -1)
+	{
+		g_fLLM_LastPongReceived = GetGameTime();
+		return;
+	}
+
 	// Route to infected decision handler if this is an infected_decision response
 	if (StrContains(data, "\"infected_decision\"") != -1)
 	{
 		LLM_ParseInfectedDecision(data, size);
 		return;
 	}
+
+	// Route to Director decision handler
+	if (StrContains(data, "\"director_decision\"") != -1)
+	{
+		LLM_ParseDirectorDecision(data);
+		return;
+	}
+
 	LLM_ParseDecision(data, size);
 }
 
 public void LLM_OnDisconnected(Socket socket, any arg)
 {
 	g_bLLM_Connected = false;
+	g_bLLM_HeartbeatActive = false;
+	delete g_hLLM_HeartbeatTimer;
 	PrintToServer("[LLM] Disconnected");
 	CreateTimer(5.0, LLM_TimerReconnect);
 }
@@ -8105,6 +8139,39 @@ public Action LLM_TimerConnectTimeout(Handle timer)
 		LLM_Connect();
 	}
 	return Plugin_Stop;
+}
+
+public Action Timer_LLM_Heartbeat(Handle timer)
+{
+	if (g_hLLM_Socket == null || !g_bLLM_Connected)
+	{
+		g_hLLM_HeartbeatTimer = null;
+		g_bLLM_HeartbeatActive = false;
+		return Plugin_Stop;
+	}
+
+	// Check if pong timed out (60 seconds since last pong)
+	if (GetGameTime() - g_fLLM_LastPongReceived > 60.0)
+	{
+		PrintToServer("[LLM] Heartbeat timeout — no pong for 60s, reconnecting...");
+		g_bLLM_HeartbeatActive = false;
+		g_hLLM_HeartbeatTimer = null;
+		g_bLLM_Connected = false;
+		if (g_hLLM_Socket != null) { g_hLLM_Socket.Disconnect(); delete g_hLLM_Socket; g_hLLM_Socket = null; }
+		CreateTimer(3.0, LLM_TimerReconnect);
+		return Plugin_Stop;
+	}
+
+	// Send ping
+	char pingMsg[128];
+	Format(pingMsg, sizeof(pingMsg), "{\"type\":\"ping\",\"time\":%.2f}\n", GetGameTime());
+	if (g_hLLM_Socket != null && g_bLLM_Connected)
+	{
+		g_hLLM_Socket.Send(pingMsg);
+		g_fLLM_LastPingSent = GetGameTime();
+	}
+
+	return Plugin_Continue;
 }
 
 // ===================== TCP Send Wrapper =====================
@@ -9275,6 +9342,135 @@ int _LLM_FindSurvivorByName(const char[] name)
 			return i;
 	}
 	return -1;
+}
+
+// ===================== Director Decision Execution =====================
+
+void LLM_ParseDirectorDecision(const char[] json)
+{
+	// Frequency control: minimum interval between Director actions
+	float dirInterval = g_hCvar_DirectorInterval.FloatValue;
+	if (GetGameTime() - g_fLLM_LastDirectorAction < dirInterval)
+	{
+		PrintToServer("[LLM-Director] Skipped: too soon (%.1fs < %.1fs)", GetGameTime() - g_fLLM_LastDirectorAction, dirInterval);
+		return;
+	}
+
+	char buf[1024];
+	strcopy(buf, sizeof(buf), json);
+
+	// Parse "action" field
+	int ap = StrContains(buf, "\"action\"");
+	if (ap == -1) return;
+
+	char action[32];
+	int actStart = ap + 9;
+	int bufLen = strlen(buf);
+	while (actStart < bufLen && (buf[actStart]==' '||buf[actStart]==':'||buf[actStart]=='"'||buf[actStart]=='\'')) actStart++;
+	int ae = actStart;
+	while (ae < bufLen && buf[ae]!='"'&&buf[ae]!='\''&&buf[ae]!=','&&buf[ae]!='}') ae++;
+	int actLen = ae - actStart;
+	if (actLen <= 0 || actLen >= sizeof(action)) return;
+	strcopy(action, actLen + 1, buf[actStart]);
+
+	// Parse "params" field (simple string value)
+	char params[64];
+	params[0] = '\0';
+	int pp = StrContains(buf, "\"params\"");
+	if (pp != -1)
+	{
+		// Look for a string value inside params (e.g. "si_type":"hunter")
+		int ps = pp + 9;
+		// Try to find "si_type" or "difficulty" or just the first string value
+		int stp = StrContains(buf[ps], "\"si_type\"");
+		int dtp = StrContains(buf[ps], "\"difficulty\"");
+		int valp = -1;
+		if (stp != -1) valp = ps + stp + 10;
+		else if (dtp != -1) valp = ps + dtp + 13;
+
+		if (valp != -1)
+		{
+			while (valp < bufLen && (buf[valp]==' '||buf[valp]==':'||buf[valp]=='"'||buf[valp]=='\'')) valp++;
+			int ve = valp;
+			while (ve < bufLen && buf[ve]!='"'&&buf[ve]!='\''&&buf[ve]!=','&&buf[ve]!='}') ve++;
+			int plen = ve - valp;
+			if (plen > 0 && plen < sizeof(params))
+				strcopy(params, plen + 1, buf[valp]);
+		}
+	}
+
+	_LLM_ApplyDirectorAction(action, params);
+	g_fLLM_LastDirectorAction = GetGameTime();
+}
+
+void _LLM_ApplyDirectorAction(const char[] action, const char[] params)
+{
+	// White-list validation
+	if (StrEqual(action, "spawn_si", false))
+	{
+		// Validate SI type
+		if (StrEqual(params, "hunter", false) || StrEqual(params, "smoker", false) ||
+			StrEqual(params, "boomer", false) || StrEqual(params, "charger", false) ||
+			StrEqual(params, "jockey", false) || StrEqual(params, "spitter", false))
+		{
+			ServerCommand("z_spawn %s auto", params);
+			PrintToServer("[LLM-Director] spawn_si: %s", params);
+		}
+		else
+		{
+			PrintToServer("[LLM-Director] spawn_si: invalid SI type '%s', ignored", params);
+		}
+	}
+	else if (StrEqual(action, "spawn_horde", false))
+	{
+		ServerCommand("z_spawn mob");
+		PrintToServer("[LLM-Director] spawn_horde");
+	}
+	else if (StrEqual(action, "place_tank", false))
+	{
+		ServerCommand("z_spawn tank auto");
+		PrintToServer("[LLM-Director] place_tank");
+	}
+	else if (StrEqual(action, "place_witch", false))
+	{
+		ServerCommand("z_spawn witch auto");
+		PrintToServer("[LLM-Director] place_witch");
+	}
+	else if (StrEqual(action, "adjust_difficulty", false))
+	{
+		if (StrEqual(params, "Easy", false) || StrEqual(params, "Normal", false) ||
+			StrEqual(params, "Hard", false) || StrEqual(params, "Impossible", false))
+		{
+			ServerCommand("z_difficulty %s", params);
+			PrintToServer("[LLM-Director] adjust_difficulty: %s", params);
+		}
+		else
+		{
+			PrintToServer("[LLM-Director] adjust_difficulty: invalid difficulty '%s', ignored", params);
+		}
+	}
+	else if (StrEqual(action, "pace_slow", false))
+	{
+		ServerCommand("director_force_panic_event 0");
+		ConVar hMinNormal = FindConVar("z_mob_spawn_min_interval_normal");
+		ConVar hMinHard = FindConVar("z_mob_spawn_min_interval_hard");
+		if (hMinNormal != null) hMinNormal.SetInt(180);
+		if (hMinHard != null) hMinHard.SetInt(150);
+		PrintToServer("[LLM-Director] pace_slow: reduced mob pressure");
+	}
+	else if (StrEqual(action, "pace_intense", false))
+	{
+		ServerCommand("director_force_panic_event 1");
+		ConVar hMinNormal = FindConVar("z_mob_spawn_min_interval_normal");
+		ConVar hMinHard = FindConVar("z_mob_spawn_min_interval_hard");
+		if (hMinNormal != null) hMinNormal.SetInt(30);
+		if (hMinHard != null) hMinHard.SetInt(20);
+		PrintToServer("[LLM-Director] pace_intense: increased mob pressure");
+	}
+	else
+	{
+		PrintToServer("[LLM-Director] Unknown action '%s', ignored", action);
+	}
 }
 
 // ===================== Strategy -> IB Internal Override =====================
