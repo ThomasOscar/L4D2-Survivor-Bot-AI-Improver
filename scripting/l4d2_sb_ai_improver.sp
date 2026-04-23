@@ -543,6 +543,25 @@ static float g_fCvar_HasEnoughAmmoRatio;
 
 static bool g_bCvar_Nightmare;
 
+/*============ PHASE 5.1: ten_day FEATURE INTEGRATION CONVARS ====================*/
+static ConVar g_hCvar_PushFlyingSI;
+static ConVar g_hCvar_ShootTankRock;
+static ConVar g_hCvar_WitchCrown;
+static ConVar g_hCvar_GearTransfer;
+
+static bool g_bCvar_PushFlyingSI;
+static bool g_bCvar_ShootTankRock;
+static bool g_bCvar_WitchCrown;
+static bool g_bCvar_GearTransfer;
+
+// Phase 5.1: Push Flying SI state
+static float g_fBot_PushFlyingSI_Cooldown[MAXPLAYERS+1];  // per-bot cooldown for push attempts
+
+// Phase 5.1: Gear Transfer state
+static float g_fGearTransfer_Cooldown[MAXPLAYERS+1];      // per-player cooldown for R-key transfer
+#define GEAR_TRANSFER_COOLDOWN 1.0
+#define GEAR_TRANSFER_RANGE 150.0
+
 /*============ VARIABLES =========================================================*/
 static bool g_bClient_IsLookingAtPosition[MAXPLAYERS+1];
 static bool g_bClient_IsFiringWeapon[MAXPLAYERS+1];
@@ -1034,6 +1053,12 @@ void CreateAndHookConVars()
 
 	g_hCvar_Nightmare 								= CreateConVar("ib_nightmare", "0", "Enable if you're playing on NIGHTMARE modpack! Adjusts the bot's behaviors to fit better to it", FCVAR_NOTIFY, true, 0.0, true, 1.0);
 
+	// Phase 5.1: ten_day Feature Integration ConVars
+	g_hCvar_PushFlyingSI							= CreateConVar("ib_push_flying_si", "1", "Bot pushes flying Hunter/Jockey with shove", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+	g_hCvar_ShootTankRock							= CreateConVar("ib_shoot_tank_rock", "1", "Bot shoots Tank thrown rocks (mirrors ib_shootattankrocks_enabled)", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+	g_hCvar_WitchCrown								= CreateConVar("ib_witch_crown", "1", "Bot crowns startled Witch with shotgun at close range", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+	g_hCvar_GearTransfer							= CreateConVar("ib_gear_transfer", "1", "Player can take items from Bot by pressing R key while aiming at them", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+
 	g_hCvar_GameDifficulty.AddChangeHook(OnConVarChanged);
 	g_hCvar_SurvivorLimpHealth.AddChangeHook(OnConVarChanged);
 	g_hCvar_TankRockHealth.AddChangeHook(OnConVarChanged);
@@ -1161,6 +1186,12 @@ void CreateAndHookConVars()
 	g_hCvar_Debug.AddChangeHook(OnConVarChanged);
 
 	g_hCvar_Nightmare.AddChangeHook(OnConVarChanged);
+
+	// Phase 5.1 change hooks
+	g_hCvar_PushFlyingSI.AddChangeHook(OnConVarChanged);
+	g_hCvar_ShootTankRock.AddChangeHook(OnConVarChanged);
+	g_hCvar_WitchCrown.AddChangeHook(OnConVarChanged);
+	g_hCvar_GearTransfer.AddChangeHook(OnConVarChanged);
 }
 
 public void OnAllPluginsLoaded()
@@ -1332,6 +1363,12 @@ void UpdateConVarValues()
 	//}
 
 	g_bCvar_Nightmare 									= g_hCvar_Nightmare.BoolValue;
+
+	// Phase 5.1: ten_day feature integration
+	g_bCvar_PushFlyingSI								= g_hCvar_PushFlyingSI.BoolValue;
+	g_bCvar_ShootTankRock								= g_hCvar_ShootTankRock.BoolValue;
+	g_bCvar_WitchCrown									= g_hCvar_WitchCrown.BoolValue;
+	g_bCvar_GearTransfer								= g_hCvar_GearTransfer.BoolValue;
 }
 
 static Handle g_hCalcAbsolutePosition;
@@ -2120,7 +2157,11 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 	}
 
 	if (!IsFakeClient(iClient))
+	{
+		// Phase 5.1: Gear Transfer - allow human players to take items from bots with R key
+		Phase51_GearTransfer_OnPlayerRunCmd(iClient, iButtons);
 		return Plugin_Continue;
+	}
 
 	if (g_bCvar_BotsDisabled || g_bCutsceneIsPlaying || !g_iClientNavArea[iClient] || GetGameTime() <= g_fClient_ThinkFunctionDelay[iClient])
 		return Plugin_Continue;
@@ -2781,7 +2822,7 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 
 		int iRock = g_iBot_TankRock[iClient];
-		if (g_bCvar_TankRock_ShootEnabled && g_iCvar_TankRockHealth > 0 && L4D_IsValidEnt(iRock))
+		if ((g_bCvar_TankRock_ShootEnabled || g_bCvar_ShootTankRock) && g_iCvar_TankRockHealth > 0 && L4D_IsValidEnt(iRock))
 		{
 			static float fRockPos[3];
 			GetEntityCenteroid(iRock, fRockPos);
@@ -2879,6 +2920,12 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 			}
 		}
 	}
+
+	// Phase 5.1: Push flying Hunter/Jockey
+	Phase51_CheckPushFlyingSI(iClient, iButtons);
+
+	// Phase 5.1: Witch Crown behavior (enhanced - kicks in when raged witch is very close)
+	Phase51_WitchCrownBehavior(iClient, iButtons);
 
 	int iInfectedTarg = g_iBot_TargetInfected[iClient];
 	bool bIsTargetPlayer = (1 <= iInfectedTarg <= MaxClients);
@@ -8054,9 +8101,19 @@ void LLM_CollectState(char[] buffer, int maxlen)
 		float dist = GetVectorDistance(refPos, tp);
 		bool ghost = view_as<bool>(GetEntProp(i, Prop_Send, "m_isGhost"));
 		int thp = GetClientHealth(i);
+
+		// Check if SI is using special ability
+		bool abilityActive = false;
+		int ability = GetEntPropEnt(i, Prop_Send, "m_customAbility");
+		if (ability != -1 && IsValidEntity(ability))
+		{
+			if (HasEntProp(ability, Prop_Send, "m_hasBeenUsed"))
+				abilityActive = GetEntProp(ability, Prop_Send, "m_hasBeenUsed") != 0;
+		}
+
 		if (tc > 0) Format(threats, sizeof(threats), "%s,", threats);
-		Format(threats, sizeof(threats), "%s{\"type\":\"%s\",\"hp\":%d,\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s}",
-			threats, zn, thp, dist, tp[0], tp[1], tp[2], ghost?"true":"false");
+		Format(threats, sizeof(threats), "%s{\"type\":\"%s\",\"hp\":%d,\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s,\"ability_active\":%s}",
+			threats, zn, thp, dist, tp[0], tp[1], tp[2], ghost?"true":"false", abilityActive?"true":"false");
 		tc++;
 	}
 
@@ -10562,4 +10619,280 @@ public Action LLM_TimerExportNav(Handle timer)
 {
 	LLM_ExportNavMesh();
 	return Plugin_Stop;
+}
+
+// ============================================================
+// Phase 5.1: ten_day Feature Integration - Push Flying SI
+// ============================================================
+// When Hunter is pouncing or Jockey is leaping, nearby bots
+// shove them mid-air to protect teammates.
+// ============================================================
+
+void Phase51_CheckPushFlyingSI(int iBot, int &iButtons)
+{
+	if (!g_bCvar_PushFlyingSI)
+		return;
+
+	float fCurTime = GetGameTime();
+	if (fCurTime < g_fBot_PushFlyingSI_Cooldown[iBot])
+		return;
+
+	// Don't push if incapacitated
+	if (L4D_IsPlayerIncapacitated(iBot))
+		return;
+
+	float fBotPos[3];
+	GetClientAbsOrigin(iBot, fBotPos);
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsValidClient(i) || !IsPlayerAlive(i) || GetClientTeam(i) != 3)
+			continue;
+
+		int iZClass = GetEntProp(i, Prop_Send, "m_zombieClass");
+
+		// Hunter (class 3) or Jockey (class 5)
+		if (iZClass != 3 && iZClass != 5)
+			continue;
+
+		// Check if Hunter is mid-pounce or Jockey is mid-leap
+		bool bIsFlying = false;
+		if (iZClass == 3) // Hunter
+		{
+			// Hunter is flying if m_isAttemptingToPounce is set
+			bIsFlying = (GetEntProp(i, Prop_Send, "m_isAttemptingToPounce") != 0);
+		}
+		else if (iZClass == 5) // Jockey
+		{
+			// Jockey is leaping if it has a ride victim or is in leap ability
+			int iVictim = GetEntPropEnt(i, Prop_Send, "m_jockeyVictim");
+			if (iVictim > 0 && iVictim <= MaxClients && IsClientInGame(iVictim))
+				bIsFlying = true;
+			else
+			{
+				// Check if Jockey is in the air (leaping towards survivor)
+				int iFlags = GetEntityFlags(i);
+				bIsFlying = !(iFlags & FL_ONGROUND);
+			}
+		}
+
+		if (!bIsFlying)
+			continue;
+
+		float fSIPos[3];
+		GetClientAbsOrigin(i, fSIPos);
+		float fDist = GetVectorDistance(fBotPos, fSIPos);
+
+		// Push range: 80-220 units (not too close, not too far)
+		if (fDist < 30.0 || fDist > 220.0)
+			continue;
+
+		// Must have visual contact
+		if (!IsVisibleEntity(iBot, i, MASK_SHOT_HULL))
+			continue;
+
+		// Aim at SI and shove
+		float fAimPos[3];
+		GetClientEyePosition(i, fAimPos);
+		fAimPos[2] -= 5.0; // aim slightly at center mass
+		SnapViewToPosition(iBot, fAimPos);
+		iButtons |= IN_ATTACK2; // shove
+
+		g_fBot_PushFlyingSI_Cooldown[iBot] = fCurTime + 1.5;
+		return;
+	}
+}
+
+// ============================================================
+// Phase 5.1: ten_day Feature Integration - Witch Crown
+// ============================================================
+// When a Witch is startled, bots with shotguns switch to them
+// and fire at close range for a crown kill.
+// ============================================================
+
+void Phase51_WitchCrownBehavior(int iBot, int &iButtons)
+{
+	if (!g_bCvar_WitchCrown)
+		return;
+
+	// Don't override if bot is incapacitated or busy
+	if (L4D_IsPlayerIncapacitated(iBot))
+		return;
+
+	// Use the existing tracked witch target instead of scanning all entities
+	int iWitch = g_iBot_WitchTarget[iBot];
+	if (!L4D_IsValidEnt(iWitch) || GetEntProp(iWitch, Prop_Data, "m_iHealth") <= 0)
+		return;
+
+	// Only act on fully enraged witch
+	float fRage = GetEntPropFloat(iWitch, Prop_Send, "m_rage");
+	if (fRage < 1.0)
+		return;
+
+	// Check if bot has a shotgun in slot 0
+	int iShotgunSlot = GetPlayerWeaponSlot(iBot, 0);
+	if (iShotgunSlot == -1)
+		return;
+
+	char sWeaponClass[64];
+	GetEntityClassname(iShotgunSlot, sWeaponClass, sizeof(sWeaponClass));
+	bool bIsShotgun = (StrContains(sWeaponClass, "shotgun") != -1);
+
+	if (!bIsShotgun)
+		return;
+
+	// Get distance to witch
+	float fBotPos[3];
+	GetClientEyePosition(iBot, fBotPos);
+	float fWitchPos[3];
+	GetEntPropVector(iWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+	float fDist = GetVectorDistance(fBotPos, fWitchPos);
+
+	// Only crown at close range (< 200 units) - the sweet spot for shotgun headshot
+	if (fDist > 200.0)
+		return;
+
+	// Make sure we have the shotgun active
+	int iCurWeapon = L4D_GetPlayerCurrentWeapon(iBot);
+	if (iCurWeapon != iShotgunSlot)
+	{
+		SwitchWeaponSlot(iBot, 0);
+		return;
+	}
+
+	// Check if weapon is reloading
+	if (IsWeaponReloading(iCurWeapon, false))
+		return;
+
+	// Aim at witch head position
+	fWitchPos[2] += 60.0; // aim at head level
+
+	if (!IsVisibleEntity(iBot, iWitch, MASK_SHOT_HULL))
+		return;
+
+	SnapViewToPosition(iBot, fWitchPos);
+	PressAttackButton(iBot, iButtons);
+}
+
+// ============================================================
+// Phase 5.1: ten_day Feature Integration - Gear Transfer
+// ============================================================
+// Allows human players to press R (reload) while aiming at a
+// bot to take items from its inventory (medkit, pills, throwables).
+// ============================================================
+
+void Phase51_GearTransfer_OnPlayerRunCmd(int iClient, int iButtons)
+{
+	if (!g_bCvar_GearTransfer)
+		return;
+
+	// Only for human survivors
+	if (IsFakeClient(iClient))
+		return;
+
+	if (!IsClientSurvivor(iClient))
+		return;
+
+	// Check for reload button press
+	if (!(iButtons & IN_RELOAD))
+		return;
+
+	// Cooldown check
+	float fCurTime = GetGameTime();
+	if (fCurTime < g_fGearTransfer_Cooldown[iClient])
+		return;
+
+	// Don't allow if incapacitated
+	if (L4D_IsPlayerIncapacitated(iClient))
+		return;
+
+	// Don't transfer if currently reloading a weapon
+	int iActiveWeapon = L4D_GetPlayerCurrentWeapon(iClient);
+	if (iActiveWeapon != -1 && IsValidEntity(iActiveWeapon))
+	{
+		if (GetEntProp(iActiveWeapon, Prop_Send, "m_bInReload") != 0)
+			return;
+	}
+
+	// Find bot player is looking at
+	int iTarget = GetClientAimTarget(iClient, true);
+	if (!IsValidClient(iTarget))
+		return;
+
+	if (!IsFakeClient(iTarget) || GetClientTeam(iTarget) != 2 || !IsPlayerAlive(iTarget))
+		return;
+
+	// Range check
+	float fDist = GetClientDistance(iClient, iTarget, false);
+	if (fDist > GEAR_TRANSFER_RANGE)
+		return;
+
+	// Try to transfer items in priority order:
+	// 1. Health items (slot 3: medkit/defib)
+	// 2. Pills/Adrenaline (slot 4)
+	// 3. Throwables (slot 2: pipe/molotov/bile)
+	bool bTransferred = false;
+
+	// Try slot 3 (medkit/defib) - only if player doesn't have one
+	if (!bTransferred && GetPlayerWeaponSlot(iClient, 3) == -1)
+	{
+		int iBotItem = GetPlayerWeaponSlot(iTarget, 3);
+		if (iBotItem != -1 && IsValidEntity(iBotItem))
+		{
+			Phase51_TransferWeapon(iTarget, iClient, iBotItem, 3);
+			bTransferred = true;
+		}
+	}
+
+	// Try slot 4 (pills/adrenaline) - only if player doesn't have one
+	if (!bTransferred && GetPlayerWeaponSlot(iClient, 4) == -1)
+	{
+		int iBotItem = GetPlayerWeaponSlot(iTarget, 4);
+		if (iBotItem != -1 && IsValidEntity(iBotItem))
+		{
+			Phase51_TransferWeapon(iTarget, iClient, iBotItem, 4);
+			bTransferred = true;
+		}
+	}
+
+	// Try slot 2 (throwables) - only if player doesn't have one
+	if (!bTransferred && GetPlayerWeaponSlot(iClient, 2) == -1)
+	{
+		int iBotItem = GetPlayerWeaponSlot(iTarget, 2);
+		if (iBotItem != -1 && IsValidEntity(iBotItem))
+		{
+			Phase51_TransferWeapon(iTarget, iClient, iBotItem, 2);
+			bTransferred = true;
+		}
+	}
+
+	if (bTransferred)
+	{
+		g_fGearTransfer_Cooldown[iClient] = fCurTime + GEAR_TRANSFER_COOLDOWN;
+
+		// Notify the player
+		char sBotName[64], sItemName[64];
+		GetClientName(iTarget, sBotName, sizeof(sBotName));
+		int iGivenWeapon = L4D_GetPlayerCurrentWeapon(iClient);
+		if (iGivenWeapon != -1 && IsValidEntity(iGivenWeapon))
+			GetEntityClassname(iGivenWeapon, sItemName, sizeof(sItemName));
+		else
+			strcopy(sItemName, sizeof(sItemName), "item");
+
+		PrintToChat(iClient, "\x04[IB]\x01 Took \x03%s\x01 from \x04%s", sItemName, sBotName);
+	}
+}
+
+void Phase51_TransferWeapon(int iBot, int iPlayer, int iWeapon, int iSlot)
+{
+	// Get classname of the weapon to give
+	char sClass[64];
+	GetEntityClassname(iWeapon, sClass, sizeof(sClass));
+
+	// Remove weapon from bot
+	RemovePlayerItem(iBot, iWeapon);
+	AcceptEntityInput(iWeapon, "Kill");
+
+	// Give weapon to player
+	GivePlayerItem(iPlayer, sClass);
 }
