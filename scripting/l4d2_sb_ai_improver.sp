@@ -45,6 +45,8 @@
 #define REQUIRE_EXTENSIONS
 
 #undef REQUIRE_PLUGIN
+#include <topmenus>
+#include <adminmenu>
 #include <vscript> //https://github.com/FortyTwoFortyTwo/VScript
 #define REQUIRE_PLUGIN
 
@@ -70,10 +72,11 @@ public Plugin myinfo =
 // Architecture: LLM -> sets internal IB variables -> IB executes
 // =====================================================================
 
-#define LLM_STATE_BUFFER 3072
+#define LLM_STATE_BUFFER 8192
 #define LLM_ACTION_MAX 32
 #define LLM_TARGET_MAX 64
 #define LLM_RECENT_EVENTS_MAX 8
+#define LLM_MAX_BOTS 8
 
 // LLM ConVars
 ConVar g_hCvar_LLM_Enabled;
@@ -89,6 +92,20 @@ Handle g_hLLM_ConnectTimer = null;
 Handle g_hLLM_TestTimer = null;
 float g_fLLM_LastSendTime = 0.0;
 
+// LLM Per-Bot Data Structure
+enum struct LLM_BotInfo {
+    int client;             // client index
+    char name[64];          // bot name
+    bool is_idle_player;    // took over from idle human player
+    bool active;            // is being LLM-controlled
+    char action[32];        // current decision action
+    char target[64];        // current decision target
+    float moveTarget[3];    // movement override position
+    bool hasMoveOverride;   // has active movement override
+    float actionExpire;     // when current action expires
+    float lastDecisionTime; // last decision timestamp
+}
+
 // LLM Decision State
 char g_sLLM_Action[LLM_ACTION_MAX] = "follow_team";
 char g_sLLM_Target[LLM_TARGET_MAX] = "";
@@ -97,9 +114,32 @@ bool g_bLLM_ActionActive = false;
 int g_iLLM_OverrideTarget = 0;     // entity ref for target override
 float g_fLLM_OverrideMovePos[3];   // move position override
 bool g_bLLM_OverrideMove = false;  // whether to override movement
-int g_iLLM_TrackedBot = -1;        // which bot LLM controls (-1 = first found)
+int g_iLLM_TrackedBot = -1;        // DEPRECATED: use g_LLM_Bots[] instead (kept for compat)
 bool g_bLLM_ControlAll = false;     // LLM controls all survivor bots
 int g_iLLM_Seq = 0;               // STATE sequence number for request-response matching
+
+LLM_BotInfo g_LLM_Bots[LLM_MAX_BOTS];
+int g_LLM_BotCount = 0;
+
+// Admin menu
+TopMenu g_hLLM_TopMenu = null;
+TopMenuObject g_hLLM_MenuCategory = INVALID_TOPMENUOBJECT;
+int g_iLLM_MenuTarget[MAXPLAYERS+1];  // selected bot client for menu actions
+bool g_bLLM_LogState = false;         // debug: log STATE JSON
+bool g_bLLM_LogDecision = false;      // debug: log DECISION JSON
+
+// Cross-faction control
+#define LLM_MAX_INFECTED 8
+enum struct LLM_InfectedInfo {
+	int entity;
+	char iType[16];
+	char action[32];
+	float moveTarget[3];
+	bool hasMoveOverride;
+	float actionExpire;
+}
+LLM_InfectedInfo g_LLM_Infected[LLM_MAX_INFECTED];
+int g_LLM_InfectedCount = 0;
 
 // Player scoring (per-client index)
 int g_iLLM_PlayerIncap[MAXPLAYERS+1];    // incap count this round
@@ -7573,6 +7613,15 @@ void LLM_Init()
 	RegAdminCmd("sm_llm_status", Cmd_LLM_Status, ADMFLAG_ROOT, "Show LLM module status");
 	RegAdminCmd("sm_llm_switch", Cmd_LLM_SwitchBot, ADMFLAG_ROOT, "Switch which bot LLM controls (name or #id)");
 	RegAdminCmd("sm_llm_control_all", Cmd_LLM_ControlAll, ADMFLAG_ROOT, "Toggle LLM controlling all survivor bots");
+	RegAdminCmd("sm_llm_menu", Cmd_LLM_Menu, ADMFLAG_ROOT, "Open LLM admin menu");
+
+	// Admin menu — register with SourceMod admin menu system
+	TopMenu adminMenu = GetAdminTopMenu();
+	if (adminMenu != null)
+	{
+		g_hLLM_MenuCategory = adminMenu.AddCategory("llm_controls", LLM_AdminMenuHandler, "llm_controls");
+		g_hLLM_TopMenu = adminMenu;
+	}
 
 	// Hook events for LLM awareness
 	HookEvent("witch_harasser_set", LLM_EventWitchHarassed);
@@ -7582,6 +7631,9 @@ void LLM_Init()
 	HookEvent("jockey_ride", LLM_EventJockeyRide);
 	HookEvent("charger_pummel_start", LLM_EventChargerPummel);
 	HookEvent("item_pickup", LLM_EventItemPickup);
+	HookEvent("player_bot_replace", LLM_EventBotReplace);
+	HookEvent("bot_player_replace", LLM_EventPlayerReplace);
+	HookEvent("player_team", LLM_EventPlayerTeam);
 
 	PrintToServer("[LLM] Module initialized (ib_llm_enabled=%d)", g_hCvar_LLM_Enabled.IntValue);
 }
@@ -7600,6 +7652,7 @@ void LLM_OnMapStart()
 	for (int i = 0; i < LLM_RECENT_EVENTS_MAX; i++) g_fLLM_EventTime[i] = 0.0;
 	g_iLLM_TrackedBot = -1;
 	g_iLLM_Seq = 0;
+	g_LLM_BotCount = 0;
 	// Reset player scores
 	for (int i = 0; i <= MAXPLAYERS; i++)
 	{
@@ -7629,6 +7682,9 @@ void LLM_OnMapStart()
 	// Test mode: auto-spawn SI periodically for LLM testing
 	delete g_hLLM_TestTimer;
 	g_hLLM_TestTimer = CreateTimer(20.0, LLM_TimerTestSpawn, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+
+	// Export nav mesh after a short delay (nav needs time to initialize)
+	CreateTimer(15.0, LLM_TimerExportNav, _, TIMER_FLAG_NO_MAPCHANGE);
 
 	PrintToServer("[LLM] OnMapStart - LLM layer active");
 }
@@ -7732,6 +7788,12 @@ public void LLM_OnConnected(Socket socket, any arg)
 
 public void LLM_OnReceive(Socket socket, const char[] data, const int size, any arg)
 {
+	// Route to infected decision handler if this is an infected_decision response
+	if (StrContains(data, "\"infected_decision\"") != -1)
+	{
+		LLM_ParseInfectedDecision(data, size);
+		return;
+	}
 	LLM_ParseDecision(data, size);
 }
 
@@ -7776,34 +7838,25 @@ void LLM_SendState()
 	if (GetGameTime() - g_fLLM_LastSendTime < interval) return;
 	g_fLLM_LastSendTime = GetGameTime();
 
-	// Find tracked bot
-	if (g_iLLM_TrackedBot == -1 || !IsClientInGame(g_iLLM_TrackedBot))
-	{
-		g_iLLM_TrackedBot = -1;
-		g_iLLM_Seq = 0;
-		for (int i = 1; i <= MaxClients; i++)
-		{
-			if (IsClientInGame(i) && IsFakeClient(i) && IsClientSurvivor(i) && IsPlayerAlive(i))
-			{
-				g_iLLM_TrackedBot = i;
-				PrintToServer("[LLM] Tracked bot: %d (%N)", i, i);
-				break;
-			}
-		}
-		if (g_iLLM_TrackedBot == -1) return;
-	}
+	// Refresh bot list if empty (ControlAll refreshes are handled by events)
+	if (g_LLM_BotCount == 0 && g_bLLM_ControlAll)
+		_LLM_RefreshBotList();
 
-	int bot = g_iLLM_TrackedBot;
+	if (g_LLM_BotCount == 0) return;
+
 	char state[LLM_STATE_BUFFER];
-	LLM_CollectState(bot, state, sizeof(state));
+	LLM_CollectState(state, sizeof(state));
 
 	if (g_hLLM_Socket != null && g_bLLM_Connected)
 	{
 		g_hLLM_Socket.Send(state);
 	}
+
+	// Send infected faction state (adversarial LLM)
+	LLM_SendInfectedState();
 }
 
-void LLM_CollectState(int bot, char[] buffer, int maxlen)
+void LLM_CollectState(char[] buffer, int maxlen)
 {
 	char mapName[128]; GetCurrentMap(mapName, sizeof(mapName));
 	char gameMode[32] = "coop";
@@ -7813,58 +7866,121 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 	ConVar hDiff = FindConVar("z_difficulty");
 	if (hDiff != null) hDiff.GetString(difficulty, sizeof(difficulty));
 
-	char botName[64]; GetClientName(bot, botName, sizeof(botName));
-	int health = GetClientHealth(bot);
-	float tempHealth = GetEntPropFloat(bot, Prop_Send, "m_healthBuffer");
-	bool incap = view_as<bool>(GetEntProp(bot, Prop_Send, "m_isIncapacitated"));
-	bool bw = view_as<bool>(GetEntProp(bot, Prop_Send, "m_bIsOnThirdStrike"));
-	float pos[3]; GetClientAbsOrigin(bot, pos);
-	float angles[3]; GetClientEyeAngles(bot, angles);
+	// === Bots[] — all LLM-controlled survivor bots ===
+	char bots[4096] = "";
+	int bc = 0;
+	float refPos[3]; // reference position for distance calculations (first bot)
+	refPos = view_as<float>({0.0, 0.0, 0.0});
 
-	// Weapons
-	char primary[64]="none", secondary[64]="none", grenade[32]="none";
-	char healthItem[32]="none", pillsItem[32]="none";
-	int primaryAmmo = 0;
-	int reserveAmmo = 0;
-	int w;
-	w = GetPlayerWeaponSlot(bot, 0);
-	if (w != -1) { GetEntityClassname(w, primary, sizeof(primary)); primaryAmmo = GetEntProp(w, Prop_Send, "m_iClip1"); reserveAmmo = GetEntProp(w, Prop_Send, "m_iExtra1"); }
-	w = GetPlayerWeaponSlot(bot, 1);
-	if (w != -1) GetEntityClassname(w, secondary, sizeof(secondary));
-	w = GetPlayerWeaponSlot(bot, 2);
-	if (w != -1) GetEntityClassname(w, grenade, sizeof(grenade));
-	w = GetPlayerWeaponSlot(bot, 3);
-	if (w != -1) GetEntityClassname(w, healthItem, sizeof(healthItem));
-	w = GetPlayerWeaponSlot(bot, 4);
-	if (w != -1) GetEntityClassname(w, pillsItem, sizeof(pillsItem));
-
-	// Teammates
-	char mates[1024]="";
-	int mc = 0;
-	for (int i = 1; i <= MaxClients; i++)
+	for (int b = 0; b < g_LLM_BotCount; b++)
 	{
-		if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
-		char mn[64]; GetClientName(i, mn, sizeof(mn));
-		int mhp = GetClientHealth(i);
-		float mTempHp = GetEntPropFloat(i, Prop_Send, "m_healthBuffer");
-		bool mi = view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated"));
-		bool mb = view_as<bool>(GetEntProp(i, Prop_Send, "m_bIsOnThirdStrike"));
-		float mp[3]; GetClientAbsOrigin(i, mp);
-		float dist = GetVectorDistance(pos, mp);
-		bool pin = LLM_IsPinned(i);
-		char mPinType[16]; LLM_GetPinType(i, mPinType, sizeof(mPinType));
-		// Teammate primary weapon
-		char mWeapon[64] = "none";
-		int mw = GetPlayerWeaponSlot(i, 0);
-		if (mw != -1) GetEntityClassname(mw, mWeapon, sizeof(mWeapon));
-		if (mc > 0) Format(mates, sizeof(mates), "%s,", mates);
-		Format(mates, sizeof(mates), "%s{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pinned\":%s,\"pin_type\":\"%s\",\"weapon\":\"%s\",\"dist\":%.0f}",
-			mates, mn, mhp, mTempHp, mi?"true":"false", mb?"true":"false", pin?"true":"false", mPinType, mWeapon, dist);
-		mc++;
+		int client = g_LLM_Bots[b].client;
+		if (!IsClientInGame(client) || !IsPlayerAlive(client)) continue;
+
+		if (bc == 0)
+		{
+			GetClientAbsOrigin(client, refPos); // use first bot as reference
+		}
+
+		char bName[64]; GetClientName(client, bName, sizeof(bName));
+		int hp = GetClientHealth(client);
+		float tempHp = GetEntPropFloat(client, Prop_Send, "m_healthBuffer");
+		bool incap = view_as<bool>(GetEntProp(client, Prop_Send, "m_isIncapacitated"));
+		bool bw = view_as<bool>(GetEntProp(client, Prop_Send, "m_bIsOnThirdStrike"));
+		float pos[3]; GetClientAbsOrigin(client, pos);
+		float angles[3]; GetClientEyeAngles(client, angles);
+		bool pinned = LLM_IsPinned(client);
+		char pinType[16]; LLM_GetPinType(client, pinType, sizeof(pinType));
+
+		// Weapons (all slots)
+		char primary[64]="none", secondary[64]="none", grenade[32]="none";
+		char healthItem[32]="none", pillsItem[32]="none";
+		int primaryAmmo = 0, reserveAmmo = 0;
+		int w;
+		w = GetPlayerWeaponSlot(client, 0);
+		if (w != -1) { GetEntityClassname(w, primary, sizeof(primary)); primaryAmmo = GetEntProp(w, Prop_Send, "m_iClip1"); reserveAmmo = GetEntProp(w, Prop_Send, "m_iExtra1"); }
+		w = GetPlayerWeaponSlot(client, 1);
+		if (w != -1) GetEntityClassname(w, secondary, sizeof(secondary));
+		w = GetPlayerWeaponSlot(client, 2);
+		if (w != -1) GetEntityClassname(w, grenade, sizeof(grenade));
+		w = GetPlayerWeaponSlot(client, 3);
+		if (w != -1) GetEntityClassname(w, healthItem, sizeof(healthItem));
+		w = GetPlayerWeaponSlot(client, 4);
+		if (w != -1) GetEntityClassname(w, pillsItem, sizeof(pillsItem));
+
+		float flowDist = L4D2Direct_GetFlowDistance(client);
+		float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
+		float flowPct = 0.0;
+		if (maxFlow > 0.0 && flowDist > 0.0)
+			flowPct = (flowDist / maxFlow) * 100.0;
+
+		// Enhanced: combat state, move target, look position, revive/use action
+		bool inCombat = g_bBot_IsInCombat[client];
+		char moveName[64]; strcopy(moveName, sizeof(moveName), g_sBot_MovePos_Name[client]);
+		float movePos[3]; movePos = g_fBot_MovePos_Position[client];
+		float lookPos[3]; lookPos = g_fBot_LookPosition[client];
+		int reviveTarget = L4D_GetPlayerReviveTarget(client);
+		int useAction = L4D2_GetPlayerUseAction(client);
+
+		if (bc > 0) Format(bots, sizeof(bots), "%s,", bots);
+		Format(bots, sizeof(bots), "%s{\"name\":\"%s\",\"is_idle_player\":%s,\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"flow_pct\":%.1f,\"pinned\":%s,\"pin_type\":\"%s\",\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d,\"action\":\"%s\",\"combat\":%s,\"move_target\":\"%s\",\"move_pos\":[%.0f,%.0f,%.0f],\"look_pos\":[%.0f,%.0f,%.0f],\"revive_target\":%d,\"use_action\":%d}",
+			bots, bName, g_LLM_Bots[b].is_idle_player?"true":"false",
+			hp, tempHp, incap?"true":"false", bw?"true":"false",
+			pos[0], pos[1], pos[2], angles[1], angles[0],
+			flowDist, flowPct,
+			pinned?"true":"false", pinType,
+			primary, secondary, grenade, healthItem, pillsItem,
+			primaryAmmo, reserveAmmo, g_LLM_Bots[b].action,
+			inCombat?"true":"false", moveName,
+			movePos[0], movePos[1], movePos[2],
+			lookPos[0], lookPos[1], lookPos[2],
+			reviveTarget, useAction);
+		bc++;
 	}
 
-	// SI Threats
-	char threats[512]="";
+	// === Humans[] — human survivors (with full weapons) ===
+	char humans[2048] = "";
+	int hc = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || IsFakeClient(i) || GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+		// Skip if this client is already in bots[] (idle player case)
+		if (_LLM_FindBotIdx(i) >= 0) continue;
+
+		char hn[64]; GetClientName(i, hn, sizeof(hn));
+		int hhp = GetClientHealth(i);
+		float htempHp = GetEntPropFloat(i, Prop_Send, "m_healthBuffer");
+		bool hincap = view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated"));
+		float hpos[3]; GetClientAbsOrigin(i, hpos);
+		float hFlow = L4D2Direct_GetFlowDistance(i);
+		float hMaxFlow = L4D2Direct_GetMapMaxFlowDistance();
+		float hFlowPct = 0.0;
+		if (hMaxFlow > 0.0 && hFlow > 0.0) hFlowPct = (hFlow / hMaxFlow) * 100.0;
+
+		// Human weapons
+		char hPrimary[64]="none", hSecondary[64]="none", hGrenade[32]="none";
+		char hHealth[32]="none", hPills[32]="none";
+		int hw;
+		hw = GetPlayerWeaponSlot(i, 0);
+		if (hw != -1) GetEntityClassname(hw, hPrimary, sizeof(hPrimary));
+		hw = GetPlayerWeaponSlot(i, 1);
+		if (hw != -1) GetEntityClassname(hw, hSecondary, sizeof(hSecondary));
+		hw = GetPlayerWeaponSlot(i, 2);
+		if (hw != -1) GetEntityClassname(hw, hGrenade, sizeof(hGrenade));
+		hw = GetPlayerWeaponSlot(i, 3);
+		if (hw != -1) GetEntityClassname(hw, hHealth, sizeof(hHealth));
+		hw = GetPlayerWeaponSlot(i, 4);
+		if (hw != -1) GetEntityClassname(hw, hPills, sizeof(hPills));
+
+		if (hc > 0) Format(humans, sizeof(humans), "%s,", humans);
+		Format(humans, sizeof(humans), "%s{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"pos\":[%.0f,%.0f,%.0f],\"flow\":%.0f,\"flow_pct\":%.1f,\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"}}",
+			humans, hn, hhp, htempHp, hincap?"true":"false", hpos[0], hpos[1], hpos[2], hFlow, hFlowPct,
+			hPrimary, hSecondary, hGrenade, hHealth, hPills);
+		hc++;
+	}
+
+	// === SI Threats (with pos) ===
+	char threats[1024]="";
 	int tc = 0;
 	for (int i = 1; i <= MaxClients; i++)
 	{
@@ -7877,61 +7993,58 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 			case 8: zn="tank"; default: zn="unknown";
 		}
 		float tp[3]; GetClientAbsOrigin(i, tp);
-		float dist = GetVectorDistance(pos, tp);
+		float dist = GetVectorDistance(refPos, tp);
 		bool ghost = view_as<bool>(GetEntProp(i, Prop_Send, "m_isGhost"));
 		int thp = GetClientHealth(i);
 		if (tc > 0) Format(threats, sizeof(threats), "%s,", threats);
-		Format(threats, sizeof(threats), "%s{\"type\":\"%s\",\"hp\":%d,\"dist\":%.0f,\"ghost\":%s}",
-			threats, zn, thp, dist, ghost?"true":"false");
+		Format(threats, sizeof(threats), "%s{\"type\":\"%s\",\"hp\":%d,\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s}",
+			threats, zn, thp, dist, tp[0], tp[1], tp[2], ghost?"true":"false");
 		tc++;
 	}
 
-	// Witches
-	char witches[256]="";
+	// === Witches (with pos + rage float) ===
+	char witches[512]="";
 	int wc = 0;
 	int ent = -1;
 	while ((ent = FindEntityByClassname(ent, "witch")) != -1)
 	{
-		// Witch uses m_iMaxHealth on Prop_Data, not m_iHealth on Prop_Send
 		int whp = 0;
 		if (HasEntProp(ent, Prop_Send, "m_iHealth"))
 			whp = GetEntProp(ent, Prop_Send, "m_iHealth");
 		else if (HasEntProp(ent, Prop_Data, "m_iMaxHealth"))
 			whp = GetEntProp(ent, Prop_Data, "m_iMaxHealth");
 		float wp[3]; GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", wp);
-		float dist = GetVectorDistance(pos, wp);
-		bool witchAngry = false;
+		float dist = GetVectorDistance(refPos, wp);
+		float rage = 0.0;
 		if (HasEntProp(ent, Prop_Send, "m_rage"))
-		{
-			float rage = GetEntPropFloat(ent, Prop_Send, "m_rage");
-			if (rage > 0.0) witchAngry = true;
-		}
+			rage = GetEntPropFloat(ent, Prop_Send, "m_rage");
 		if (wc > 0) Format(witches, sizeof(witches), "%s,", witches);
-		Format(witches, sizeof(witches), "%s{\"hp\":%d,\"dist\":%.0f,\"angry\":%s}", witches, whp, dist, witchAngry?"true":"false");
+		Format(witches, sizeof(witches), "%s{\"hp\":%d,\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f],\"angry\":%s,\"rage\":%.2f}",
+			witches, whp, dist, wp[0], wp[1], wp[2], rage>0.0?"true":"false", rage);
 		wc++;
 	}
 
-	// Terrain
+	// === Terrain ===
 	char terrain[128];
 	Format(terrain, sizeof(terrain), "\"narrow\":%s,\"ledge\":%s,\"alarm_car\":%s,\"crescendo\":%s,\"finale\":%s",
 		g_bLLM_HasNarrowPassage?"true":"false", g_bLLM_HasLedges?"true":"false",
 		g_bLLM_HasAlarmCars?"true":"false", g_bLLM_HasCrescendo?"true":"false", g_bLLM_IsFinale?"true":"false");
 
-	// Events (with TTL: skip events older than LLM_EVENT_TTL)
+	// === Events (with TTL) ===
 	char events[256]="";
 	int ec = 0;
 	float nowTime = GetGameTime();
 	for (int i = 0; i < g_iLLM_EventCount; i++)
 	{
 		int idx = (g_iLLM_EventIndex - g_iLLM_EventCount + i + LLM_RECENT_EVENTS_MAX) % LLM_RECENT_EVENTS_MAX;
-		if (nowTime - g_fLLM_EventTime[idx] > LLM_EVENT_TTL) continue;  // 过期事件跳过
+		if (nowTime - g_fLLM_EventTime[idx] > LLM_EVENT_TTL) continue;
 		if (ec > 0) Format(events, sizeof(events), "%s,", events);
 		Format(events, sizeof(events), "%s\"%s\"", events, g_sLLM_RecentEvents[idx]);
 		ec++;
 	}
 
-	// Items (nearby pickup items within 500 units)
-	char items[512]="";
+	// === Items (with pos) ===
+	char items[1024]="";
 	int ic = 0;
 	char itemClasses[][] = {
 		"weapon_first_aid_kit", "weapon_pain_pills", "weapon_adrenaline",
@@ -7944,74 +8057,69 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		"weapon_grenade_launcher", "weapon_rifle_m60", "weapon_melee",
 		"weapon_pistol", "weapon_pistol_magnum", "weapon_chainsaw"
 	};
-	for (int cls = 0; cls < sizeof(itemClasses) && ic < 8; cls++)
+	for (int cls = 0; cls < sizeof(itemClasses) && ic < 12; cls++)
 	{
 		int itemEnt = -1;
 		while ((itemEnt = FindEntityByClassname(itemEnt, itemClasses[cls])) != -1)
 		{
 			float ip[3]; GetEntPropVector(itemEnt, Prop_Data, "m_vecAbsOrigin", ip);
-			float idist = GetVectorDistance(pos, ip);
+			float idist = GetVectorDistance(refPos, ip);
 			if (idist > 500.0) continue;
 			if (ic > 0) Format(items, sizeof(items), "%s,", items);
-			Format(items, sizeof(items), "%s{\"name\":\"%s\",\"dist\":%.0f}", items, itemClasses[cls], idist);
+			Format(items, sizeof(items), "%s{\"name\":\"%s\",\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f]}", items, itemClasses[cls], idist, ip[0], ip[1], ip[2]);
 			ic++;
-			if (ic >= 8) break;
+			if (ic >= 12) break;
 		}
 	}
 
-	// Common infected count (300 units)
+	// === Common infected count ===
 	int commonCount = 0;
 	int commonEnt = -1;
 	while ((commonEnt = FindEntityByClassname(commonEnt, "infected")) != -1 && commonCount < 30)
 	{
 		float cp[3]; GetEntPropVector(commonEnt, Prop_Data, "m_vecAbsOrigin", cp);
-		if (GetVectorDistance(pos, cp) <= 300.0) commonCount++;
+		if (GetVectorDistance(refPos, cp) <= 300.0) commonCount++;
 	}
 
-	// Fire areas (200 units)
-	char fireAreas[256]="";
+	// === Fire areas (with pos) ===
+	char fireAreas[512]="";
 	int fc = 0;
 	int fireEnt = -1;
 	while ((fireEnt = FindEntityByClassname(fireEnt, "inferno")) != -1 && fc < 4)
 	{
 		float fp[3]; GetEntPropVector(fireEnt, Prop_Data, "m_vecAbsOrigin", fp);
-		float fdist = GetVectorDistance(pos, fp);
+		float fdist = GetVectorDistance(refPos, fp);
 		if (fdist <= 200.0)
 		{
 			if (fc > 0) Format(fireAreas, sizeof(fireAreas), "%s,", fireAreas);
-			Format(fireAreas, sizeof(fireAreas), "%s{\"dist\":%.0f}", fireAreas, fdist);
+			Format(fireAreas, sizeof(fireAreas), "%s{\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f]}", fireAreas, fdist, fp[0], fp[1], fp[2]);
 			fc++;
 		}
 	}
 
-	// Acid areas (200 units)
-	char acidAreas[256]="";
+	// === Acid areas (with pos) ===
+	char acidAreas[512]="";
 	int ac = 0;
 	int acidEnt = -1;
 	while ((acidEnt = FindEntityByClassname(acidEnt, "insect_swarm")) != -1 && ac < 4)
 	{
 		float ap[3]; GetEntPropVector(acidEnt, Prop_Data, "m_vecAbsOrigin", ap);
-		float adist = GetVectorDistance(pos, ap);
+		float adist = GetVectorDistance(refPos, ap);
 		if (adist <= 200.0)
 		{
 			if (ac > 0) Format(acidAreas, sizeof(acidAreas), "%s,", acidAreas);
-			Format(acidAreas, sizeof(acidAreas), "%s{\"dist\":%.0f}", acidAreas, adist);
+			Format(acidAreas, sizeof(acidAreas), "%s{\"dist\":%.0f,\"pos\":[%.0f,%.0f,%.0f]}", acidAreas, adist, ap[0], ap[1], ap[2]);
 			ac++;
 		}
 	}
 
-	// Server config
+	// === Server config ===
 	bool friendlyFire = false;
 	ConVar hFF = FindConVar("sv_friendly_fire");
 	if (hFF != null && hFF.BoolValue) friendlyFire = true;
 
-	// Bot pin status
-	bool botPinned = LLM_IsPinned(bot);
-	char botPinType[16]; LLM_GetPinType(bot, botPinType, sizeof(botPinType));
-
-	// Build JSON (with seq + flow)
+	// === Build final JSON ===
 	g_iLLM_Seq++;
-	float flowDist = L4D2Direct_GetFlowDistance(bot);
 
 	// Director stage detection
 	char directorStage[16] = "relax";
@@ -8027,27 +8135,53 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 			strcopy(directorStage, sizeof(directorStage), "build_up");
 	}
 
-	// Director enhanced data
 	float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
-	float flowPercent = 0.0;
-	if (maxFlow > 0.0 && flowDist > 0.0)
-		flowPercent = (flowDist / maxFlow) * 100.0;
 	int chapter = L4D_GetCurrentChapter();
-	char directorJSON[256];
-	Format(directorJSON, sizeof(directorJSON), "{\"stage\":\"%s\",\"pending_mob\":%d,\"flow_percent\":%.1f,\"max_flow\":%.0f,\"current_flow\":%.0f,\"chapter\":%d}", directorStage, pendingMob, flowPercent, maxFlow, flowDist, chapter);
 
-	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",", g_iLLM_Seq, mapName, gameMode, difficulty);
-	Format(buffer, maxlen, "%s\"bot\":{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"pinned\":%s,\"pin_type\":\"%s\",", buffer, botName, health, tempHealth, incap?"true":"false", bw?"true":"false", pos[0], pos[1], pos[2], angles[1], angles[0], flowDist, botPinned?"true":"false", botPinType);
-	Format(buffer, maxlen, "%s\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d},", buffer, primary, secondary, grenade, healthItem, pillsItem, primaryAmmo, reserveAmmo);
-	Format(buffer, maxlen, "%s\"teammates\":[%s],\"threats\":[%s],\"witches\":[%s],", buffer, mates, threats, witches);
-	// Player scores (all alive survivors) — now includes deaths, common_kills, item_pickups
+	// Compute current team flow progress
+	float teamFlow = 0.0;
+	int flowCount = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsPlayerAlive(i) && GetClientTeam(i) == 2)
+		{
+			float pf = L4D2Direct_GetFlowDistance(i);
+			if (pf > teamFlow) teamFlow = pf;
+			flowCount++;
+		}
+	}
+	float flowPercent = 0.0;
+	if (maxFlow > 0.0 && teamFlow > 0.0)
+		flowPercent = (teamFlow / maxFlow) * 100.0;
+
+	// Tank/Witch spawn info from director
+	bool tankWillSpawn = false;
+	bool witchWillSpawn = false;
+	float tankFlow = 0.0;
+	float witchFlow = 0.0;
+	// L4D2Direct provides VS flow percents for tank/witch; in coop these may be 0
+	if (L4D2Direct_GetVSTankFlowPercent(0) > 0.0)
+	{
+		tankFlow = L4D2Direct_GetVSTankFlowPercent(0) * maxFlow;
+		tankWillSpawn = true;
+	}
+	if (L4D2Direct_GetVSWitchFlowPercent(0) > 0.0)
+	{
+		witchFlow = L4D2Direct_GetVSWitchFlowPercent(0) * maxFlow;
+		witchWillSpawn = true;
+	}
+
+	char directorJSON[512];
+	Format(directorJSON, sizeof(directorJSON), "{\"stage\":\"%s\",\"pending_mob\":%d,\"flow_percent\":%.1f,\"max_flow\":%.0f,\"current_flow\":%.0f,\"chapter\":%d,\"tank_will_spawn\":%s,\"tank_flow\":%.0f,\"witch_will_spawn\":%s,\"witch_flow\":%.0f}",
+		directorStage, pendingMob, flowPercent, maxFlow, teamFlow, chapter,
+		tankWillSpawn?"true":"false", tankFlow, witchWillSpawn?"true":"false", witchFlow);
+
+	// === Player scores (all alive survivors) ===
 	char scores[2048]="";
 	int sc = 0;
-	// Track chapter change and reset chapter stats
 	int curChapter = L4D_GetCurrentChapter();
 	if (g_iLLM_CurrentChapter > 0 && curChapter != g_iLLM_CurrentChapter)
 	{
-		// Chapter changed — reset chapter stats
 		for (int i = 0; i <= MAXPLAYERS; i++)
 		{
 			g_iLLM_ChapDeaths[i] = 0;
@@ -8058,12 +8192,10 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		}
 	}
 	g_iLLM_CurrentChapter = curChapter;
-	// Round totals
 	int totalDeaths = 0, totalIncaps = 0, totalHeals = 0, totalSIKills = 0, totalCommonKills = 0, totalPickups = 0;
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i)) continue;
-		// Pin edge detection: count transition from not-pinned to pinned
 		bool nowPinned = LLM_IsPinned(i);
 		if (nowPinned && !g_bLLM_WasPinned[i])
 			g_iLLM_PlayerPinned[i]++;
@@ -8081,19 +8213,277 @@ void LLM_CollectState(int bot, char[] buffer, int maxlen)
 		sc++;
 	}
 
-	// Chapter stats JSON
+	// Chapter stats
 	char chapStats[512]="";
-	Format(chapStats, sizeof(chapStats), "{\"current_chapter\":%d,\"round_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d,\"item_pickups\":%d},\"chapter_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d}}",
-		curChapter, totalDeaths, totalIncaps, totalHeals, totalSIKills, totalCommonKills, totalPickups,
-		g_iLLM_ChapDeaths[0], g_iLLM_ChapIncaps[0], g_iLLM_ChapHeals[0], g_iLLM_ChapSIKills[0], g_iLLM_ChapCommonKills[0]);
-	// Note: chapter_totals[0] is a placeholder; we aggregate per-player chapter data below
 	int chapDeaths=0, chapIncaps=0, chapHeals=0, chapSIKills=0, chapCommonKills=0;
 	for (int i = 1; i <= MAXPLAYERS; i++) { chapDeaths+=g_iLLM_ChapDeaths[i]; chapIncaps+=g_iLLM_ChapIncaps[i]; chapHeals+=g_iLLM_ChapHeals[i]; chapSIKills+=g_iLLM_ChapSIKills[i]; chapCommonKills+=g_iLLM_ChapCommonKills[i]; }
 	Format(chapStats, sizeof(chapStats), "{\"current_chapter\":%d,\"round_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d,\"item_pickups\":%d},\"chapter_totals\":{\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d}}",
 		curChapter, totalDeaths, totalIncaps, totalHeals, totalSIKills, totalCommonKills, totalPickups,
 		chapDeaths, chapIncaps, chapHeals, chapSIKills, chapCommonKills);
 
-	Format(buffer, maxlen, "%s\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"chapter_stats\":%s,\"action\":\"%s\"}\n", buffer, commonCount, terrain, fireAreas, acidAreas, events, items, friendlyFire?"true":"false", directorJSON, scores, chapStats, g_sLLM_Action);
+	// === Infected bots (LLM-controlled SI/Tank/Witch) ===
+	char infectedBots[1024] = "";
+	int ibc = 0;
+	float nowTime2 = GetGameTime();
+	// Clean expired infected entries
+	for (int i = g_LLM_InfectedCount - 1; i >= 0; i--)
+	{
+		if (g_LLM_Infected[i].actionExpire > 0.0 && nowTime2 > g_LLM_Infected[i].actionExpire)
+		{
+			// Check if entity still valid
+			bool valid = false;
+			if (g_LLM_Infected[i].iType[0] == 'w')
+				valid = IsValidEntity(g_LLM_Infected[i].entity);
+			else
+				valid = (IsClientInGame(g_LLM_Infected[i].entity) && IsPlayerAlive(g_LLM_Infected[i].entity));
+			if (!valid)
+			{
+				for (int j = i; j < g_LLM_InfectedCount - 1; j++)
+					g_LLM_Infected[j] = g_LLM_Infected[j + 1];
+				g_LLM_InfectedCount--;
+			}
+		}
+	}
+	for (int i = 0; i < g_LLM_InfectedCount; i++)
+	{
+		bool valid = false;
+		float ip[3] = {0.0, 0.0, 0.0};
+		int ihp = 0;
+		if (StrEqual(g_LLM_Infected[i].iType, "witch"))
+		{
+			valid = IsValidEntity(g_LLM_Infected[i].entity);
+			if (valid)
+			{
+				GetEntPropVector(g_LLM_Infected[i].entity, Prop_Data, "m_vecAbsOrigin", ip);
+				if (HasEntProp(g_LLM_Infected[i].entity, Prop_Send, "m_iHealth"))
+					ihp = GetEntProp(g_LLM_Infected[i].entity, Prop_Send, "m_iHealth");
+			}
+		}
+		else
+		{
+			valid = IsClientInGame(g_LLM_Infected[i].entity) && IsPlayerAlive(g_LLM_Infected[i].entity);
+			if (valid)
+			{
+				GetClientAbsOrigin(g_LLM_Infected[i].entity, ip);
+				ihp = GetClientHealth(g_LLM_Infected[i].entity);
+			}
+		}
+		if (!valid) continue;
+		if (ibc > 0) Format(infectedBots, sizeof(infectedBots), "%s,", infectedBots);
+		Format(infectedBots, sizeof(infectedBots), "%s{\"type\":\"%s\",\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"action\":\"%s\"}",
+			infectedBots, g_LLM_Infected[i].iType, g_LLM_Infected[i].entity, ihp, ip[0], ip[1], ip[2], g_LLM_Infected[i].action);
+		ibc++;
+	}
+
+	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",\"bots\":[%s],\"humans\":[%s],\"threats\":[%s],\"witches\":[%s],\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"chapter_stats\":%s,\"infected_bots\":[%s]}\n",
+		g_iLLM_Seq, mapName, gameMode, difficulty,
+		bots, humans, threats, witches,
+		commonCount, terrain, fireAreas, acidAreas, events, items,
+		friendlyFire?"true":"false", directorJSON, scores, chapStats, infectedBots);
+}
+
+// === Infected Faction State Collection ===
+// Collects game state from the Infected team's perspective for adversarial LLM
+
+void LLM_SendInfectedState()
+{
+	if (!g_bLLM_Connected || !g_hCvar_LLM_Enabled.BoolValue) return;
+
+	// Only send if there are active SI or Tanks
+	bool hasInfected = false;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && GetClientTeam(i) == 3 && IsPlayerAlive(i))
+		{
+			hasInfected = true;
+			break;
+		}
+	}
+	// Also check for witches
+	if (!hasInfected)
+	{
+		int ent = FindEntityByClassname(-1, "witch");
+		if (ent != -1) hasInfected = true;
+	}
+	if (!hasInfected) return;
+
+	char mapName[128]; GetCurrentMap(mapName, sizeof(mapName));
+	char gameMode[32] = "coop";
+	ConVar hMode = FindConVar("mp_gamemode");
+	if (hMode != null) hMode.GetString(gameMode, sizeof(gameMode));
+
+	// === SI Bots Array ===
+	char siBots[2048] = "";
+	int sc = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i)) continue;
+		int zc = GetEntProp(i, Prop_Send, "m_zombieClass");
+		char siClass[16];
+		switch (zc) {
+			case 1: siClass = "smoker"; case 2: siClass = "boomer"; case 3: siClass = "hunter";
+			case 4: siClass = "spitter"; case 5: siClass = "jockey"; case 6: siClass = "charger";
+			case 8: siClass = "tank"; default: siClass = "si";
+		}
+		float sp[3]; GetClientAbsOrigin(i, sp);
+		int shp = GetClientHealth(i);
+		bool ghost = view_as<bool>(GetEntProp(i, Prop_Send, "m_isGhost"));
+
+		// Ability cooldown info
+		float abilityReady = 0.0;
+		int abilityEnt = GetEntPropEnt(i, Prop_Send, "m_customAbility");
+		if (abilityEnt != -1 && IsValidEntity(abilityEnt))
+		{
+			float nextUse = GetEntPropFloat(abilityEnt, Prop_Send, "m_nextActivationTimer");
+			float timestamp = GetEntPropFloat(abilityEnt, Prop_Send, "m_timestamp");
+			if (nextUse > 0) abilityReady = nextUse;
+			else if (timestamp > 0) abilityReady = timestamp - GetGameTime();
+		}
+
+		// Target (who they are chasing/attacking)
+		int targetClient = -1;
+		char targetName[64] = "";
+		if (zc == 8) // Tank
+		{
+			targetClient = GetEntPropEnt(i, Prop_Send, "m_tankAttackTarget");
+		}
+		if (targetClient <= 0) targetClient = GetClientAimTarget(i, true);
+		if (targetClient > 0 && targetClient <= MaxClients && IsClientInGame(targetClient) && GetClientTeam(targetClient) == 2)
+		{
+			GetClientName(targetClient, targetName, sizeof(targetName));
+		}
+
+		// Tank frustration
+		float frustration = 0.0;
+		if (zc == 8)
+		{
+			frustration = GetEntPropFloat(i, Prop_Send, "m_frustration");
+		}
+
+		// Get the current action from g_LLM_Infected
+		char currentAction[32] = "idle";
+		for (int j = 0; j < g_LLM_InfectedCount; j++)
+		{
+			if (g_LLM_Infected[j].entity == i)
+			{
+				strcopy(currentAction, sizeof(currentAction), g_LLM_Infected[j].action);
+				break;
+			}
+		}
+
+		if (sc > 0) Format(siBots, sizeof(siBots), "%s,", siBots);
+		if (zc == 8) {
+			Format(siBots, sizeof(siBots), "%s{\"class\":\"%s\",\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s,\"ability_cd\":%.1f,\"target\":\"%s\",\"frustration\":%.1f,\"action\":\"%s\"}",
+				siBots, siClass, i, shp, sp[0], sp[1], sp[2], ghost?"true":"false", abilityReady, targetName, frustration, currentAction);
+		} else {
+			Format(siBots, sizeof(siBots), "%s{\"class\":\"%s\",\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s,\"ability_cd\":%.1f,\"target\":\"%s\",\"action\":\"%s\"}",
+				siBots, siClass, i, shp, sp[0], sp[1], sp[2], ghost?"true":"false", abilityReady, targetName, currentAction);
+		}
+		sc++;
+	}
+
+	// === Tanks Array ===
+	char tanks[512] = "";
+	int tbc = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i)) continue;
+		int zc = GetEntProp(i, Prop_Send, "m_zombieClass");
+		if (zc != 8) continue;
+		float tp[3]; GetClientAbsOrigin(i, tp);
+		int thp = GetClientHealth(i);
+		float frustration = GetEntPropFloat(i, Prop_Send, "m_frustration");
+		char ttarget[64] = "";
+		int tTarget = GetEntPropEnt(i, Prop_Send, "m_tankAttackTarget");
+		if (tTarget > 0 && tTarget <= MaxClients && IsClientInGame(tTarget) && GetClientTeam(tTarget) == 2)
+			GetClientName(tTarget, ttarget, sizeof(ttarget));
+		if (tbc > 0) Format(tanks, sizeof(tanks), "%s,", tanks);
+		Format(tanks, sizeof(tanks), "%s{\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"frustration\":%.1f,\"target\":\"%s\"}",
+			tanks, i, thp, tp[0], tp[1], tp[2], frustration, ttarget);
+		tbc++;
+	}
+
+	// === Witches from infected perspective ===
+	char witchesInf[512] = "";
+	int wic = 0;
+	int went = -1;
+	while ((went = FindEntityByClassname(went, "witch")) != -1)
+	{
+		int whp = 0;
+		if (HasEntProp(went, Prop_Send, "m_iHealth"))
+			whp = GetEntProp(went, Prop_Send, "m_iHealth");
+		float wp[3]; GetEntPropVector(went, Prop_Data, "m_vecAbsOrigin", wp);
+		float rage = 0.0;
+		if (HasEntProp(went, Prop_Send, "m_rage"))
+			rage = GetEntPropFloat(went, Prop_Send, "m_rage");
+		// Witch target
+		char wtarget[64] = "";
+		int wTarget = GetEntPropEnt(went, Prop_Send, "m_hTargetEntity");
+		if (wTarget > 0 && wTarget <= MaxClients && IsClientInGame(wTarget))
+			GetClientName(wTarget, wtarget, sizeof(wtarget));
+		if (wic > 0) Format(witchesInf, sizeof(witchesInf), "%s,", witchesInf);
+		Format(witchesInf, sizeof(witchesInf), "%s{\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"rage\":%.2f,\"target\":\"%s\"}",
+			witchesInf, went, whp, wp[0], wp[1], wp[2], rage, wtarget);
+		wic++;
+	}
+
+	// === Survivor Targets (positions/status for SI decision-making) ===
+	char survivorTargets[2048] = "";
+	int stc = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+		float stp[3]; GetClientAbsOrigin(i, stp);
+		int shp = GetClientHealth(i);
+		bool incap = view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated"));
+		bool pinned = LLM_IsPinned(i);
+		char sname[64]; GetClientName(i, sname, sizeof(sname));
+		char spinType[16] = "";
+		if (pinned) LLM_GetPinType(i, spinType, sizeof(spinType));
+
+		// Weapon info (to identify weakest targets)
+		char primary[32] = "none";
+		int primEnt = GetPlayerWeaponSlot(i, 0);
+		if (primEnt != -1 && IsValidEntity(primEnt))
+		{
+			GetEntityClassname(primEnt, primary, sizeof(primary));
+		}
+
+		float flowDist = 0.0;
+		if (L4D2Direct_GetMapMaxFlowDistance() > 0)
+			flowDist = L4D2Direct_GetFlowDistance(i);
+
+		if (stc > 0) Format(survivorTargets, sizeof(survivorTargets), "%s,", survivorTargets);
+		Format(survivorTargets, sizeof(survivorTargets), "%s{\"name\":\"%s\",\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"incap\":%s,\"pinned\":%s,\"pin_type\":\"%s\",\"weapon\":\"%s\",\"flow\":%.0f}",
+			survivorTargets, sname, shp, stp[0], stp[1], stp[2], incap?"true":"false", pinned?"true":"false", spinType, primary, flowDist);
+		stc++;
+	}
+
+	// === Director info (from infected perspective) ===
+	float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
+	float flowPct = 0.0;
+	if (maxFlow > 0) flowPct = L4D2Direct_GetFlowDistance(1) / maxFlow * 100.0;
+	int pendingMob = L4D2Direct_GetPendingMobCount();
+	bool tankInPlay = false;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && GetClientTeam(i) == 3 && IsPlayerAlive(i) && GetEntProp(i, Prop_Send, "m_zombieClass") == 8)
+		{ tankInPlay = true; break; }
+	}
+
+	char dirJSON[256];
+	Format(dirJSON, sizeof(dirJSON), "{\"flow_percent\":%.1f,\"max_flow\":%.0f,\"pending_mob\":%d,\"tank_in_play\":%s}",
+		flowPct, maxFlow, pendingMob, tankInPlay?"true":"false");
+
+	// Build final INFECTED_STATE message
+	char buffer[8192];
+	Format(buffer, sizeof(buffer), "INFECTED_STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"si_bots\":[%s],\"tanks\":[%s],\"witches\":[%s],\"survivor_targets\":[%s],\"director\":%s}\n",
+		g_iLLM_Seq, mapName, gameMode, siBots, tanks, witchesInf, survivorTargets, dirJSON);
+
+	if (g_hLLM_Socket != null && g_bLLM_Connected)
+	{
+		g_hLLM_Socket.Send(buffer);
+	}
 }
 
 bool LLM_IsPinned(int client)
@@ -8147,47 +8537,132 @@ int LLM_FindNearestWitch(int bot)
 
 void LLM_ParseDecision(const char[] data, int size)
 {
-	char buf[1024];
+	char buf[2048];
 	strcopy(buf, sizeof(buf), data);
 
-	int pos = StrContains(buf, "\"action\"");
-	if (pos == -1) return;
-
-	char action[32];
-	int start = pos + 9;
-	while (start < size && (buf[start]==' '||buf[start]==':'||buf[start]=='"'||buf[start]=='\''))
-		start++;
-	int end = start;
-	while (end < size && buf[end]!='"'&&buf[end]!='\''&&buf[end]!=','&&buf[end]!='}'&&buf[end]!='\n')
-		end++;
-	if (end <= start) return;
-	int len = end - start;
-	if (len >= sizeof(action)) len = sizeof(action) - 1;
-	strcopy(action, len + 1, buf[start]);
-
-	bool changed = strcmp(g_sLLM_Action, action) != 0;
-	strcopy(g_sLLM_Action, sizeof(g_sLLM_Action), action);
-	g_fLLM_ActionExpire = GetGameTime() + 5.0;
-	g_bLLM_ActionActive = true;
-
-	// Parse target
-	g_sLLM_Target[0] = '\0';
-	int tp = StrContains(buf, "\"target\"");
-	if (tp != -1)
+	// Try to parse decisions[] array format (new multi-bot)
+	int decPos = StrContains(buf, "\"decisions\"");
+	if (decPos != -1)
 	{
-		int ts = tp + 9;
-		while (ts < size && (buf[ts]==' '||buf[ts]==':'||buf[ts]=='"'||buf[ts]=='\'')) ts++;
-		int te = ts;
-		while (te < size && buf[te]!='"'&&buf[te]!='\''&&buf[te]!=','&&buf[te]!='}') te++;
-		int tlen = te - ts;
-		if (tlen >= sizeof(g_sLLM_Target)) tlen = sizeof(g_sLLM_Target) - 1;
-		if (tlen > 0) strcopy(g_sLLM_Target, tlen + 1, buf[ts]);
+		// Multi-bot format: {"decisions":[{"bot":"Ellis","action":"attack_si","target":"smoker"},...],"seq":1}
+		int searchStart = decPos + 11;
+		int botCount = 0;
+
+		while (botCount < LLM_MAX_BOTS)
+		{
+			// Find next "bot" field
+			int bp = StrContains(buf[searchStart], "\"bot\"");
+			if (bp == -1) break;
+			bp += searchStart;
+			int bs = bp + 5;
+			while (bs < size && (buf[bs]==' '||buf[bs]==':'||buf[bs]=='"'||buf[bs]=='\'')) bs++;
+			int be = bs;
+			while (be < size && buf[be]!='"'&&buf[be]!='\''&&buf[be]!=','&&buf[be]!='}') be++;
+			char botName[64]; int bnameLen = be - bs;
+			if (bnameLen >= sizeof(botName)) bnameLen = sizeof(botName) - 1;
+			if (bnameLen <= 0) break;
+			strcopy(botName, bnameLen + 1, buf[bs]);
+
+			// Find "action" field after this bot name
+			int ap = StrContains(buf[be], "\"action\"");
+			if (ap == -1) break;
+			ap += be;
+			int actStart = ap + 9;
+			while (actStart < size && (buf[actStart]==' '||buf[actStart]==':'||buf[actStart]=='"'||buf[actStart]=='\'')) actStart++;
+			int ae = actStart;
+			while (ae < size && buf[ae]!='"'&&buf[ae]!='\''&&buf[ae]!=','&&buf[ae]!='}') ae++;
+			char action[32]; int actLen = ae - actStart;
+			if (actLen >= sizeof(action)) actLen = sizeof(action) - 1;
+			if (actLen <= 0) break;
+			strcopy(action, actLen + 1, buf[actStart]);
+
+			// Find "target" field
+			char target[64]; target[0] = '\0';
+			int tp2 = StrContains(buf[ae], "\"target\"");
+			if (tp2 != -1)
+			{
+				tp2 += ae;
+				int ts = tp2 + 9;
+				while (ts < size && (buf[ts]==' '||buf[ts]==':'||buf[ts]=='"'||buf[ts]=='\'')) ts++;
+				int te = ts;
+				while (te < size && buf[te]!='"'&&buf[te]!='\''&&buf[te]!=','&&buf[te]!='}') te++;
+				int tlen = te - ts;
+				if (tlen >= sizeof(target)) tlen = sizeof(target) - 1;
+				if (tlen > 0) strcopy(target, tlen + 1, buf[ts]);
+			}
+
+			// Find bot index in g_LLM_Bots
+			int botIdx = _LLM_FindBotIdxByName(botName);
+			if (botIdx >= 0)
+			{
+				strcopy(g_LLM_Bots[botIdx].action, 32, action);
+				strcopy(g_LLM_Bots[botIdx].target, 64, target);
+				g_LLM_Bots[botIdx].actionExpire = GetGameTime() + 5.0;
+				g_LLM_Bots[botIdx].lastDecisionTime = GetGameTime();
+				_LLM_ApplyBotStrategy(botIdx, action, target);
+				PrintToServer("[LLM] Bot %s: %s target=%s", botName, action, target);
+			}
+
+			searchStart = ae + 1;
+			botCount++;
+		}
+
+		g_bLLM_ActionActive = true;
+		g_fLLM_ActionExpire = GetGameTime() + 5.0;
+	}
+	else
+	{
+		// Legacy single-action format: {"action":"attack_si","target":"smoker","next_interval":3}
+		int pos = StrContains(buf, "\"action\"");
+		if (pos == -1) return;
+
+		char action[32];
+		int start = pos + 9;
+		while (start < size && (buf[start]==' '||buf[start]==':'||buf[start]=='"'||buf[start]=='\''))
+			start++;
+		int end = start;
+		while (end < size && buf[end]!='"'&&buf[end]!='\''&&buf[end]!=','&&buf[end]!='}'&&buf[end]!='\n')
+			end++;
+		if (end <= start) return;
+		int len = end - start;
+		if (len >= sizeof(action)) len = sizeof(action) - 1;
+		strcopy(action, len + 1, buf[start]);
+
+		bool changed = strcmp(g_sLLM_Action, action) != 0;
+		strcopy(g_sLLM_Action, sizeof(g_sLLM_Action), action);
+		g_fLLM_ActionExpire = GetGameTime() + 5.0;
+		g_bLLM_ActionActive = true;
+
+		// Parse target
+		g_sLLM_Target[0] = '\0';
+		int tp = StrContains(buf, "\"target\"");
+		if (tp != -1)
+		{
+			int ts = tp + 9;
+			while (ts < size && (buf[ts]==' '||buf[ts]==':'||buf[ts]=='"'||buf[ts]=='\'')) ts++;
+			int te = ts;
+			while (te < size && buf[te]!='"'&&buf[te]!='\''&&buf[te]!=','&&buf[te]!='}') te++;
+			int tlen = te - ts;
+			if (tlen >= sizeof(g_sLLM_Target)) tlen = sizeof(g_sLLM_Target) - 1;
+			if (tlen > 0) strcopy(g_sLLM_Target, tlen + 1, buf[ts]);
+		}
+
+		// Apply to ALL bots (legacy single-decision mode)
+		if (changed)
+		{
+			for (int i = 0; i < g_LLM_BotCount; i++)
+			{
+				strcopy(g_LLM_Bots[i].action, 32, action);
+				strcopy(g_LLM_Bots[i].target, 64, g_sLLM_Target);
+				g_LLM_Bots[i].actionExpire = GetGameTime() + 5.0;
+				_LLM_ApplyBotStrategy(i, action, g_sLLM_Target);
+			}
+		}
+
+		PrintToServer("[LLM] Legacy Decision: %s target=%s (applied to %d bots)", action, g_sLLM_Target, g_LLM_BotCount);
 	}
 
-	// Apply strategic override to IB internals
-	if (changed) LLM_ApplyStrategy(action);
-
-	// Parse next_interval from LLM response and adjust send frequency
+	// Parse next_interval from LLM response
 	int ni = StrContains(buf, "\"next_interval\"");
 	if (ni != -1)
 	{
@@ -8199,15 +8674,13 @@ void LLM_ParseDecision(const char[] data, int size)
 		while (ns < size && buf[ns]>='0' && buf[ns]<='9' && nv < 15) { nval[nv] = buf[ns]; nv++; ns++; }
 		nval[nv] = '\0';
 		float nextInt = StringToFloat(nval);
-		PrintToServer("[LLM] next_interval parsed: '%s' = %.1f", nval, nextInt);
 		if (nextInt >= 1.0 && nextInt <= 10.0)
 		{
 			g_hCvar_LLM_Interval.SetFloat(nextInt);
-			PrintToServer("[LLM] interval set to %.1f", nextInt);
 		}
 	}
 
-	// Parse seq from response for request-response matching
+	// Parse seq
 	int si = StrContains(buf, "\"seq\"");
 	if (si != -1)
 	{
@@ -8218,10 +8691,239 @@ void LLM_ParseDecision(const char[] data, int size)
 		sval[sv] = '\0';
 		int respSeq = StringToInt(sval);
 		if (respSeq > 0)
-			PrintToServer("[LLM] seq matched: sent=%d, resp=%d %s", g_iLLM_Seq, respSeq, respSeq==g_iLLM_Seq ? "OK" : "MISMATCH");
+			PrintToServer("[LLM] seq: sent=%d, resp=%d %s", g_iLLM_Seq, respSeq, respSeq==g_iLLM_Seq ? "OK" : "MISMATCH");
+	}
+}
+
+// ===================== Infected Decision Parsing =====================
+
+void LLM_ParseInfectedDecision(const char[] data, int size)
+{
+	char buf[2048];
+	strcopy(buf, sizeof(buf), data);
+
+	// Parse decisions[] array for infected bots
+	int decPos = StrContains(buf, "\"decisions\"");
+	if (decPos == -1) return;
+
+	int searchStart = decPos + 11;
+	int decCount = 0;
+
+	while (decCount < LLM_MAX_INFECTED)
+	{
+		// Find "bot" field — could be SI class name like "hunter" or entity ID
+		int bp = StrContains(buf[searchStart], "\"bot\"");
+		if (bp == -1) break;
+		bp += searchStart;
+		int bs = bp + 5;
+		while (bs < size && (buf[bs]==' '||buf[bs]==':'||buf[bs]=='"'||buf[bs]=='\'')) bs++;
+		int be2 = bs;
+		while (be2 < size && buf[be2]!='"'&&buf[be2]!='\''&&buf[be2]!=','&&buf[be2]!='}') be2++;
+		char botId[64]; int bnameLen = be2 - bs;
+		if (bnameLen >= sizeof(botId)) bnameLen = sizeof(botId) - 1;
+		if (bnameLen <= 0) break;
+		strcopy(botId, bnameLen + 1, buf[bs]);
+
+		// Find "action" field
+		int ap = StrContains(buf[be2], "\"action\"");
+		if (ap == -1) break;
+		ap += be2;
+		int actStart = ap + 9;
+		while (actStart < size && (buf[actStart]==' '||buf[actStart]==':'||buf[actStart]=='"'||buf[actStart]=='\'')) actStart++;
+		int ae = actStart;
+		while (ae < size && buf[ae]!='"'&&buf[ae]!='\''&&buf[ae]!=','&&buf[ae]!='}') ae++;
+		char action[32]; int actLen = ae - actStart;
+		if (actLen >= sizeof(action)) actLen = sizeof(action) - 1;
+		if (actLen <= 0) break;
+		strcopy(action, actLen + 1, buf[actStart]);
+
+		// Find "target" field (survivor name)
+		char target[64]; target[0] = '\0';
+		int tp2 = StrContains(buf[ae], "\"target\"");
+		if (tp2 != -1)
+		{
+			tp2 += ae;
+			int ts = tp2 + 9;
+			while (ts < size && (buf[ts]==' '||buf[ts]==':'||buf[ts]=='"'||buf[ts]=='\'')) ts++;
+			int te = ts;
+			while (te < size && buf[te]!='"'&&buf[te]!='\''&&buf[te]!=','&&buf[te]!='}') te++;
+			int tlen = te - ts;
+			if (tlen >= sizeof(target)) tlen = sizeof(target) - 1;
+			if (tlen > 0) strcopy(target, tlen + 1, buf[ts]);
+		}
+
+		// Apply infected decision
+		_LLM_ApplyInfectedAction(botId, action, target);
+
+		PrintToServer("[LLM-Infected] %s: %s target=%s", botId, action, target);
+		searchStart = ae + 1;
+		decCount++;
+	}
+}
+
+// Apply an infected decision action
+void _LLM_ApplyInfectedAction(const char[] botId, const char[] action, const char[] target)
+{
+	// Find the infected entity by class name or existing g_LLM_Infected entry
+	int siClient = -1;
+
+	// Try to find by SI class name (hunter, smoker, etc.)
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i)) continue;
+		int zc = GetEntProp(i, Prop_Send, "m_zombieClass");
+		char siClass[16];
+		switch (zc) {
+			case 1: siClass = "smoker"; case 2: siClass = "boomer"; case 3: siClass = "hunter";
+			case 4: siClass = "spitter"; case 5: siClass = "jockey"; case 6: siClass = "charger";
+			case 8: siClass = "tank"; default: siClass = "si";
+		}
+		if (StrEqual(botId, siClass, false))
+		{
+			siClient = i;
+			break;
+		}
 	}
 
-	PrintToServer("[LLM] Decision: %s target=%s", g_sLLM_Action, g_sLLM_Target);
+	// Also try by entity ID (if botId is numeric)
+	if (siClient == -1)
+	{
+		int entId = StringToInt(botId);
+		if (entId > 0 && entId <= MaxClients && IsClientInGame(entId) && GetClientTeam(entId) == 3)
+			siClient = entId;
+	}
+
+	// If we found an SI client, apply the action
+	if (siClient > 0)
+	{
+		// Find or create entry in g_LLM_Infected
+		int idx = _LLM_FindInfectedIdx(siClient);
+		if (idx == -1)
+		{
+			int zc2 = GetEntProp(siClient, Prop_Send, "m_zombieClass");
+			char siType2[16];
+			switch (zc2) {
+				case 1: siType2 = "smoker"; case 2: siType2 = "boomer"; case 3: siType2 = "hunter";
+				case 4: siType2 = "spitter"; case 5: siType2 = "jockey"; case 6: siType2 = "charger";
+				case 8: siType2 = "tank"; default: siType2 = "si";
+			}
+			idx = _LLM_RegisterInfected(siClient, siType2);
+		}
+
+		if (idx >= 0)
+		{
+			strcopy(g_LLM_Infected[idx].action, 32, action);
+			g_LLM_Infected[idx].actionExpire = GetGameTime() + 8.0;
+
+			// Apply specific actions
+			if (StrEqual(action, "attack_target") || StrEqual(action, "combo_attack"))
+			{
+				// Find target survivor and set move
+				int targetClient = _LLM_FindSurvivorByName(target);
+				if (targetClient > 0)
+				{
+					float tp[3]; GetClientAbsOrigin(targetClient, tp);
+					g_LLM_Infected[idx].moveTarget = tp;
+					g_LLM_Infected[idx].hasMoveOverride = true;
+					// For Tank, set attack target
+					if (GetEntProp(siClient, Prop_Send, "m_zombieClass") == 8)
+						LLM_ControlTank(siClient, tp, targetClient);
+				}
+			}
+			else if (StrEqual(action, "tank_focus"))
+			{
+				int targetClient = _LLM_FindSurvivorByName(target);
+				if (targetClient > 0)
+				{
+					float tp[3]; GetClientAbsOrigin(targetClient, tp);
+					LLM_ControlTank(siClient, tp, targetClient);
+				}
+			}
+			else if (StrEqual(action, "tank_switch"))
+			{
+				int targetClient = _LLM_FindSurvivorByName(target);
+				if (targetClient > 0)
+				{
+					float tp[3]; GetClientAbsOrigin(targetClient, tp);
+					LLM_ControlTank(siClient, tp, targetClient);
+				}
+			}
+			else if (StrEqual(action, "retreat_los") || StrEqual(action, "reposition"))
+			{
+				// Move away from survivors — find direction away from nearest
+				float sp[3]; GetClientAbsOrigin(siClient, sp);
+				float awayDir[3] = {0.0, 0.0, 0.0};
+				int nearCount = 0;
+				for (int i = 1; i <= MaxClients; i++)
+				{
+					if (!IsClientInGame(i) || GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+					float sp2[3]; GetClientAbsOrigin(i, sp2);
+					float diff[3];
+					SubtractVectors(sp, sp2, diff);
+					NormalizeVector(diff, diff);
+					AddVectors(awayDir, diff, awayDir);
+					nearCount++;
+				}
+				if (nearCount > 0)
+				{
+					NormalizeVector(awayDir, awayDir);
+					ScaleVector(awayDir, 500.0);
+					AddVectors(sp, awayDir, g_LLM_Infected[idx].moveTarget);
+					g_LLM_Infected[idx].hasMoveOverride = true;
+				}
+			}
+			else if (StrEqual(action, "ambush") || StrEqual(action, "hold_position"))
+			{
+				// Stay in place, don't move
+				g_LLM_Infected[idx].hasMoveOverride = false;
+			}
+			else if (StrEqual(action, "bait"))
+			{
+				// Move slightly toward survivors to attract attention
+				int targetClient = _LLM_FindSurvivorByName(target);
+				if (targetClient > 0)
+				{
+					float tp[3]; GetClientAbsOrigin(targetClient, tp);
+					float sp[3]; GetClientAbsOrigin(siClient, sp);
+					float dir[3]; SubtractVectors(tp, sp, dir);
+					NormalizeVector(dir, dir);
+					ScaleVector(dir, 200.0); // Move only 200 units toward (partial approach)
+					AddVectors(sp, dir, g_LLM_Infected[idx].moveTarget);
+					g_LLM_Infected[idx].hasMoveOverride = true;
+				}
+			}
+		}
+	}
+
+	// Handle witch-specific actions
+	if (StrContains(botId, "witch") != -1 || StrEqual(action, "witch_provoke"))
+	{
+		// Witch provoke — find witch and set target entity
+		int witchEnt = -1;
+		while ((witchEnt = FindEntityByClassname(witchEnt, "witch")) != -1)
+		{
+			int targetClient = _LLM_FindSurvivorByName(target);
+			if (targetClient > 0)
+			{
+				// Set witch target — this is limited by engine, but we can try
+				SetEntPropEnt(witchEnt, Prop_Send, "m_hTargetEntity", targetClient);
+			}
+		}
+	}
+}
+
+// Find a survivor client by name
+int _LLM_FindSurvivorByName(const char[] name)
+{
+	if (name[0] == '\0') return -1;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+		char pname[64]; GetClientName(i, pname, sizeof(pname));
+		if (StrEqual(name, pname, false))
+			return i;
+	}
+	return -1;
 }
 
 // ===================== Strategy -> IB Internal Override =====================
@@ -8242,18 +8944,36 @@ void LLM_ClearMoveOverride(int bot)
 	L4D2_CommandABot(bot, 0, BOT_CMD_RESET);
 }
 
-void LLM_ApplyStrategy(const char[] action)
+void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 {
-	int bot = g_iLLM_TrackedBot;
-	if (bot == -1) return;
+	int bot = g_LLM_Bots[botIdx].client;
+	if (bot <= 0 || !IsClientInGame(bot) || !IsPlayerAlive(bot)) return;
+	bool isIdlePlayer = g_LLM_Bots[botIdx].is_idle_player;
 
-	g_bLLM_OverrideMove = false;
-	g_iLLM_OverrideTarget = 0;
+	// Idle player bot protection
+	if (isIdlePlayer)
+	{
+		if (strcmp(action, "pick_up_item") == 0)
+		{
+			// Don't pick up items — preserve player's loadout
+			_LLM_ApplyFollowWithOffset(botIdx, bot);
+			return;
+		}
+		if (strcmp(action, "heal_teammate") == 0)
+		{
+			// Only use medical items if bot HP is very low
+			if (GetClientHealth(bot) >= 30)
+			{
+				_LLM_ApplyFollowWithOffset(botIdx, bot);
+				return;
+			}
+		}
+	}
+
+	float offset[3]; _LLM_GetSpreadOffset(botIdx, offset);
 
 	if (strcmp(action, "help_teammate") == 0)
 	{
-		// Move toward nearest pinned/incap teammate
-		// IB's own scan will handle targeting the attacker once bot is close
 		int bestPin = 0;
 		float bestDist = 99999.0;
 		float botPos[3]; GetClientAbsOrigin(bot, botPos);
@@ -8264,7 +8984,6 @@ void LLM_ApplyStrategy(const char[] action)
 			bool pinned = LLM_IsPinned(i);
 			bool incap = view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated"));
 			if (!pinned && !incap) continue;
-
 			float fp[3]; GetClientAbsOrigin(i, fp);
 			float dist = GetVectorDistance(botPos, fp);
 			if (dist < bestDist) { bestDist = dist; bestPin = i; }
@@ -8273,10 +8992,9 @@ void LLM_ApplyStrategy(const char[] action)
 		if (bestPin > 0)
 		{
 			float fp[3]; GetClientAbsOrigin(bestPin, fp);
+			float target[3]; AddVectors(fp, offset, target);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, fp, 4, "LLM_Help", 0.0, 3.0, true, true);
-
-			// Also find attacker and set target for IB's shooting logic
+			SetMoveToPosition(bot, target, 4, "LLM_Help", 0.0, 3.0, true, true);
 			int attacker = L4D_GetPinnedInfected(bestPin);
 			if (attacker > 0)
 			{
@@ -8287,30 +9005,11 @@ void LLM_ApplyStrategy(const char[] action)
 		}
 		else
 		{
-			// No currently pinned teammate (SI may have been killed since LLM decision)
-			// Fall back: move toward nearest teammate to stay with the team
-			int bestMate = 0;
-			float bestMateDist = 99999.0;
-			float matePos[3];
-			float botPos2[3]; GetClientAbsOrigin(bot, botPos2);
-			for (int i = 1; i <= MaxClients; i++)
-			{
-				if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
-				float tp[3]; GetClientAbsOrigin(i, tp);
-				float dist = GetVectorDistance(botPos2, tp);
-				if (dist < bestMateDist) { bestMateDist = dist; bestMate = i; }
-			}
-			if (bestMate > 0)
-			{
-				GetClientAbsOrigin(bestMate, matePos);
-				LLM_ClearMoveOverride(bot);
-				SetMoveToPosition(bot, matePos, 3, "LLM_Help", 0.0, 3.0, true, true);
-			}
+			_LLM_ApplyFollowWithOffset(botIdx, bot);
 		}
 	}
 	else if (strcmp(action, "attack_si") == 0 || strcmp(action, "attack_tank") == 0)
 	{
-		// Find nearest SI/Tank, move toward it and set as target
 		int bestSI = 0;
 		float bestDist = 99999.0;
 		float botPos[3]; GetClientAbsOrigin(bot, botPos);
@@ -8320,7 +9019,6 @@ void LLM_ApplyStrategy(const char[] action)
 			if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i)) continue;
 			if (view_as<bool>(GetEntProp(i, Prop_Send, "m_isGhost"))) continue;
 			if (strcmp(action, "attack_tank") == 0 && GetEntProp(i, Prop_Send, "m_zombieClass") != 8) continue;
-
 			float sp[3]; GetClientAbsOrigin(i, sp);
 			float dist = GetVectorDistance(botPos, sp);
 			if (dist < bestDist) { bestDist = dist; bestSI = i; }
@@ -8329,14 +9027,14 @@ void LLM_ApplyStrategy(const char[] action)
 		if (bestSI > 0)
 		{
 			float sp[3]; GetClientAbsOrigin(bestSI, sp);
+			float target[3]; AddVectors(sp, offset, target);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, sp, 4, "LLM_Attack", 0.0, 3.0, true, true);
+			SetMoveToPosition(bot, target, 4, "LLM_Attack", 0.0, 3.0, true, true);
 			g_iBot_TargetInfected[bot] = bestSI;
 		}
 	}
 	else if (strcmp(action, "evade_threat") == 0)
 	{
-		// Set move override to retreat
 		int threat = 0;
 		float botPos[3]; GetClientAbsOrigin(bot, botPos);
 		float threatPos[3];
@@ -8356,22 +9054,20 @@ void LLM_ApplyStrategy(const char[] action)
 			dir[1] = botPos[1] - threatPos[1];
 			dir[2] = 0.0;
 			NormalizeVector(dir, dir);
-			g_fLLM_OverrideMovePos[0] = botPos[0] + dir[0] * 300.0;
-			g_fLLM_OverrideMovePos[1] = botPos[1] + dir[1] * 300.0;
-			g_fLLM_OverrideMovePos[2] = botPos[2];
-			g_bLLM_OverrideMove = true;
-
+			float evadePos[3];
+			evadePos[0] = botPos[0] + dir[0] * 300.0;
+			evadePos[1] = botPos[1] + dir[1] * 300.0;
+			evadePos[2] = botPos[2];
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, g_fLLM_OverrideMovePos, 4, "LLM_Evade", 0.0, 3.0, true, true);
+			SetMoveToPosition(bot, evadePos, 4, "LLM_Evade", 0.0, 3.0, true, true);
 		}
 	}
 	else if (strcmp(action, "follow_team") == 0)
 	{
-		// Reset overrides, let IB default behavior take over
+		_LLM_ApplyFollowWithOffset(botIdx, bot);
 	}
 	else if (strcmp(action, "heal_teammate") == 0)
 	{
-		// Find lowest HP teammate and set IB to move toward them
 		int bestTarget = 0;
 		float bestHP = 999.0;
 		for (int i = 1; i <= MaxClients; i++)
@@ -8383,36 +9079,33 @@ void LLM_ApplyStrategy(const char[] action)
 		if (bestTarget > 0 && bestHP < 80.0)
 		{
 			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
+			float target[3]; AddVectors(tp, offset, target);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, tp, 3, "LLM_Heal", 0.0, 5.0, true, true);
+			SetMoveToPosition(bot, target, 3, "LLM_Heal", 0.0, 5.0, true, true);
 		}
 	}
 	else if (strcmp(action, "attack_witch") == 0)
 	{
-		// Find nearest witch and set as target
 		int witchRef = LLM_FindNearestWitch(bot);
 		if (witchRef > 0)
 		{
 			float wp[3]; GetEntPropVector(witchRef, Prop_Send, "m_vecOrigin", wp);
+			float target[3]; AddVectors(wp, offset, target);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, wp, 3, "LLM_Witch", 0.0, 5.0, true, true);
+			SetMoveToPosition(bot, target, 3, "LLM_Witch", 0.0, 5.0, true, true);
 		}
 	}
 	else if (strcmp(action, "pick_up_item") == 0)
 	{
-		// Let IB's built-in scavenge handle this
+		_LLM_ApplyPickupItem(bot);
 	}
-	else if (strcmp(action, "throw_grenade") == 0)
+	else if (strcmp(action, "hold_position") == 0 || strcmp(action, "cover_fire") == 0)
 	{
-		// IB handles grenade throwing via ib_gren_enabled
-	}
-	else if (strcmp(action, "cover_fire") == 0 || strcmp(action, "hold_position") == 0)
-	{
-		// Stay near current position, engage threats - IB handles targeting
+		// Stay near current position, let IB handle targeting
+		LLM_ClearMoveOverride(bot);
 	}
 	else if (strcmp(action, "give_item") == 0)
 	{
-		// Move toward nearest teammate that needs items
 		int bestTarget = 0;
 		float bestDist = 99999.0;
 		float botPos[3]; GetClientAbsOrigin(bot, botPos);
@@ -8426,13 +9119,47 @@ void LLM_ApplyStrategy(const char[] action)
 		if (bestTarget > 0)
 		{
 			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
+			float target[3]; AddVectors(tp, offset, target);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, tp, 2, "LLM_Give", 0.0, 5.0, true, true);
+			SetMoveToPosition(bot, target, 2, "LLM_Give", 0.0, 5.0, true, true);
 		}
 	}
-	else if (strcmp(action, "use_defib") == 0)
+	// throw_grenade, use_defib: IB handles these natively
+}
+
+void _LLM_ApplyFollowWithOffset(int botIdx, int bot)
+{
+	// Find nearest teammate, follow with spread offset
+	int bestMate = 0;
+	float bestDist = 99999.0;
+	float botPos[3]; GetClientAbsOrigin(bot, botPos);
+
+	for (int i = 1; i <= MaxClients; i++)
 	{
-		// Find dead teammate body - IB's ib_defib_revive handles this
+		if (i == bot || !IsClientInGame(i) || !IsClientSurvivor(i)) continue;
+		float tp[3]; GetClientAbsOrigin(i, tp);
+		float dist = GetVectorDistance(botPos, tp);
+		if (dist < bestDist) { bestDist = dist; bestMate = i; }
+	}
+
+	if (bestMate > 0)
+	{
+		float matePos[3]; GetClientAbsOrigin(bestMate, matePos);
+		float offset[3]; _LLM_GetSpreadOffset(botIdx, offset);
+		float target[3]; AddVectors(matePos, offset, target);
+		LLM_ClearMoveOverride(bot);
+		SetMoveToPosition(bot, target, 2, "LLM_Follow", 0.0, 3.0, true, true);
+	}
+}
+
+// Legacy compatibility: LLM_ApplyStrategy applies to ALL bots
+void LLM_ApplyStrategy(const char[] action)
+{
+	for (int i = 0; i < g_LLM_BotCount; i++)
+	{
+		strcopy(g_LLM_Bots[i].action, 32, action);
+		g_LLM_Bots[i].actionExpire = GetGameTime() + 5.0;
+		_LLM_ApplyBotStrategy(i, action, g_sLLM_Target);
 	}
 }
 
@@ -8445,23 +9172,17 @@ void LLM_ApplyStrategy(const char[] action)
 void LLM_ApplyOverrides(int iClient, int &iButtons, float fVel[3], float fAngles[3])
 {
 	if (!g_hCvar_LLM_Enabled.BoolValue) return;
-	if (!g_bLLM_ControlAll && iClient != g_iLLM_TrackedBot) return;
-	if (g_bLLM_ControlAll && !(IsFakeClient(iClient) && GetClientTeam(iClient) == 2 && IsPlayerAlive(iClient))) return;
-	if (!g_bLLM_ActionActive) return;
 
-	// Check expiry
-	if (GetGameTime() > g_fLLM_ActionExpire)
-	{
-		g_bLLM_ActionActive = false;
-		strcopy(g_sLLM_Action, sizeof(g_sLLM_Action), "follow_team");
-		return;
-	}
+	// Check if this client is an LLM-controlled bot
+	int botIdx = _LLM_FindBotIdx(iClient);
+	if (botIdx < 0) return;
 
-	// Movement override (for evade_threat, etc.)
-	if (g_bLLM_OverrideMove)
+	// Check per-bot action expiry
+	if (GetGameTime() > g_LLM_Bots[botIdx].actionExpire)
 	{
-		// IB's SetMoveToPosition handles this via L4D2_CommandABot
-		g_bLLM_OverrideMove = false;
+		g_LLM_Bots[botIdx].action = "follow_team";
+		g_LLM_Bots[botIdx].target = "";
+		g_LLM_Bots[botIdx].hasMoveOverride = false;
 	}
 }
 
@@ -8764,7 +9485,1026 @@ public Action Cmd_LLM_SwitchBot(int client, int args)
 public Action Cmd_LLM_ControlAll(int client, int args)
 {
 	g_bLLM_ControlAll = !g_bLLM_ControlAll;
-	ReplyToCommand(client, "[LLM] ControlAll: %s", g_bLLM_ControlAll ? "ON (all bots use LLM decisions)" : "OFF (single bot only)");
-	PrintToServer("[LLM] ControlAll toggled: %d", g_bLLM_ControlAll);
+	if (g_bLLM_ControlAll) _LLM_RefreshBotList();
+	ReplyToCommand(client, "[LLM] ControlAll: %s (%d bots tracked)", g_bLLM_ControlAll ? "ON" : "OFF", g_LLM_BotCount);
+	PrintToServer("[LLM] ControlAll toggled: %d, bots: %d", g_bLLM_ControlAll, g_LLM_BotCount);
 	return Plugin_Handled;
+}
+
+// =====================================================================
+// Admin Menu (TopMenu integration)
+// =====================================================================
+
+public void LLM_AdminMenuHandler(TopMenu topmenu, TopMenuAction action, TopMenuObject topobj_id, int param, char[] buffer, int maxlength)
+{
+	if (action == TopMenuAction_DisplayOption)
+		Format(buffer, maxlength, "LLM 控制");
+	else if (action == TopMenuAction_DisplayTitle)
+		Format(buffer, maxlength, "LLM 控制面板");
+	else if (action == TopMenuAction_SelectOption)
+		_ShowLLMMainMenu(param);
+}
+
+void _ShowLLMMainMenu(int client)
+{
+	Menu menu = new Menu(LLM_MainMenuHandler);
+	menu.SetTitle("LLM 控制面板");
+
+	char statusLine[128];
+	Format(statusLine, sizeof(statusLine), "状态: %s | Bot数: %d", g_bLLM_ControlAll ? "全控" : "单控", g_LLM_BotCount);
+	menu.AddItem("", statusLine, ITEMDRAW_DISABLED);
+
+	menu.AddItem("bot_select", "选择控制Bot");
+	menu.AddItem("control_all", g_bLLM_ControlAll ? "关闭全控模式" : "开启全控模式");
+	menu.AddItem("behavior", "行为覆盖");
+	menu.AddItem("director", "导演系统");
+	menu.AddItem("debug", "调试选项");
+
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_MainMenuHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		if (StrEqual(info, "bot_select"))
+			_ShowBotSelectMenu(client);
+		else if (StrEqual(info, "control_all"))
+		{
+			Cmd_LLM_ControlAll(client, 0);
+			_ShowLLMMainMenu(client);
+		}
+		else if (StrEqual(info, "behavior"))
+			_ShowBehaviorMenu(client);
+		else if (StrEqual(info, "director"))
+			_ShowDirectorMenu(client);
+		else if (StrEqual(info, "debug"))
+			_ShowDebugMenu(client);
+	}
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowBotSelectMenu(int client)
+{
+	Menu menu = new Menu(LLM_BotSelectHandler);
+	menu.SetTitle("选择控制的Bot");
+
+	menu.AddItem("all", "全部Bot");
+	for (int b = 0; b < g_LLM_BotCount; b++)
+	{
+		int bc = g_LLM_Bots[b].client;
+		if (!IsClientInGame(bc)) continue;
+		char bName[64]; GetClientName(bc, bName, sizeof(bName));
+		char bId[8]; IntToString(bc, bId, sizeof(bId));
+		char display[96];
+		Format(display, sizeof(display), "%s%s [%dHP]", bName, g_LLM_Bots[b].is_idle_player ? " (闲置)" : "", GetClientHealth(bc));
+		menu.AddItem(bId, display);
+	}
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_BotSelectHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		if (StrEqual(info, "all"))
+		{
+			g_bLLM_ControlAll = true;
+			_LLM_RefreshBotList();
+			PrintToChat(client, "[LLM] 全控模式已开启 (%d bots)", g_LLM_BotCount);
+		}
+		else
+		{
+			int target = StringToInt(info);
+			if (IsClientInGame(target))
+			{
+				g_iLLM_MenuTarget[client] = target;
+				g_bLLM_ControlAll = false;
+				_ShowBotActionMenu(client, target);
+				return;
+			}
+		}
+		_ShowLLMMainMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowLLMMainMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowBotActionMenu(int client, int botClient)
+{
+	Menu menu = new Menu(LLM_BotActionHandler);
+	char bName[64]; GetClientName(botClient, bName, sizeof(bName));
+	char title[96]; Format(title, sizeof(title), "Bot: %s", bName);
+	menu.SetTitle(title);
+
+	g_iLLM_MenuTarget[client] = botClient;
+
+	int idx = _LLM_FindBotIdx(botClient);
+	char currentAction[64];
+	if (idx >= 0) strcopy(currentAction, sizeof(currentAction), g_LLM_Bots[idx].action);
+	else currentAction = "unknown";
+
+	char actLine[128]; Format(actLine, sizeof(actLine), "当前动作: %s", currentAction);
+	menu.AddItem("", actLine, ITEMDRAW_DISABLED);
+
+	menu.AddItem("follow", "跟随队伍");
+	menu.AddItem("attack", "攻击特感");
+	menu.AddItem("defend", "防守优先");
+	menu.AddItem("pickup", "拾取物品");
+	menu.AddItem("heal", "治疗队友");
+	menu.AddItem("cancel", "取消覆盖");
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_BotActionHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		int bot = g_iLLM_MenuTarget[client];
+		if (bot > 0 && IsClientInGame(bot))
+		{
+			int idx = _LLM_FindBotIdx(bot);
+			if (idx >= 0)
+			{
+				if (StrEqual(info, "follow"))
+				{
+					strcopy(g_LLM_Bots[idx].action, 32, "follow_team");
+					g_LLM_Bots[idx].actionExpire = GetGameTime() + 10.0;
+					g_LLM_Bots[idx].hasMoveOverride = false;
+				}
+				else if (StrEqual(info, "attack"))
+				{
+					strcopy(g_LLM_Bots[idx].action, 32, "attack_si");
+					g_LLM_Bots[idx].actionExpire = GetGameTime() + 10.0;
+				}
+				else if (StrEqual(info, "defend"))
+				{
+					strcopy(g_LLM_Bots[idx].action, 32, "defend");
+					g_LLM_Bots[idx].actionExpire = GetGameTime() + 10.0;
+				}
+				else if (StrEqual(info, "pickup"))
+				{
+					strcopy(g_LLM_Bots[idx].action, 32, "pick_up_item");
+					g_LLM_Bots[idx].actionExpire = GetGameTime() + 10.0;
+				}
+				else if (StrEqual(info, "heal"))
+				{
+					strcopy(g_LLM_Bots[idx].action, 32, "heal_team");
+					g_LLM_Bots[idx].actionExpire = GetGameTime() + 10.0;
+				}
+				else if (StrEqual(info, "cancel"))
+				{
+					strcopy(g_LLM_Bots[idx].action, 32, "follow_team");
+					g_LLM_Bots[idx].actionExpire = 0.0;
+					g_LLM_Bots[idx].hasMoveOverride = false;
+				}
+				char bName[64]; GetClientName(bot, bName, sizeof(bName));
+				PrintToChat(client, "[LLM] %s → %s", bName, g_LLM_Bots[idx].action);
+			}
+		}
+		_ShowBotActionMenu(client, bot);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowBotSelectMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowBehaviorMenu(int client)
+{
+	Menu menu = new Menu(LLM_BehaviorHandler);
+	menu.SetTitle("行为覆盖 (应用到所有Bot)");
+
+	menu.AddItem("all_follow", "全部跟随");
+	menu.AddItem("all_attack", "全部攻击特感");
+	menu.AddItem("all_defend", "全部防守");
+	menu.AddItem("all_pickup", "全部拾取物品");
+	menu.AddItem("all_reset", "重置为默认");
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_BehaviorHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		char act[32];
+		if (StrEqual(info, "all_follow")) strcopy(act, sizeof(act), "follow_team");
+		else if (StrEqual(info, "all_attack")) strcopy(act, sizeof(act), "attack_si");
+		else if (StrEqual(info, "all_defend")) strcopy(act, sizeof(act), "defend");
+		else if (StrEqual(info, "all_pickup")) strcopy(act, sizeof(act), "pick_up_item");
+		else strcopy(act, sizeof(act), "follow_team");
+
+		float expire = StrEqual(info, "all_reset") ? 0.0 : GetGameTime() + 10.0;
+		for (int b = 0; b < g_LLM_BotCount; b++)
+		{
+			strcopy(g_LLM_Bots[b].action, 32, act);
+			g_LLM_Bots[b].actionExpire = expire;
+			g_LLM_Bots[b].hasMoveOverride = false;
+		}
+		PrintToChat(client, "[LLM] 全部Bot → %s", act);
+		_ShowLLMMainMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowLLMMainMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowDirectorMenu(int client)
+{
+	Menu menu = new Menu(LLM_DirectorHandler);
+	menu.SetTitle("导演系统 & 跨阵营控制");
+
+	menu.AddItem("spawn_tank", "生成Tank");
+	menu.AddItem("spawn_witch", "生成Witch");
+	menu.AddItem("spawn_horde", "触发尸潮");
+	menu.AddItem("spawn_si", "生成随机特感");
+
+	// Cross-faction: control existing infected
+	menu.AddItem("control_tank", "控制已有Tank");
+	menu.AddItem("control_si", "控制已有特感");
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_DirectorHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		if (StrEqual(info, "spawn_tank"))
+			Cmd_LLM_SpawnTank(client, 0);
+		else if (StrEqual(info, "spawn_witch"))
+			Cmd_LLM_SpawnWitch(client, 0);
+		else if (StrEqual(info, "spawn_horde"))
+		{
+			// Trigger horde via director
+			FakeClientCommand(client, "director_force_panic_event");
+			PrintToChat(client, "[LLM] 已触发尸潮");
+		}
+		else if (StrEqual(info, "spawn_si"))
+			Cmd_LLM_SpawnSI(client, 0);
+		else if (StrEqual(info, "control_tank"))
+			_ShowTankControlMenu(client);
+		else if (StrEqual(info, "control_si"))
+			_ShowSIControlMenu(client);
+		_ShowDirectorMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowLLMMainMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowDebugMenu(int client)
+{
+	Menu menu = new Menu(LLM_DebugHandler);
+	menu.SetTitle("调试选项");
+
+	menu.AddItem("toggle_state_log", g_bLLM_LogState ? "关闭STATE日志" : "开启STATE日志");
+	menu.AddItem("toggle_decision_log", g_bLLM_LogDecision ? "关闭DECISION日志" : "开启DECISION日志");
+	menu.AddItem("show_status", "显示LLM状态");
+	menu.AddItem("force_state", "强制发送STATE");
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_DebugHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		if (StrEqual(info, "toggle_state_log"))
+		{
+			g_bLLM_LogState = !g_bLLM_LogState;
+			PrintToChat(client, "[LLM] STATE日志: %s", g_bLLM_LogState ? "ON" : "OFF");
+		}
+		else if (StrEqual(info, "toggle_decision_log"))
+		{
+			g_bLLM_LogDecision = !g_bLLM_LogDecision;
+			PrintToChat(client, "[LLM] DECISION日志: %s", g_bLLM_LogDecision ? "ON" : "OFF");
+		}
+		else if (StrEqual(info, "show_status"))
+			Cmd_LLM_Status(client, 0);
+		else if (StrEqual(info, "force_state"))
+		{
+			LLM_SendState();
+			PrintToChat(client, "[LLM] 已强制发送STATE");
+		}
+		_ShowDebugMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowLLMMainMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowTankControlMenu(int client)
+{
+	Menu menu = new Menu(LLM_TankControlHandler);
+	menu.SetTitle("控制Tank");
+
+	// Find alive tanks
+	bool found = false;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && GetClientTeam(i) == 3 && IsPlayerAlive(i))
+		{
+			int zc = GetEntProp(i, Prop_Send, "m_zombieClass");
+			if (zc == 8) // Tank
+			{
+				char tid[8]; IntToString(i, tid, sizeof(tid));
+				char display[64];
+				Format(display, sizeof(display), "Tank #%d (HP: %d)", i, GetClientHealth(i));
+				menu.AddItem(tid, display);
+				found = true;
+			}
+		}
+	}
+	if (!found)
+		menu.AddItem("", "没有存活的Tank", ITEMDRAW_DISABLED);
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_TankControlHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		int tank = StringToInt(info);
+		if (tank > 0 && IsClientInGame(tank))
+		{
+			// Find nearest survivor as target
+			float target[3];
+			int bestTarget = -1;
+			float bestDist = 999999.0;
+			for (int i = 1; i <= MaxClients; i++)
+			{
+				if (IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+				{
+					float sp[3]; GetClientAbsOrigin(i, sp);
+					float tp[3]; GetClientAbsOrigin(tank, tp);
+					float d = GetVectorDistance(tp, sp);
+					if (d < bestDist) { bestDist = d; bestTarget = i; target = sp; }
+				}
+			}
+			LLM_ControlTank(tank, target, bestTarget);
+			PrintToChat(client, "[LLM] Tank → 攻击目标");
+		}
+		_ShowDirectorMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowDirectorMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowSIControlMenu(int client)
+{
+	Menu menu = new Menu(LLM_SIControlHandler);
+	menu.SetTitle("控制特感");
+
+	bool found = false;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && GetClientTeam(i) == 3 && IsPlayerAlive(i))
+		{
+			int zc = GetEntProp(i, Prop_Send, "m_zombieClass");
+			if (zc == 8) continue; // Skip tank
+			char zn[32];
+			switch (zc) {
+				case 1: zn="Smoker"; case 2: zn="Boomer"; case 3: zn="Hunter";
+				case 4: zn="Spitter"; case 5: zn="Jockey"; case 6: zn="Charger";
+				default: zn="SI";
+			}
+			char sid[8]; IntToString(i, sid, sizeof(sid));
+			char display[64];
+			Format(display, sizeof(display), "%s #%d (HP: %d)", zn, i, GetClientHealth(i));
+			menu.AddItem(sid, display);
+			found = true;
+		}
+	}
+	if (!found)
+		menu.AddItem("", "没有存活的特感", ITEMDRAW_DISABLED);
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_SIControlHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		int siClient = StringToInt(info);
+		g_iLLM_MenuTarget[client] = siClient;
+		if (siClient > 0 && IsClientInGame(siClient))
+			_ShowSIActionMenu(client, siClient);
+		else
+			_ShowDirectorMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowDirectorMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+void _ShowSIActionMenu(int client, int siClient)
+{
+	Menu menu = new Menu(LLM_SIActionHandler);
+	int zc = GetEntProp(siClient, Prop_Send, "m_zombieClass");
+	char zn[32];
+	switch (zc) {
+		case 1: zn="Smoker"; case 2: zn="Boomer"; case 3: zn="Hunter";
+		case 4: zn="Spitter"; case 5: zn="Jockey"; case 6: zn="Charger";
+		default: zn="SI";
+	}
+	char title[64]; Format(title, sizeof(title), "%s 动作", zn);
+	menu.SetTitle(title);
+
+	char sid[8]; IntToString(siClient, sid, sizeof(sid));
+	menu.AddItem(sid, "攻击生还者");
+	menu.AddItem(sid, "撤退");
+	menu.AddItem(sid, "伏击位置");
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LLM_SIActionHandler(Menu menu, MenuAction action, int client, int param)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		menu.GetItem(param, info, sizeof(info));
+		int siClient = StringToInt(info);
+		if (siClient > 0 && IsClientInGame(siClient) && IsPlayerAlive(siClient))
+		{
+			// Find nearest survivor position
+			float target[3];
+			float bestDist = 999999.0;
+			for (int i = 1; i <= MaxClients; i++)
+			{
+				if (IsClientInGame(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+				{
+					float sp[3]; GetClientAbsOrigin(i, sp);
+					float sip[3]; GetClientAbsOrigin(siClient, sip);
+					float d = GetVectorDistance(sip, sp);
+					if (d < bestDist) { bestDist = d; target = sp; }
+				}
+			}
+			char siAction[16];
+			if (param == 0) siAction = "attack";
+			else if (param == 1) siAction = "retreat";
+			else siAction = "ambush";
+			LLM_ControlSI(siClient, siAction, target);
+			PrintToChat(client, "[LLM] 特感 → %s", siAction);
+		}
+		_ShowSIControlMenu(client);
+	}
+	else if (action == MenuAction_Cancel && param == MenuCancel_ExitBack)
+		_ShowSIControlMenu(client);
+	else if (action == MenuAction_End)
+		delete menu;
+}
+
+public Action Cmd_LLM_Menu(int client, int args)
+{
+	if (client == 0) return Plugin_Handled;
+	_ShowLLMMainMenu(client);
+	return Plugin_Handled;
+}
+
+// =====================================================================
+// Per-Bot Management Functions
+// =====================================================================
+
+void _LLM_RegisterBot(int client, bool isIdlePlayer)
+{
+	// Check if already registered
+	for (int i = 0; i < g_LLM_BotCount; i++)
+	{
+		if (g_LLM_Bots[i].client == client)
+		{
+			g_LLM_Bots[i].is_idle_player = isIdlePlayer;
+			GetClientName(client, g_LLM_Bots[i].name, 64);
+			return;
+		}
+	}
+	// Add new
+	if (g_LLM_BotCount < LLM_MAX_BOTS)
+	{
+		g_LLM_Bots[g_LLM_BotCount].client = client;
+		g_LLM_Bots[g_LLM_BotCount].is_idle_player = isIdlePlayer;
+		g_LLM_Bots[g_LLM_BotCount].active = true;
+		GetClientName(client, g_LLM_Bots[g_LLM_BotCount].name, 64);
+		g_LLM_Bots[g_LLM_BotCount].action = "follow_team";
+		g_LLM_Bots[g_LLM_BotCount].target = "";
+		g_LLM_Bots[g_LLM_BotCount].hasMoveOverride = false;
+		g_LLM_Bots[g_LLM_BotCount].actionExpire = 0.0;
+		g_LLM_Bots[g_LLM_BotCount].lastDecisionTime = 0.0;
+		g_LLM_BotCount++;
+		PrintToServer("[LLM] Bot registered: %N (idle_player=%d, total=%d)", client, isIdlePlayer, g_LLM_BotCount);
+	}
+}
+
+void _LLM_UnregisterBot(int client)
+{
+	for (int i = 0; i < g_LLM_BotCount; i++)
+	{
+		if (g_LLM_Bots[i].client == client)
+		{
+			PrintToServer("[LLM] Bot unregistered: %N (was idle_player=%d)", client, g_LLM_Bots[i].is_idle_player);
+			// Move last element to this slot
+			if (i < g_LLM_BotCount - 1)
+				g_LLM_Bots[i] = g_LLM_Bots[g_LLM_BotCount - 1];
+			g_LLM_BotCount--;
+			return;
+		}
+	}
+}
+
+int _LLM_FindBotIdx(int client)
+{
+	for (int i = 0; i < g_LLM_BotCount; i++)
+	{
+		if (g_LLM_Bots[i].client == client)
+			return i;
+	}
+	return -1;
+}
+
+int _LLM_FindBotIdxByName(const char[] name)
+{
+	for (int i = 0; i < g_LLM_BotCount; i++)
+	{
+		if (strcmp(g_LLM_Bots[i].name, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
+void _LLM_RefreshBotList()
+{
+	g_LLM_BotCount = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) == 2 && IsPlayerAlive(i))
+		{
+			_LLM_RegisterBot(i, false);
+		}
+	}
+	PrintToServer("[LLM] Bot list refreshed: %d bots", g_LLM_BotCount);
+}
+
+// =====================================================================
+// Idle/Takeover/Team Event Handlers
+// =====================================================================
+
+void LLM_EventBotReplace(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int playerUid = hEvent.GetInt("player");  // idle human player
+	int botUid = hEvent.GetInt("bot");         // new bot taking over
+	int botClient = GetClientOfUserId(botUid);
+
+	if (botClient > 0 && IsClientInGame(botClient) && GetClientTeam(botClient) == 2)
+	{
+		_LLM_RegisterBot(botClient, true);  // is_idle_player = true
+		PrintToServer("[LLM] Idle player bot: %N (preserve weapons!)", botClient);
+	}
+}
+
+void LLM_EventPlayerReplace(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int botUid = hEvent.GetInt("bot");       // bot being taken over
+	int playerUid = hEvent.GetInt("player"); // player taking over
+	int botClient = GetClientOfUserId(botUid);
+
+	if (botClient > 0)
+	{
+		_LLM_UnregisterBot(botClient);
+		LLM_ClearMoveOverride(botClient);
+		g_iBot_TargetInfected[botClient] = 0;
+		g_iBot_PinnedFriend[botClient] = 0;
+		g_iBot_PinnedFriend_Attacker[botClient] = 0;
+		PrintToServer("[LLM] Player took over bot: %N (removed from LLM)", botClient);
+	}
+}
+
+void LLM_EventPlayerTeam(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int uid = hEvent.GetInt("userid");
+	int newTeam = hEvent.GetInt("team");
+	int oldTeam = hEvent.GetInt("oldteam");
+	int client = GetClientOfUserId(uid);
+
+	if (client <= 0 || !IsClientInGame(client)) return;
+
+	// Survivor → other team: remove from bot list
+	if (oldTeam == 2 && newTeam != 2)
+	{
+		_LLM_UnregisterBot(client);
+	}
+	// Other team → survivor and is fake client: add to bot list
+	if (newTeam == 2 && oldTeam != 2 && IsFakeClient(client) && IsPlayerAlive(client))
+	{
+		_LLM_RegisterBot(client, false);
+	}
+}
+
+// =====================================================================
+// Spread Offset & Pickup Helper Functions
+// =====================================================================
+
+void _LLM_GetSpreadOffset(int botIdx, float offset[3])
+{
+	float angle = float(botIdx % 6) * 60.0;  // 0, 60, 120, 180, 240, 300 degrees
+	float rad = DegToRad(angle);
+	float spreadDist = 80.0 + float(botIdx % 3) * 40.0;  // 80-160 units
+	offset[0] = Cosine(rad) * spreadDist;
+	offset[1] = Sine(rad) * spreadDist;
+	offset[2] = 0.0;
+}
+
+void _LLM_ApplyPickupItem(int bot)
+{
+	// idle_player bots never pick up items (preserve player's loadout)
+	int idx = _LLM_FindBotIdx(bot);
+	if (idx >= 0 && g_LLM_Bots[idx].is_idle_player) return;
+
+	float botPos[3]; GetClientAbsOrigin(bot, botPos);
+	float bestDist = 99999.0;
+	float bestPos[3];
+	bool found = false;
+
+	// Search for needed weapon/item entities within 500 units
+	char neededTypes[][] = {
+		"weapon_rifle", "weapon_rifle_ak47", "weapon_rifle_desert", "weapon_rifle_sg552",
+		"weapon_shotgun_chrome", "weapon_pumpshotgun", "weapon_autoshotgun", "weapon_shotgun_spas",
+		"weapon_smg", "weapon_smg_silenced", "weapon_smg_mp5",
+		"weapon_sniper_military", "weapon_hunting_rifle", "weapon_sniper_scout",
+		"weapon_melee",
+		"weapon_first_aid_kit", "weapon_defibrillator",
+		"weapon_pain_pills", "weapon_adrenaline",
+		"weapon_molotov", "weapon_pipe_bomb", "weapon_vomitjar"
+	};
+
+	for (int c = 0; c < sizeof(neededTypes); c++)
+	{
+		int ent = -1;
+		while ((ent = FindEntityByClassname(ent, neededTypes[c])) != -1)
+		{
+			if (!IsValidEntity(ent)) continue;
+			float ePos[3]; GetEntPropVector(ent, Prop_Send, "m_vecOrigin", ePos);
+			float dist = GetVectorDistance(botPos, ePos);
+			if (dist < bestDist && dist < 500.0 && _LLM_BotNeedsItem(bot, neededTypes[c]))
+			{
+				bestDist = dist;
+				bestPos = ePos;
+				found = true;
+			}
+		}
+	}
+
+	if (found)
+	{
+		LLM_ClearMoveOverride(bot);
+		SetMoveToPosition(bot, bestPos, 3, "LLM_Pickup", 0.0, 4.0, true, true);
+	}
+}
+
+bool _LLM_BotNeedsItem(int bot, const char[] classname)
+{
+	// Primary weapons
+	if (StrContains(classname, "weapon_rifle") != -1 ||
+		StrContains(classname, "weapon_shotgun") != -1 ||
+		StrContains(classname, "weapon_smg") != -1 ||
+		StrContains(classname, "weapon_sniper") != -1 ||
+		StrContains(classname, "weapon_hunting") != -1)
+	{
+		return GetPlayerWeaponSlot(bot, 0) == -1;
+	}
+	// Health items
+	if (StrContains(classname, "weapon_first_aid_kit") != -1 ||
+		StrContains(classname, "weapon_defibrillator") != -1)
+	{
+		return GetPlayerWeaponSlot(bot, 3) == -1;
+	}
+	// Melee weapons (only if secondary slot has pistol)
+	if (StrContains(classname, "weapon_melee") != -1)
+	{
+		int w1 = GetPlayerWeaponSlot(bot, 1);
+		if (w1 == -1) return true;
+		char sec[64]; GetEntityClassname(w1, sec, sizeof(sec));
+		return StrContains(sec, "weapon_pistol") != -1;
+	}
+	// Pills/adrenaline
+	if (StrContains(classname, "weapon_pain_pills") != -1 ||
+		StrContains(classname, "weapon_adrenaline") != -1)
+	{
+		return GetPlayerWeaponSlot(bot, 4) == -1;
+	}
+	// Grenades
+	if (StrContains(classname, "weapon_molotov") != -1 ||
+		StrContains(classname, "weapon_pipe_bomb") != -1 ||
+		StrContains(classname, "weapon_vomitjar") != -1)
+	{
+		return GetPlayerWeaponSlot(bot, 2) == -1;
+	}
+	return false;
+}
+
+// =====================================================================
+// Cross-Faction Control (Tank/Witch/SI)
+// =====================================================================
+
+void _LLM_RegisterInfected(int entity, const char[] iType)
+{
+	if (g_LLM_InfectedCount >= LLM_MAX_INFECTED)
+	{
+		// Overwrite oldest expired entry
+		int oldest = 0;
+		float oldestTime = 999999.0;
+		for (int i = 0; i < g_LLM_InfectedCount; i++)
+		{
+			if (g_LLM_Infected[i].actionExpire < oldestTime && g_LLM_Infected[i].actionExpire > 0.0)
+			{
+				oldestTime = g_LLM_Infected[i].actionExpire;
+				oldest = i;
+			}
+		}
+		g_LLM_InfectedCount = oldest;
+	}
+	int i = g_LLM_InfectedCount;
+	g_LLM_Infected[i].entity = entity;
+	strcopy(g_LLM_Infected[i].iType, 16, iType);
+	strcopy(g_LLM_Infected[i].action, 32, "attack");
+	g_LLM_Infected[i].hasMoveOverride = false;
+	g_LLM_Infected[i].actionExpire = 0.0;
+	g_LLM_InfectedCount++;
+	PrintToServer("[LLM] Infected registered: %s (entity %d, total %d)", iType, entity, g_LLM_InfectedCount);
+}
+
+void _LLM_UnregisterInfected(int entity)
+{
+	for (int i = 0; i < g_LLM_InfectedCount; i++)
+	{
+		if (g_LLM_Infected[i].entity == entity)
+		{
+			for (int j = i; j < g_LLM_InfectedCount - 1; j++)
+				g_LLM_Infected[j] = g_LLM_Infected[j + 1];
+			g_LLM_InfectedCount--;
+			return;
+		}
+	}
+}
+
+int _LLM_FindInfectedIdx(int entity)
+{
+	for (int i = 0; i < g_LLM_InfectedCount; i++)
+	{
+		if (g_LLM_Infected[i].entity == entity)
+			return i;
+	}
+	return -1;
+}
+
+/**
+ * Control a Tank client - set move target and attack focus
+ */
+void LLM_ControlTank(int tank, float target[3], int attackTarget = 0)
+{
+	if (!IsClientInGame(tank) || GetClientTeam(tank) != 3 || !IsPlayerAlive(tank)) return;
+
+	int idx = _LLM_FindInfectedIdx(tank);
+	if (idx < 0)
+	{
+		_LLM_RegisterInfected(tank, "tank");
+		idx = g_LLM_InfectedCount - 1;
+	}
+
+	g_LLM_Infected[idx].moveTarget = target;
+	g_LLM_Infected[idx].hasMoveOverride = true;
+	g_LLM_Infected[idx].actionExpire = GetGameTime() + 8.0;
+
+	SetMoveToPosition(tank, target, 2, "LLM_TankAttack", 8.0, 100.0, true);
+
+	if (attackTarget > 0 && IsClientInGame(attackTarget) && IsPlayerAlive(attackTarget))
+	{
+		float tankPos[3]; GetClientAbsOrigin(tank, tankPos);
+		float dirToTarget[3];
+		MakeVectorFromPoints(tankPos, target, dirToTarget);
+		GetVectorAngles(dirToTarget, dirToTarget);
+		TeleportEntity(tank, NULL_VECTOR, dirToTarget, NULL_VECTOR);
+	}
+}
+
+/**
+ * Control a Witch entity - redirect attention to a specific target
+ */
+void LLM_ControlWitch(int witchEntity, int targetClient)
+{
+	if (!IsValidEntity(witchEntity)) return;
+
+	int idx = _LLM_FindInfectedIdx(witchEntity);
+	if (idx < 0)
+	{
+		_LLM_RegisterInfected(witchEntity, "witch");
+		idx = g_LLM_InfectedCount - 1;
+	}
+
+	if (targetClient > 0 && IsClientInGame(targetClient) && IsPlayerAlive(targetClient))
+	{
+		if (HasEntProp(witchEntity, Prop_Send, "m_hAttacker"))
+			SetEntPropEnt(witchEntity, Prop_Send, "m_hAttacker", targetClient);
+		g_LLM_Infected[idx].actionExpire = GetGameTime() + 5.0;
+		strcopy(g_LLM_Infected[idx].action, 32, "attack");
+	}
+}
+
+/**
+ * Control an SI client - set movement and action
+ */
+void LLM_ControlSI(int siClient, const char[] action, float target[3])
+{
+	if (!IsClientInGame(siClient) || GetClientTeam(siClient) != 3 || !IsPlayerAlive(siClient)) return;
+
+	int idx = _LLM_FindInfectedIdx(siClient);
+	if (idx < 0)
+	{
+		int zc = GetEntProp(siClient, Prop_Send, "m_zombieClass");
+		char siType[16];
+		switch (zc) {
+			case 1: siType = "smoker"; case 2: siType = "boomer"; case 3: siType = "hunter";
+			case 4: siType = "spitter"; case 5: siType = "jockey"; case 6: siType = "charger";
+			case 8: siType = "tank"; default: siType = "si";
+		}
+		_LLM_RegisterInfected(siClient, siType);
+		idx = g_LLM_InfectedCount - 1;
+	}
+
+	strcopy(g_LLM_Infected[idx].action, 32, action);
+	g_LLM_Infected[idx].moveTarget = target;
+	g_LLM_Infected[idx].hasMoveOverride = true;
+	g_LLM_Infected[idx].actionExpire = GetGameTime() + 5.0;
+
+	if (StrEqual(action, "attack"))
+	{
+		SetMoveToPosition(siClient, target, 2, "LLM_SIAttack", 5.0, 80.0, false);
+	}
+	else if (StrEqual(action, "retreat"))
+	{
+		float siPos[3]; GetClientAbsOrigin(siClient, siPos);
+		float retreat[3];
+		MakeVectorFromPoints(target, siPos, retreat);
+		NormalizeVector(retreat, retreat);
+		ScaleVector(retreat, 500.0);
+		AddVectors(siPos, retreat, retreat);
+		SetMoveToPosition(siClient, retreat, 2, "LLM_SIRetreat", 5.0, 80.0, true);
+	}
+	else if (StrEqual(action, "ambush"))
+	{
+		SetMoveToPosition(siClient, target, 1, "LLM_SIAmbush", 10.0, 50.0, true);
+	}
+}
+
+// =====================================================================
+// Nav Mesh Export (one-time on map load)
+// =====================================================================
+
+// Store exported nav areas for WebSocket push
+#define LLM_NAV_EXPORT_MAX 500
+float g_fLLM_NavCenters[LLM_NAV_EXPORT_MAX][3];
+float g_fLLM_NavNW[LLM_NAV_EXPORT_MAX][3];
+float g_fLLM_NavSE[LLM_NAV_EXPORT_MAX][3];
+float g_fLLM_NavFlow[LLM_NAV_EXPORT_MAX];
+bool g_fLLM_NavDamaging[LLM_NAV_EXPORT_MAX];
+int g_iLLM_NavCount = 0;
+bool g_bLLM_NavExported = false;
+
+void LLM_ExportNavMesh()
+{
+	g_iLLM_NavCount = 0;
+	g_bLLM_NavExported = false;
+
+	float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
+	if (maxFlow <= 0.0) return;
+
+	// Get map bounds from world entity
+	float worldMin[3], worldMax[3];
+	int worldEnt = FindEntityByClassname(-1, "worldspawn");
+	if (worldEnt == -1) return;
+	GetEntPropVector(worldEnt, Prop_Data, "m_WorldMins", worldMin);
+	GetEntPropVector(worldEnt, Prop_Data, "m_WorldMaxs", worldMax);
+
+	// Sample nav areas using grid (use large beneathLimit to find areas at any Z height)
+	float stepSize = 200.0;  // Sample every 200 units for performance
+	float samplePos[3];
+
+	// Track unique nav areas to avoid duplicates
+	StringMap navSet = new StringMap();
+
+	samplePos[2] = worldMax[2] + 500.0;  // Start above and search below
+
+	for (float x = worldMin[0]; x <= worldMax[0] && g_iLLM_NavCount < LLM_NAV_EXPORT_MAX; x += stepSize)
+	{
+		for (float y = worldMin[1]; y <= worldMax[1] && g_iLLM_NavCount < LLM_NAV_EXPORT_MAX; y += stepSize)
+		{
+			samplePos[0] = x;
+			samplePos[1] = y;
+
+			// Use large maxDist and anyZ to find nav areas at any Z height
+			int navArea = L4D_GetNearestNavArea(samplePos, 10000.0, true);
+			if (navArea == 0) continue;
+
+			// Check for duplicates
+			char navKey[16];
+			IntToString(navArea, navKey, sizeof(navKey));
+			if (navSet.ContainsKey(navKey)) continue;
+			navSet.SetValue(navKey, true);
+
+			// Get nav area properties
+			float center[3], nw[3], se[3];
+			LBI_GetNavAreaCenter(navArea, center);
+			LBI_GetNavAreaCorners(navArea, nw, se);
+
+			float flow = L4D2Direct_GetTerrorNavAreaFlow(view_as<Address>(navArea));
+			bool damaging = LBI_IsDamagingNavArea(navArea, true);
+
+			g_fLLM_NavCenters[g_iLLM_NavCount] = center;
+			g_fLLM_NavNW[g_iLLM_NavCount] = nw;
+			g_fLLM_NavSE[g_iLLM_NavCount] = se;
+			g_fLLM_NavFlow[g_iLLM_NavCount] = flow;
+			g_fLLM_NavDamaging[g_iLLM_NavCount] = damaging;
+			g_iLLM_NavCount++;
+		}
+	}
+
+	delete navSet;
+	g_bLLM_NavExported = true;
+
+	// Build and send NAV_MESH JSON
+	if (g_hLLM_Socket != null && g_bLLM_Connected)
+	{
+		char navJSON[8192];
+		int offset = 0;
+		Format(navJSON, sizeof(navJSON), "NAV_MESH {\"map\":\"");
+		char mapName[128]; GetCurrentMap(mapName, sizeof(mapName));
+		offset = strlen(navJSON);
+		Format(navJSON[offset], sizeof(navJSON)-offset, "%s\",\"max_flow\":%.0f,\"areas\":[", mapName, maxFlow);
+		offset = strlen(navJSON);
+
+		for (int i = 0; i < g_iLLM_NavCount && offset < sizeof(navJSON) - 200; i++)
+		{
+			if (i > 0)
+			{
+				navJSON[offset] = ',';
+				offset++;
+				navJSON[offset] = '\0';
+			}
+			Format(navJSON[offset], sizeof(navJSON)-offset,
+				"{\"c\":[%.0f,%.0f,%.0f],\"nw\":[%.0f,%.0f],\"se\":[%.0f,%.0f],\"flow\":%.0f,\"dmg\":%s}",
+				g_fLLM_NavCenters[i][0], g_fLLM_NavCenters[i][1], g_fLLM_NavCenters[i][2],
+				g_fLLM_NavNW[i][0], g_fLLM_NavNW[i][1],
+				g_fLLM_NavSE[i][0], g_fLLM_NavSE[i][1],
+				g_fLLM_NavFlow[i],
+				g_fLLM_NavDamaging[i]?"true":"false");
+			offset = strlen(navJSON);
+		}
+
+		Format(navJSON[offset], sizeof(navJSON)-offset, "]}\n");
+		g_hLLM_Socket.Send(navJSON);
+		PrintToServer("[LLM] Nav mesh exported: %d areas sent", g_iLLM_NavCount);
+	}
+}
+
+public Action LLM_TimerExportNav(Handle timer)
+{
+	LLM_ExportNavMesh();
+	return Plugin_Stop;
 }
