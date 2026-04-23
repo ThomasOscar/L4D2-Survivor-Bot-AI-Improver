@@ -48,6 +48,8 @@
 #include <topmenus>
 #include <adminmenu>
 #include <vscript> //https://github.com/FortyTwoFortyTwo/VScript
+#include <l4d2_skill_detect>
+#include <weaponhandling>
 #define REQUIRE_PLUGIN
 
 public Plugin myinfo = 
@@ -164,6 +166,23 @@ int g_iLLM_ChapIncaps[MAXPLAYERS+1];     // incaps this chapter
 int g_iLLM_ChapHeals[MAXPLAYERS+1];      // heals this chapter
 int g_iLLM_ChapSIKills[MAXPLAYERS+1];    // SI kills this chapter
 int g_iLLM_ChapCommonKills[MAXPLAYERS+1]; // common kills this chapter
+
+// ============================================================
+// Phase 5.2: Dynamic Plugin Discovery Framework
+// ============================================================
+bool g_bHasSkillDetect = false;
+bool g_bHasWeaponHandling = false;
+
+// Plugin event data cache (injected into STATE JSON)
+int g_iSkillEvent_Skeets = 0;       // skeet count this round
+int g_iSkillEvent_Crowns = 0;       // crown count this round
+int g_iSkillEvent_Levels = 0;       // charger level count this round
+int g_iSkillEvent_Deadstops = 0;    // hunter deadstop count this round
+int g_iSkillEvent_BoomerPops = 0;   // boomer pop count this round
+int g_iSkillEvent_RockSkeets = 0;   // tank rock skeet count this round
+int g_iSkillEvent_DeathCharges = 0; // death charge count this round
+float g_fWeapon_LastFireRate = 0.0; // last observed fire rate modifier
+float g_fWeapon_LastReloadSpeed = 0.0; // last observed reload speed modifier
 
 // LLM Terrain Awareness
 bool g_bLLM_HasNarrowPassage = false;
@@ -7687,6 +7706,14 @@ void LLM_Init()
 	HookEvent("bot_player_replace", LLM_EventPlayerReplace);
 	HookEvent("player_team", LLM_EventPlayerTeam);
 
+	// Phase 5.2: Plugin discovery initialization
+	g_bHasSkillDetect = LibraryExists("skill_detect");
+	g_bHasWeaponHandling = LibraryExists("WeaponHandling");
+	PrintToServer("[LLM] Plugin discovery: skill_detect=%d, WeaponHandling=%d", g_bHasSkillDetect, g_bHasWeaponHandling);
+
+	// Phase 5.2: Plugin enumeration timer (every 60s)
+	CreateTimer(60.0, Timer_EnumeratePlugins, _, TIMER_REPEAT);
+
 	PrintToServer("[LLM] Module initialized (ib_llm_enabled=%d)", g_hCvar_LLM_Enabled.IntValue);
 }
 
@@ -7726,6 +7753,17 @@ void LLM_OnMapStart()
 	}
 	g_iLLM_CurrentChapter = 0;
 
+	// Phase 5.2: Reset skill event counters
+	g_iSkillEvent_Skeets = 0;
+	g_iSkillEvent_Crowns = 0;
+	g_iSkillEvent_Levels = 0;
+	g_iSkillEvent_Deadstops = 0;
+	g_iSkillEvent_BoomerPops = 0;
+	g_iSkillEvent_RockSkeets = 0;
+	g_iSkillEvent_DeathCharges = 0;
+	g_fWeapon_LastFireRate = 0.0;
+	g_fWeapon_LastReloadSpeed = 0.0;
+
 	// Force game start: L4D2 doesn't spawn survivor bots without a human player.
 	// Create a temporary fake client to trigger the game round, then kick it.
 	// sb_all_bot_game=1 keeps bots alive after the launcher disconnects.
@@ -7739,6 +7777,192 @@ void LLM_OnMapStart()
 	CreateTimer(15.0, LLM_TimerExportNav, _, TIMER_FLAG_NO_MAPCHANGE);
 
 	PrintToServer("[LLM] OnMapStart - LLM layer active");
+}
+
+// ============================================================
+// Phase 5.2: Dynamic Plugin Discovery — Library Callbacks
+// ============================================================
+
+public void OnLibraryAdded(const char[] name)
+{
+	if (StrEqual(name, "skill_detect"))
+	{
+		g_bHasSkillDetect = true;
+		PrintToServer("[LLM] Plugin discovered: skill_detect");
+	}
+	else if (StrEqual(name, "WeaponHandling"))
+	{
+		g_bHasWeaponHandling = true;
+		PrintToServer("[LLM] Plugin discovered: WeaponHandling");
+	}
+}
+
+public void OnLibraryRemoved(const char[] name)
+{
+	if (StrEqual(name, "skill_detect"))
+	{
+		g_bHasSkillDetect = false;
+		PrintToServer("[LLM] Plugin removed: skill_detect");
+	}
+	else if (StrEqual(name, "WeaponHandling"))
+	{
+		g_bHasWeaponHandling = false;
+		PrintToServer("[LLM] Plugin removed: WeaponHandling");
+	}
+}
+
+// ============================================================
+// Phase 5.2: Plugin Enumeration Timer
+// ============================================================
+
+public Action Timer_EnumeratePlugins(Handle timer)
+{
+	if (!g_bLLM_Connected) return Plugin_Continue;
+
+	char json[4096];
+	int pos = 0;
+	pos += Format(json[pos], sizeof(json)-pos, "PLUGIN_REGISTRY {\"type\":\"plugin_registry\",\"plugins\":[");
+
+	Handle iter = GetPluginIterator();
+	bool first = true;
+	while (MorePlugins(iter))
+	{
+		Handle plugin = ReadPlugin(iter);
+		if (GetPluginStatus(plugin) != Plugin_Running) continue;
+
+		char filename[128], pname[128], version[32];
+		GetPluginFilename(plugin, filename, sizeof(filename));
+		GetPluginInfo(plugin, PlInfo_Name, pname, sizeof(pname));
+		GetPluginInfo(plugin, PlInfo_Version, version, sizeof(version));
+
+		// Safety: skip if buffer is getting full
+		if (pos > sizeof(json) - 256) break;
+
+		if (!first) pos += Format(json[pos], sizeof(json)-pos, ",");
+		pos += Format(json[pos], sizeof(json)-pos,
+			"{\"file\":\"%s\",\"name\":\"%s\",\"version\":\"%s\"}",
+			filename, pname, version);
+		first = false;
+	}
+	CloseHandle(iter);
+
+	pos += Format(json[pos], sizeof(json)-pos, "],\"detected\":{");
+	pos += Format(json[pos], sizeof(json)-pos, "\"skill_detect\":%s,", g_bHasSkillDetect ? "true" : "false");
+	pos += Format(json[pos], sizeof(json)-pos, "\"weapon_handling\":%s", g_bHasWeaponHandling ? "true" : "false");
+	pos += Format(json[pos], sizeof(json)-pos, "}}\n");
+
+	LLM_SocketSend(json);
+	return Plugin_Continue;
+}
+
+// ============================================================
+// Phase 5.2: l4d2_skill_detect Forward Hooks
+// ============================================================
+
+public void OnSkeet(int survivor, int victim, bool isHunter, bool headshot, int shots)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Skeets++;
+	char eventMsg[128];
+	Format(eventMsg, sizeof(eventMsg), "skeet_%s", isHunter ? "hunter" : "jockey");
+	LLM_AddEvent(eventMsg);
+}
+
+public void OnSkeetMelee(int survivor, int victim, bool isHunter, bool headshot)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Skeets++;
+	LLM_AddEvent("skeet_melee");
+}
+
+public void OnSkeetSniper(int survivor, int victim, bool isHunter, bool headshot, int shots)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Skeets++;
+	LLM_AddEvent("skeet_sniper");
+}
+
+public void OnWitchCrown(int survivor, int damage)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Crowns++;
+	LLM_AddEvent("witch_crown");
+}
+
+public void OnWitchDrawCrown(int survivor, int damage, int chipdamage)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Crowns++;
+	LLM_AddEvent("witch_draw_crown");
+}
+
+public void OnHunterDeadstop(int survivor, int hunter)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Deadstops++;
+	LLM_AddEvent("hunter_deadstop");
+}
+
+public void OnChargerLevel(int survivor, int charger, bool headshot)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_Levels++;
+	LLM_AddEvent("charger_level");
+}
+
+public void OnBoomerPop(int survivor, int boomer, int shoveCount, float timeAlive)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_BoomerPops++;
+	LLM_AddEvent("boomer_pop");
+}
+
+public void OnTankRockSkeeted(int survivor, int tank)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_RockSkeets++;
+	LLM_AddEvent("tank_rock_skeet");
+}
+
+public void OnDeathCharge(int charger, int victim, float height, float distance, bool wasCarried)
+{
+	if (!g_bHasSkillDetect) return;
+	g_iSkillEvent_DeathCharges++;
+	LLM_AddEvent("death_charge");
+}
+
+public void OnTongueCut(int survivor, int smoker)
+{
+	if (!g_bHasSkillDetect) return;
+	LLM_AddEvent("tongue_cut");
+}
+
+public void OnSmokerSelfClear(int survivor, int smoker, bool withShove, bool headshot)
+{
+	if (!g_bHasSkillDetect) return;
+	LLM_AddEvent("smoker_self_clear");
+}
+
+// ============================================================
+// Phase 5.2: WeaponHandling Forward Hooks
+// ============================================================
+
+public void WH_OnGetRateOfFire(int client, int weapon, L4D2WeaponType weapontype, float &speedmodifier)
+{
+	if (!g_bHasWeaponHandling) return;
+	g_fWeapon_LastFireRate = speedmodifier;
+}
+
+public void WH_OnReloadModifier(int client, int weapon, L4D2WeaponType weapontype, float &speedmodifier)
+{
+	if (!g_bHasWeaponHandling) return;
+	g_fWeapon_LastReloadSpeed = speedmodifier;
+}
+
+public void WH_OnMeleeSwing(int client, int weapon, float &speedmodifier)
+{
+	if (!g_bHasWeaponHandling) return;
+	// Track melee swing speed modifier - could be useful for LLM situational awareness
 }
 
 public Action LLM_TimerForceStart(Handle timer)
@@ -8390,11 +8614,26 @@ void LLM_CollectState(char[] buffer, int maxlen)
 		ibc++;
 	}
 
-	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",\"bots\":[%s],\"humans\":[%s],\"threats\":[%s],\"witches\":[%s],\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"chapter_stats\":%s,\"infected_bots\":[%s]}\n",
+	// Phase 5.2: Skill events and weapon modifier data
+	char skillEvents[256];
+	Format(skillEvents, sizeof(skillEvents), "{\"skeets\":%d,\"crowns\":%d,\"levels\":%d,\"deadstops\":%d,\"boomer_pops\":%d,\"rock_skeets\":%d,\"death_charges\":%d}",
+		g_iSkillEvent_Skeets, g_iSkillEvent_Crowns, g_iSkillEvent_Levels, g_iSkillEvent_Deadstops,
+		g_iSkillEvent_BoomerPops, g_iSkillEvent_RockSkeets, g_iSkillEvent_DeathCharges);
+
+	char weaponMods[128];
+	Format(weaponMods, sizeof(weaponMods), "{\"fire_rate\":%.2f,\"reload_speed\":%.2f}",
+		g_fWeapon_LastFireRate, g_fWeapon_LastReloadSpeed);
+
+	char pluginDetect[128];
+	Format(pluginDetect, sizeof(pluginDetect), "{\"skill_detect\":%s,\"weapon_handling\":%s}",
+		g_bHasSkillDetect ? "true" : "false", g_bHasWeaponHandling ? "true" : "false");
+
+	Format(buffer, maxlen, "STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"difficulty\":\"%s\",\"bots\":[%s],\"humans\":[%s],\"threats\":[%s],\"witches\":[%s],\"common_count\":%d,\"terrain\":{%s},\"fire_areas\":[%s],\"acid_areas\":[%s],\"events\":[%s],\"items\":[%s],\"server\":{\"ff\":%s},\"director\":%s,\"player_scores\":[%s],\"chapter_stats\":%s,\"infected_bots\":[%s],\"skill_events\":%s,\"weapon_mods\":%s,\"detected_plugins\":%s}\n",
 		g_iLLM_Seq, mapName, gameMode, difficulty,
 		bots, humans, threats, witches,
 		commonCount, terrain, fireAreas, acidAreas, events, items,
-		friendlyFire?"true":"false", directorJSON, scores, chapStats, infectedBots);
+		friendlyFire?"true":"false", directorJSON, scores, chapStats, infectedBots,
+		skillEvents, weaponMods, pluginDetect);
 }
 
 // === Infected Faction State Collection ===
