@@ -7,6 +7,12 @@ A SourceMod plugin for Left 4 Dead 2 that tries to improve the behavior of Survi
 
 ---
 
+## LLM Service
+
+> **Note:** The LLM service code is now unified and solely maintained in the project root directory at `llm-service/`. The previous `llm_service/` subdirectory within this plugin directory has been removed to eliminate code drift between duplicate copies. Please refer to `llm-service/` for the latest LLM service code, configuration, and documentation.
+
+---
+
 ## Notable Features
 - Bots now properly approach their melee target and switch between normal swings and bashing + ability for them to use chainsaws.
 - Bots can now pickup and use Tier 3 weapons without having to modify weapon scripts via addons and plugins.
