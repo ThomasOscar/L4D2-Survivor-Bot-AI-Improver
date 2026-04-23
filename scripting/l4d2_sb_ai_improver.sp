@@ -92,6 +92,11 @@ Handle g_hLLM_ConnectTimer = null;
 Handle g_hLLM_TestTimer = null;
 float g_fLLM_LastSendTime = 0.0;
 
+// LLM TCP Retry Buffer (simple ring buffer for failed sends)
+#define LLM_RETRY_BUFFER_MAX 4
+char g_sLLM_RetryBuffer[LLM_RETRY_BUFFER_MAX][LLM_STATE_BUFFER];
+int g_iLLM_RetryCount = 0;
+
 // LLM Per-Bot Data Structure
 enum struct LLM_BotInfo {
     int client;             // client index
@@ -1856,7 +1861,7 @@ void LLM_SendRoundOutcome(const char[] outcome)
 	char mapName[128]; GetCurrentMap(mapName, sizeof(mapName));
 	char msg[256];
 	Format(msg, sizeof(msg), "ROUND_OUTCOME {\"map\":\"%s\",\"outcome\":\"%s\"}\n", mapName, outcome);
-	g_hLLM_Socket.Send(msg, strlen(msg));
+	LLM_SocketSend(msg);
 	PrintToServer("[LLM] Round outcome sent: %s → %s", mapName, outcome);
 }
 
@@ -7784,6 +7789,9 @@ public void LLM_OnConnected(Socket socket, any arg)
 	g_bLLM_Connected = true;
 	delete g_hLLM_ConnectTimer;
 	PrintToServer("[LLM] Connected to Python server!");
+
+	// Flush retry buffer on reconnect
+	LLM_FlushRetryBuffer();
 }
 
 public void LLM_OnReceive(Socket socket, const char[] data, const int size, any arg)
@@ -7828,6 +7836,59 @@ public Action LLM_TimerConnectTimeout(Handle timer)
 	return Plugin_Stop;
 }
 
+// ===================== TCP Send Wrapper =====================
+
+// Attempts to send a message via TCP socket with retry buffering.
+// On failure, stores the message in a small ring buffer for later retry.
+void LLM_SocketSend(const char[] data)
+{
+	if (g_hLLM_Socket == null || !g_bLLM_Connected)
+	{
+		LLM_BufferMessage(data);
+		return;
+	}
+
+	// First, try to flush any previously buffered messages
+	LLM_FlushRetryBuffer();
+
+	g_hLLM_Socket.Send(data);
+}
+
+// Buffer a failed message for later retry
+void LLM_BufferMessage(const char[] data)
+{
+	if (g_iLLM_RetryCount >= LLM_RETRY_BUFFER_MAX)
+	{
+		// Buffer full: drop oldest message (shift left)
+		for (int i = 0; i < LLM_RETRY_BUFFER_MAX - 1; i++)
+			strcopy(g_sLLM_RetryBuffer[i], LLM_STATE_BUFFER, g_sLLM_RetryBuffer[i + 1]);
+		g_iLLM_RetryCount = LLM_RETRY_BUFFER_MAX - 1;
+	}
+	strcopy(g_sLLM_RetryBuffer[g_iLLM_RetryCount], LLM_STATE_BUFFER, data);
+	g_iLLM_RetryCount++;
+}
+
+// Flush buffered messages when connection is available
+void LLM_FlushRetryBuffer()
+{
+	if (g_iLLM_RetryCount == 0) return;
+	if (g_hLLM_Socket == null || !g_bLLM_Connected) return;
+
+	int sent = 0;
+	for (int i = 0; i < g_iLLM_RetryCount; i++)
+	{
+		if (g_sLLM_RetryBuffer[i][0] != '\0')
+		{
+			g_hLLM_Socket.Send(g_sLLM_RetryBuffer[i]);
+			g_sLLM_RetryBuffer[i][0] = '\0';
+			sent++;
+		}
+	}
+	if (sent > 0)
+		PrintToServer("[LLM] Flushed %d buffered messages", sent);
+	g_iLLM_RetryCount = 0;
+}
+
 // ===================== State Collection =====================
 
 void LLM_SendState()
@@ -7847,10 +7908,7 @@ void LLM_SendState()
 	char state[LLM_STATE_BUFFER];
 	LLM_CollectState(state, sizeof(state));
 
-	if (g_hLLM_Socket != null && g_bLLM_Connected)
-	{
-		g_hLLM_Socket.Send(state);
-	}
+	LLM_SocketSend(state);
 
 	// Send infected faction state (adversarial LLM)
 	LLM_SendInfectedState();
@@ -8480,10 +8538,7 @@ void LLM_SendInfectedState()
 	Format(buffer, sizeof(buffer), "INFECTED_STATE {\"seq\":%d,\"map\":\"%s\",\"mode\":\"%s\",\"si_bots\":[%s],\"tanks\":[%s],\"witches\":[%s],\"survivor_targets\":[%s],\"director\":%s}\n",
 		g_iLLM_Seq, mapName, gameMode, siBots, tanks, witchesInf, survivorTargets, dirJSON);
 
-	if (g_hLLM_Socket != null && g_bLLM_Connected)
-	{
-		g_hLLM_Socket.Send(buffer);
-	}
+	LLM_SocketSend(buffer);
 }
 
 bool LLM_IsPinned(int client)
@@ -10498,7 +10553,7 @@ void LLM_ExportNavMesh()
 		}
 
 		Format(navJSON[offset], sizeof(navJSON)-offset, "]}\n");
-		g_hLLM_Socket.Send(navJSON);
+		LLM_SocketSend(navJSON);
 		PrintToServer("[LLM] Nav mesh exported: %d areas sent", g_iLLM_NavCount);
 	}
 }
