@@ -91,13 +91,9 @@ ConVar g_hCvar_LLM_TestMode;
 Socket g_hLLM_Socket = null;
 bool g_bLLM_Connected = false;
 Handle g_hLLM_ConnectTimer = null;
-Handle g_hLLM_TestTimer = null;
-float g_fLLM_LastSendTime = 0.0;
-
+// Handle g_hLLM_TestTimer removed (write-only, timer handle managed by SM)
 // LLM Heartbeat
-float g_fLLM_LastPingSent = 0.0;
 float g_fLLM_LastPongReceived = 0.0;
-bool g_bLLM_HeartbeatActive = false;
 Handle g_hLLM_HeartbeatTimer = null;
 
 // LLM Director execution
@@ -126,11 +122,7 @@ enum struct LLM_BotInfo {
 // LLM Decision State
 char g_sLLM_Action[LLM_ACTION_MAX] = "follow_team";
 char g_sLLM_Target[LLM_TARGET_MAX] = "";
-float g_fLLM_ActionExpire = 0.0;
-bool g_bLLM_ActionActive = false;
-int g_iLLM_OverrideTarget = 0;     // entity ref for target override
-float g_fLLM_OverrideMovePos[3];   // move position override
-bool g_bLLM_OverrideMove = false;  // whether to override movement
+// Legacy single-decision state removed (replaced by per-bot g_LLM_Bots[])
 int g_iLLM_TrackedBot = -1;        // DEPRECATED: use g_LLM_Bots[] instead (kept for compat)
 bool g_bLLM_ControlAll = false;     // LLM controls all survivor bots
 int g_iLLM_Seq = 0;               // STATE sequence number for request-response matching
@@ -139,8 +131,6 @@ LLM_BotInfo g_LLM_Bots[LLM_MAX_BOTS];
 int g_LLM_BotCount = 0;
 
 // Admin menu
-TopMenu g_hLLM_TopMenu = null;
-TopMenuObject g_hLLM_MenuCategory = INVALID_TOPMENUOBJECT;
 int g_iLLM_MenuTarget[MAXPLAYERS+1];  // selected bot client for menu actions
 bool g_bLLM_LogState = false;         // debug: log STATE JSON
 bool g_bLLM_LogDecision = false;      // debug: log DECISION JSON
@@ -224,7 +214,6 @@ float g_fLLM_EventTime[LLM_RECENT_EVENTS_MAX];
 int g_iLLM_EventIndex = 0;
 int g_iLLM_EventCount = 0;
 #define LLM_EVENT_TTL 5.0
-
 
 #define MAXENTITIES 					2048
 #define MAXSURVIVORS 					32
@@ -2513,7 +2502,7 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 	iAliveBots = SurvivorBotThink(iClient, iButtons, iWpnSlots, g_iClientInvFlags[iClient], iGameDifficulty, bShouldUseFlow);
 
 	// LLM: Apply strategic overrides after IB's normal processing
-	LLM_ApplyOverrides(iClient, iButtons, fVel, fAngles);
+	LLM_ApplyOverrides(iClient, iButtons);
 
 	// ============ 4E: Bot Aim Correction & Stuck Detection ============
 	// Only apply when bot is not actively firing and not being pinned/incapped
@@ -8235,8 +8224,7 @@ void LLM_Init()
 	TopMenu adminMenu = GetAdminTopMenu();
 	if (adminMenu != null)
 	{
-		g_hLLM_MenuCategory = adminMenu.AddCategory("llm_controls", LLM_AdminMenuHandler, "llm_controls");
-		g_hLLM_TopMenu = adminMenu;
+		adminMenu.AddCategory("llm_controls", LLM_AdminMenuHandler, "llm_controls");
 	}
 
 	// Hook events for LLM awareness
@@ -8318,8 +8306,8 @@ void LLM_OnMapStart()
 	// Note: TIMER_FLAG_NO_MAPCHANGE causes SM to auto-close the handle on map change,
 	// so g_hLLM_TestTimer becomes a stale (invalid) handle. Do NOT delete it;
 	// just reset to null before creating a new timer.
-	g_hLLM_TestTimer = null;
-	g_hLLM_TestTimer = CreateTimer(20.0, LLM_TimerTestSpawn, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+	// TIMER_FLAG_NO_MAPCHANGE auto-closes old handle; just create new timer
+	CreateTimer(20.0, LLM_TimerTestSpawn, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 
 	// Export nav mesh after a short delay (nav needs time to initialize)
 	CreateTimer(15.0, LLM_TimerExportNav, _, TIMER_FLAG_NO_MAPCHANGE);
@@ -8639,7 +8627,6 @@ public void LLM_OnConnected(Socket socket, any arg)
 	// Start heartbeat timer
 	delete g_hLLM_HeartbeatTimer;
 	g_fLLM_LastPongReceived = GetGameTime();
-	g_bLLM_HeartbeatActive = true;
 	g_hLLM_HeartbeatTimer = CreateTimer(30.0, Timer_LLM_Heartbeat, _, TIMER_REPEAT);
 
 	// Flush retry buffer on reconnect
@@ -8675,7 +8662,6 @@ public void LLM_OnReceive(Socket socket, const char[] data, const int size, any 
 public void LLM_OnDisconnected(Socket socket, any arg)
 {
 	g_bLLM_Connected = false;
-	g_bLLM_HeartbeatActive = false;
 	delete g_hLLM_HeartbeatTimer;
 	PrintToServer("[LLM] Disconnected");
 	CreateTimer(5.0, LLM_TimerReconnect);
@@ -8710,7 +8696,6 @@ public Action Timer_LLM_Heartbeat(Handle timer)
 	if (g_hLLM_Socket == null || !g_bLLM_Connected)
 	{
 		g_hLLM_HeartbeatTimer = null;
-		g_bLLM_HeartbeatActive = false;
 		return Plugin_Stop;
 	}
 
@@ -8718,7 +8703,6 @@ public Action Timer_LLM_Heartbeat(Handle timer)
 	if (GetGameTime() - g_fLLM_LastPongReceived > 60.0)
 	{
 		PrintToServer("[LLM] Heartbeat timeout — no pong for 60s, reconnecting...");
-		g_bLLM_HeartbeatActive = false;
 		g_hLLM_HeartbeatTimer = null;
 		g_bLLM_Connected = false;
 		if (g_hLLM_Socket != null) { g_hLLM_Socket.Disconnect(); delete g_hLLM_Socket; g_hLLM_Socket = null; }
@@ -8732,7 +8716,6 @@ public Action Timer_LLM_Heartbeat(Handle timer)
 	if (g_hLLM_Socket != null && g_bLLM_Connected)
 	{
 		g_hLLM_Socket.Send(pingMsg);
-		g_fLLM_LastPingSent = GetGameTime();
 	}
 
 	return Plugin_Continue;
@@ -8892,7 +8875,7 @@ void LLM_CollectState(char[] buffer, int maxlen)
 		float movePos[3]; if (alive) movePos = g_fBot_MovePos_Position[client];
 		float lookPos[3]; if (alive) lookPos = g_fBot_LookPosition[client];
 		int reviveTarget = alive ? L4D_GetPlayerReviveTarget(client) : 0;
-		int useAction = alive ? L4D2_GetPlayerUseAction(client) : 0;
+		int useAction = alive ? view_as<int>(L4D2_GetPlayerUseAction(client)) : 0;
 
 		if (bc > 0) Format(bots, sizeof(bots), "%s,", bots);
 		Format(bots, sizeof(bots), "%s{\"name\":\"%s\",\"is_idle_player\":%s,\"alive\":%s,\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"flow_pct\":%.1f,\"pinned\":%s,\"pin_type\":\"%s\",\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d,\"action\":\"%s\",\"combat\":%s,\"move_target\":\"%s\",\"move_pos\":[%.0f,%.0f,%.0f],\"look_pos\":[%.0f,%.0f,%.0f],\"revive_target\":%d,\"use_action\":%d,\"death_count\":%d}",
@@ -9612,7 +9595,7 @@ void LLM_ParseDecision(const char[] data, int size)
 				strcopy(g_LLM_Bots[botIdx].target, 64, target);
 				g_LLM_Bots[botIdx].actionExpire = GetGameTime() + 5.0;
 				g_LLM_Bots[botIdx].lastDecisionTime = GetGameTime();
-				_LLM_ApplyBotStrategy(botIdx, action, target);
+				_LLM_ApplyBotStrategy(botIdx, action);
 				PrintToServer("[LLM] Bot %s: %s target=%s", botName, action, target);
 			}
 
@@ -9620,8 +9603,6 @@ void LLM_ParseDecision(const char[] data, int size)
 			botCount++;
 		}
 
-		g_bLLM_ActionActive = true;
-		g_fLLM_ActionExpire = GetGameTime() + 5.0;
 	}
 	else
 	{
@@ -9643,8 +9624,6 @@ void LLM_ParseDecision(const char[] data, int size)
 
 		bool changed = strcmp(g_sLLM_Action, action) != 0;
 		strcopy(g_sLLM_Action, sizeof(g_sLLM_Action), action);
-		g_fLLM_ActionExpire = GetGameTime() + 5.0;
-		g_bLLM_ActionActive = true;
 
 		// Parse target
 		g_sLLM_Target[0] = '\0';
@@ -9668,7 +9647,7 @@ void LLM_ParseDecision(const char[] data, int size)
 				strcopy(g_LLM_Bots[i].action, 32, action);
 				strcopy(g_LLM_Bots[i].target, 64, g_sLLM_Target);
 				g_LLM_Bots[i].actionExpire = GetGameTime() + 5.0;
-				_LLM_ApplyBotStrategy(i, action, g_sLLM_Target);
+				_LLM_ApplyBotStrategy(i, action);
 			}
 		}
 
@@ -9683,7 +9662,11 @@ void LLM_ParseDecision(const char[] data, int size)
 		while (ns < size && (buf[ns]==' '||buf[ns]==':'||buf[ns]=='"')) ns++;
 		char nval[16]; int nv = 0;
 		while (ns < size && buf[ns]>='0' && buf[ns]<='9' && nv < 15) { nval[nv] = buf[ns]; nv++; ns++; }
-		if (buf[ns]=='.') { if (nv < 15) { nval[nv] = '.'; nv++; } ns++; }
+		if (buf[ns]=='.')
+		{
+			if (nv < 15) { nval[nv] = '.'; nv++; }
+			ns++;
+		}
 		while (ns < size && buf[ns]>='0' && buf[ns]<='9' && nv < 15) { nval[nv] = buf[ns]; nv++; ns++; }
 		nval[nv] = '\0';
 		float nextInt = StringToFloat(nval);
@@ -10017,7 +10000,7 @@ void _LLM_ApplyDirectorAction(const char[] action, const char[] params)
 			// At limit: try to take over an idle SI instead of spawning
 			if (StrEqual(action, "spawn_si", false))
 			{
-				int idleSI = _FindIdleSI(params);
+				int idleSI = _FindIdleSI();
 				if (idleSI > 0)
 				{
 					int idx = _LLM_FindInfectedIdx(idleSI);
@@ -10133,7 +10116,7 @@ void LLM_ClearMoveOverride(int bot)
 	L4D2_CommandABot(bot, 0, BOT_CMD_RESET);
 }
 
-void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
+void _LLM_ApplyBotStrategy(int botIdx, const char[] action)
 {
 	int bot = g_LLM_Bots[botIdx].client;
 	if (bot <= 0 || !IsClientInGame(bot) || !IsPlayerAlive(bot)) return;
@@ -10181,9 +10164,9 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 		if (bestPin > 0)
 		{
 			float fp[3]; GetClientAbsOrigin(bestPin, fp);
-			float target[3]; AddVectors(fp, offset, target);
+			float tgtPos[3]; AddVectors(fp, offset, tgtPos);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, target, 4, "LLM_Help", 0.0, 3.0, true, true);
+			SetMoveToPosition(bot, tgtPos, 4, "LLM_Help", 0.0, 3.0, true, true);
 			int attacker = L4D_GetPinnedInfected(bestPin);
 			if (attacker > 0)
 			{
@@ -10218,9 +10201,9 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 		if (bestSI > 0)
 		{
 			float sp[3]; GetClientAbsOrigin(bestSI, sp);
-			float target[3]; AddVectors(sp, offset, target);
+			float tgtPos[3]; AddVectors(sp, offset, tgtPos);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, target, 4, "LLM_Attack", 0.0, 3.0, true, true);
+			SetMoveToPosition(bot, tgtPos, 4, "LLM_Attack", 0.0, 3.0, true, true);
 			g_iBot_TargetInfected[bot] = bestSI;
 		}
 	}
@@ -10271,9 +10254,9 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 		if (bestTarget > 0 && bestHP < 80.0)
 		{
 			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
-			float target[3]; AddVectors(tp, offset, target);
+			float tgtPos[3]; AddVectors(tp, offset, tgtPos);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, target, 3, "LLM_Heal", 0.0, 5.0, true, true);
+			SetMoveToPosition(bot, tgtPos, 3, "LLM_Heal", 0.0, 5.0, true, true);
 		}
 	}
 	else if (strcmp(action, "attack_witch") == 0)
@@ -10282,9 +10265,9 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 		if (witchRef > 0)
 		{
 			float wp[3]; GetEntPropVector(witchRef, Prop_Send, "m_vecOrigin", wp);
-			float target[3]; AddVectors(wp, offset, target);
+			float tgtPos[3]; AddVectors(wp, offset, tgtPos);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, target, 3, "LLM_Witch", 0.0, 5.0, true, true);
+			SetMoveToPosition(bot, tgtPos, 3, "LLM_Witch", 0.0, 5.0, true, true);
 		}
 	}
 	else if (strcmp(action, "pick_up_item") == 0)
@@ -10311,9 +10294,9 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 		if (bestTarget > 0)
 		{
 			float tp[3]; GetClientAbsOrigin(bestTarget, tp);
-			float target[3]; AddVectors(tp, offset, target);
+			float tgtPos[3]; AddVectors(tp, offset, tgtPos);
 			LLM_ClearMoveOverride(bot);
-			SetMoveToPosition(bot, target, 2, "LLM_Give", 0.0, 5.0, true, true);
+			SetMoveToPosition(bot, tgtPos, 2, "LLM_Give", 0.0, 5.0, true, true);
 		}
 	}
 	// throw_grenade, use_defib: IB handles these natively
@@ -10345,13 +10328,13 @@ void _LLM_ApplyFollowWithOffset(int botIdx, int bot)
 }
 
 // Legacy compatibility: LLM_ApplyStrategy applies to ALL bots
-void LLM_ApplyStrategy(const char[] action)
+stock void LLM_ApplyStrategy(const char[] action)
 {
 	for (int i = 0; i < g_LLM_BotCount; i++)
 	{
 		strcopy(g_LLM_Bots[i].action, 32, action);
 		g_LLM_Bots[i].actionExpire = GetGameTime() + 5.0;
-		_LLM_ApplyBotStrategy(i, action, g_sLLM_Target);
+		_LLM_ApplyBotStrategy(i, action);
 	}
 }
 
@@ -10361,7 +10344,7 @@ void LLM_ApplyStrategy(const char[] action)
  * Call this from OnPlayerRunCmd AFTER SurvivorBotThink to apply LLM overrides.
  * This allows IB to do its normal processing, then LLM can fine-tune.
  */
-void LLM_ApplyOverrides(int iClient, int &iButtons, float fVel[3], float fAngles[3])
+void LLM_ApplyOverrides(int iClient, int &iButtons)
 {
 	if (!g_hCvar_LLM_Enabled.BoolValue) return;
 
@@ -10503,7 +10486,6 @@ void LLM_SpawnNearSurvivor()
 	else
 		PrintToServer("[LLM] Test: L4D2_SpawnSpecial failed for class %d", zombieClass);
 }
-
 
 // Admin commands
 public Action Cmd_LLM_SpawnSI(int client, int args)
@@ -10737,6 +10719,7 @@ public int LLM_MainMenuHandler(Menu menu, MenuAction action, int client, int par
 	}
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowBotSelectMenu(int client)
@@ -10780,7 +10763,7 @@ public int LLM_BotSelectHandler(Menu menu, MenuAction action, int client, int pa
 				g_iLLM_MenuTarget[client] = target;
 				g_bLLM_ControlAll = false;
 				_ShowBotActionMenu(client, target);
-				return;
+				return 0;
 			}
 		}
 		_ShowLLMMainMenu(client);
@@ -10789,6 +10772,7 @@ public int LLM_BotSelectHandler(Menu menu, MenuAction action, int client, int pa
 		_ShowLLMMainMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowBotActionMenu(int client, int botClient)
@@ -10873,6 +10857,7 @@ public int LLM_BotActionHandler(Menu menu, MenuAction action, int client, int pa
 		_ShowBotSelectMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowBehaviorMenu(int client)
@@ -10917,6 +10902,7 @@ public int LLM_BehaviorHandler(Menu menu, MenuAction action, int client, int par
 		_ShowLLMMainMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowDirectorMenu(int client)
@@ -10965,6 +10951,7 @@ public int LLM_DirectorHandler(Menu menu, MenuAction action, int client, int par
 		_ShowLLMMainMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowDebugMenu(int client)
@@ -11010,6 +10997,7 @@ public int LLM_DebugHandler(Menu menu, MenuAction action, int client, int param)
 		_ShowLLMMainMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowTankControlMenu(int client)
@@ -11073,6 +11061,7 @@ public int LLM_TankControlHandler(Menu menu, MenuAction action, int client, int 
 		_ShowDirectorMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowSIControlMenu(int client)
@@ -11124,6 +11113,7 @@ public int LLM_SIControlHandler(Menu menu, MenuAction action, int client, int pa
 		_ShowDirectorMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 void _ShowSIActionMenu(int client, int siClient)
@@ -11183,6 +11173,7 @@ public int LLM_SIActionHandler(Menu menu, MenuAction action, int client, int par
 		_ShowSIControlMenu(client);
 	else if (action == MenuAction_End)
 		delete menu;
+	return 0;
 }
 
 public Action Cmd_LLM_Menu(int client, int args)
@@ -11280,7 +11271,7 @@ void _LLM_RefreshBotList()
 
 void LLM_EventBotReplace(Event hEvent, const char[] sName, bool bBroadcast)
 {
-	int playerUid = hEvent.GetInt("player");  // idle human player
+	// hEvent.GetInt("player") = idle human player (unused)
 	int botUid = hEvent.GetInt("bot");         // new bot taking over
 	int botClient = GetClientOfUserId(botUid);
 
@@ -11294,7 +11285,7 @@ void LLM_EventBotReplace(Event hEvent, const char[] sName, bool bBroadcast)
 void LLM_EventPlayerReplace(Event hEvent, const char[] sName, bool bBroadcast)
 {
 	int botUid = hEvent.GetInt("bot");       // bot being taken over
-	int playerUid = hEvent.GetInt("player"); // player taking over
+	// hEvent.GetInt("player") = player taking over (unused)
 	int botClient = GetClientOfUserId(botUid);
 
 	if (botClient > 0)
@@ -11435,7 +11426,7 @@ bool _LLM_BotNeedsItem(int bot, const char[] classname)
 // Cross-Faction Control (Tank/Witch/SI)
 // =====================================================================
 
-void _LLM_RegisterInfected(int entity, const char[] iType)
+int _LLM_RegisterInfected(int entity, const char[] iType)
 {
 	if (g_LLM_InfectedCount >= LLM_MAX_INFECTED)
 	{
@@ -11460,9 +11451,10 @@ void _LLM_RegisterInfected(int entity, const char[] iType)
 	g_LLM_Infected[i].actionExpire = 0.0;
 	g_LLM_InfectedCount++;
 	PrintToServer("[LLM] Infected registered: %s (entity %d, total %d)", iType, entity, g_LLM_InfectedCount);
+	return i;
 }
 
-void _LLM_UnregisterInfected(int entity)
+stock void _LLM_UnregisterInfected(int entity)
 {
 	for (int i = 0; i < g_LLM_InfectedCount; i++)
 	{
@@ -11487,7 +11479,7 @@ int _LLM_FindInfectedIdx(int entity)
 }
 
 // Find an idle (not LLM-controlled) special infected bot
-int _FindIdleSI(const char[] preferredClass)
+int _FindIdleSI()
 {
 	for (int i = 1; i <= MaxClients; i++)
 	{
@@ -11537,7 +11529,7 @@ void LLM_ControlTank(int tank, float target[3], int attackTarget = 0)
 /**
  * Control a Witch entity - redirect attention to a specific target
  */
-void LLM_ControlWitch(int witchEntity, int targetClient)
+stock void LLM_ControlWitch(int witchEntity, int targetClient)
 {
 	if (!IsValidEntity(witchEntity)) return;
 
@@ -11615,13 +11607,9 @@ float g_fLLM_NavSE[LLM_NAV_EXPORT_MAX][3];
 float g_fLLM_NavFlow[LLM_NAV_EXPORT_MAX];
 bool g_fLLM_NavDamaging[LLM_NAV_EXPORT_MAX];
 int g_iLLM_NavCount = 0;
-bool g_bLLM_NavExported = false;
-
 void LLM_ExportNavMesh()
 {
 	g_iLLM_NavCount = 0;
-	g_bLLM_NavExported = false;
-
 	float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
 	if (maxFlow <= 0.0) return;
 
@@ -11676,8 +11664,6 @@ void LLM_ExportNavMesh()
 	}
 
 	delete navSet;
-	g_bLLM_NavExported = true;
-
 	// Build and send NAV_MESH JSON
 	if (g_hLLM_Socket != null && g_bLLM_Connected)
 	{
@@ -11937,7 +11923,7 @@ void Phase51_GearTransfer_OnPlayerRunCmd(int iClient, int iButtons)
 		int iBotItem = GetPlayerWeaponSlot(iTarget, 3);
 		if (iBotItem != -1 && IsValidEntity(iBotItem))
 		{
-			Phase51_TransferWeapon(iTarget, iClient, iBotItem, 3);
+			Phase51_TransferWeapon(iTarget, iClient, iBotItem);
 			bTransferred = true;
 		}
 	}
@@ -11948,7 +11934,7 @@ void Phase51_GearTransfer_OnPlayerRunCmd(int iClient, int iButtons)
 		int iBotItem = GetPlayerWeaponSlot(iTarget, 4);
 		if (iBotItem != -1 && IsValidEntity(iBotItem))
 		{
-			Phase51_TransferWeapon(iTarget, iClient, iBotItem, 4);
+			Phase51_TransferWeapon(iTarget, iClient, iBotItem);
 			bTransferred = true;
 		}
 	}
@@ -11959,7 +11945,7 @@ void Phase51_GearTransfer_OnPlayerRunCmd(int iClient, int iButtons)
 		int iBotItem = GetPlayerWeaponSlot(iTarget, 2);
 		if (iBotItem != -1 && IsValidEntity(iBotItem))
 		{
-			Phase51_TransferWeapon(iTarget, iClient, iBotItem, 2);
+			Phase51_TransferWeapon(iTarget, iClient, iBotItem);
 			bTransferred = true;
 		}
 	}
@@ -11981,7 +11967,7 @@ void Phase51_GearTransfer_OnPlayerRunCmd(int iClient, int iButtons)
 	}
 }
 
-void Phase51_TransferWeapon(int iBot, int iPlayer, int iWeapon, int iSlot)
+void Phase51_TransferWeapon(int iBot, int iPlayer, int iWeapon)
 {
 	// Get classname of the weapon to give
 	char sClass[64];
