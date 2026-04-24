@@ -7331,6 +7331,7 @@ stock float GetWeaponNextFireTime(int iWeapon)
 
 stock int GetWeaponClip1(int iWeapon) 
 {
+	if (!IsValidEntity(iWeapon) || !HasEntProp(iWeapon, Prop_Send, "m_iClip1")) return 0;
 	return (GetEntProp(iWeapon, Prop_Send, "m_iClip1"));
 }
 
@@ -9325,7 +9326,7 @@ void LLM_SendInfectedState()
 		// Target (who they are chasing/attacking)
 		int targetClient = -1;
 		char targetName[64] = "";
-		if (zc == 8) // Tank
+		if (zc == 8 && HasEntProp(i, Prop_Send, "m_tankAttackTarget")) // Tank
 		{
 			targetClient = GetEntPropEnt(i, Prop_Send, "m_tankAttackTarget");
 		}
@@ -9335,11 +9336,11 @@ void LLM_SendInfectedState()
 			GetClientName(targetClient, targetName, sizeof(targetName));
 		}
 
-		// Tank frustration
-		float frustration = 0.0;
-		if (zc == 8)
+		// Tank frustration (m_frustration is an int prop, 0-100)
+		int frustration = 0;
+		if (zc == 8 && HasEntProp(i, Prop_Send, "m_frustration"))
 		{
-			frustration = GetEntPropFloat(i, Prop_Send, "m_frustration");
+			frustration = GetEntProp(i, Prop_Send, "m_frustration");
 		}
 
 		// Get the current action from g_LLM_Infected
@@ -9355,7 +9356,7 @@ void LLM_SendInfectedState()
 
 		if (sc > 0) Format(siBots, sizeof(siBots), "%s,", siBots);
 		if (zc == 8) {
-			Format(siBots, sizeof(siBots), "%s{\"class\":\"%s\",\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s,\"ability_cd\":%.1f,\"target\":\"%s\",\"frustration\":%.1f,\"action\":\"%s\"}",
+			Format(siBots, sizeof(siBots), "%s{\"class\":\"%s\",\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s,\"ability_cd\":%.1f,\"target\":\"%s\",\"frustration\":%d,\"action\":\"%s\"}",
 				siBots, siClass, i, shp, sp[0], sp[1], sp[2], ghost?"true":"false", abilityReady, targetName, frustration, currentAction);
 		} else {
 			Format(siBots, sizeof(siBots), "%s{\"class\":\"%s\",\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"ghost\":%s,\"ability_cd\":%.1f,\"target\":\"%s\",\"action\":\"%s\"}",
@@ -9374,13 +9375,13 @@ void LLM_SendInfectedState()
 		if (zc != 8) continue;
 		float tp[3]; GetClientAbsOrigin(i, tp);
 		int thp = GetClientHealth(i);
-		float frustration = GetEntPropFloat(i, Prop_Send, "m_frustration");
+		int frustration = HasEntProp(i, Prop_Send, "m_frustration") ? GetEntProp(i, Prop_Send, "m_frustration") : 0;
 		char ttarget[64] = "";
-		int tTarget = GetEntPropEnt(i, Prop_Send, "m_tankAttackTarget");
+		int tTarget = HasEntProp(i, Prop_Send, "m_tankAttackTarget") ? GetEntPropEnt(i, Prop_Send, "m_tankAttackTarget") : -1;
 		if (tTarget > 0 && tTarget <= MaxClients && IsClientInGame(tTarget) && GetClientTeam(tTarget) == 2)
 			GetClientName(tTarget, ttarget, sizeof(ttarget));
 		if (tbc > 0) Format(tanks, sizeof(tanks), "%s,", tanks);
-		Format(tanks, sizeof(tanks), "%s{\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"frustration\":%.1f,\"target\":\"%s\"}",
+		Format(tanks, sizeof(tanks), "%s{\"entity\":%d,\"hp\":%d,\"pos\":[%.0f,%.0f,%.0f],\"frustration\":%d,\"target\":\"%s\"}",
 			tanks, i, thp, tp[0], tp[1], tp[2], frustration, ttarget);
 		tbc++;
 	}
@@ -9535,6 +9536,9 @@ void LLM_ParseDecision(const char[] data, int size)
 {
 	char buf[2048];
 	strcopy(buf, sizeof(buf), data);
+
+	// Clamp size to buffer limit to prevent array out-of-bounds
+	if (size > sizeof(buf)) size = sizeof(buf);
 
 	// Try to parse decisions[] array format (new multi-bot)
 	int decPos = StrContains(buf, "\"decisions\"");
@@ -9697,6 +9701,9 @@ void LLM_ParseInfectedDecision(const char[] data, int size)
 {
 	char buf[2048];
 	strcopy(buf, sizeof(buf), data);
+
+	// Clamp size to buffer limit to prevent array out-of-bounds
+	if (size > sizeof(buf)) size = sizeof(buf);
 
 	// Parse decisions[] array for infected bots
 	int decPos = StrContains(buf, "\"decisions\"");
