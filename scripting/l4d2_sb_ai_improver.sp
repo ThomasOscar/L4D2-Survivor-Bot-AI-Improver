@@ -6545,6 +6545,8 @@ bool IsCommonInfected(int iEntity)
 
 bool IsCommonAttacking(int iEntity)
 {
+	if (!HasEntProp(iEntity, Prop_Send, "m_mobRush"))
+		return false;
 	return (GetEntProp(iEntity, Prop_Send, "m_mobRush") == 1 || GetEntProp(iEntity, Prop_Send, "m_clientLookatTarget") != -1);
 }
 
@@ -8137,7 +8139,10 @@ void LLM_OnMapStart()
 	CreateTimer(8.0, LLM_TimerForceStart, _, TIMER_FLAG_NO_MAPCHANGE);
 
 	// Test mode: auto-spawn SI periodically for LLM testing
-	delete g_hLLM_TestTimer;
+	// Note: TIMER_FLAG_NO_MAPCHANGE causes SM to auto-close the handle on map change,
+	// so g_hLLM_TestTimer becomes a stale (invalid) handle. Do NOT delete it;
+	// just reset to null before creating a new timer.
+	g_hLLM_TestTimer = null;
 	g_hLLM_TestTimer = CreateTimer(20.0, LLM_TimerTestSpawn, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 
 	// Export nav mesh after a short delay (nav needs time to initialize)
@@ -9213,8 +9218,12 @@ void LLM_SendInfectedState()
 		// Witch target
 		char wtarget[64] = "";
 		int wTarget = -1;
-		if (HasEntProp(went, Prop_Send, "m_hTargetEntity"))
+		if (IsValidEntity(went) && HasEntProp(went, Prop_Send, "m_hTargetEntity"))
+		{
 			wTarget = GetEntPropEnt(went, Prop_Send, "m_hTargetEntity");
+			if (wTarget != INVALID_ENT_REFERENCE && !IsValidEntity(wTarget))
+				wTarget = -1;
+		}
 		if (wTarget > 0 && wTarget <= MaxClients && IsClientInGame(wTarget))
 			GetClientName(wTarget, wtarget, sizeof(wtarget));
 		if (wic > 0) Format(witchesInf, sizeof(witchesInf), "%s,", witchesInf);
@@ -9710,7 +9719,7 @@ void _LLM_ApplyInfectedAction(const char[] botId, const char[] action, const cha
 			if (targetClient > 0)
 			{
 				// Set witch target — this is limited by engine, but we can try
-				if (HasEntProp(witchEnt, Prop_Send, "m_hTargetEntity"))
+				if (IsValidEntity(witchEnt) && HasEntProp(witchEnt, Prop_Send, "m_hTargetEntity"))
 					SetEntPropEnt(witchEnt, Prop_Send, "m_hTargetEntity", targetClient);
 			}
 		}
