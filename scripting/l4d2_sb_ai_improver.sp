@@ -8327,7 +8327,31 @@ void LLM_OnMapStart()
 	// Phase 5.x: Independent STATE send timer (replaces per-frame call in OnPlayerRunCmd)
 	CreateTimer(g_hCvar_LLM_Interval.FloatValue, Timer_LLM_SendState, _, TIMER_REPEAT|TIMER_FLAG_NO_MAPCHANGE);
 
+	// Auto-enable ControlAll mode for autonomous LLM operation
+	if (g_hCvar_LLM_Enabled.BoolValue)
+	{
+		g_bLLM_ControlAll = true;
+		// Delay 3s to scan bots - wait for fake player kick & real bots to spawn
+		CreateTimer(3.0, Timer_LLM_AutoRefreshBots, _, TIMER_FLAG_NO_MAPCHANGE);
+	}
+
 	PrintToServer("[LLM] OnMapStart - LLM layer active");
+}
+
+public Action Timer_LLM_AutoRefreshBots(Handle timer)
+{
+	if (!g_hCvar_LLM_Enabled.BoolValue) return Plugin_Stop;
+
+	_LLM_RefreshBotList();
+	PrintToServer("[LLM] ControlAll auto-enabled on map start (%d bots found)", g_LLM_BotCount);
+
+	// If no bots found yet, retry in 3 seconds
+	if (g_LLM_BotCount == 0)
+	{
+		CreateTimer(3.0, Timer_LLM_AutoRefreshBots, _, TIMER_FLAG_NO_MAPCHANGE);
+	}
+
+	return Plugin_Stop;
 }
 
 // ============================================================
