@@ -1865,6 +1865,52 @@ void Event_OnPlayerDeath(Event hEvent, const char[] sName, bool bBroadcast)
 
 	g_bInfectedBot_IsThrowing[iVictim] = false;
 	g_fInfectedBot_CoveredInVomitTime[iVictim] = GetGameTime();
+
+	// LLM: Send KILL_EVENT via TCP
+	if (g_bLLM_Connected && iVictim > 0 && iVictim <= MaxClients && IsClientInGame(iVictim))
+	{
+		char victimName[64], attackerName[64], weaponName[64];
+		GetClientName(iVictim, victimName, sizeof(victimName));
+		ReplaceString(victimName, sizeof(victimName), "\"", "'");
+
+		char victimTeam[16];
+		int vteam = GetClientTeam(iVictim);
+		if (vteam == 2) strcopy(victimTeam, sizeof(victimTeam), "survivor");
+		else if (vteam == 3) strcopy(victimTeam, sizeof(victimTeam), "infected");
+		else strcopy(victimTeam, sizeof(victimTeam), "unknown");
+
+		if (iAttacker > 0 && iAttacker <= MaxClients && IsClientInGame(iAttacker))
+		{
+			GetClientName(iAttacker, attackerName, sizeof(attackerName));
+			ReplaceString(attackerName, sizeof(attackerName), "\"", "'");
+		}
+		else
+		{
+			strcopy(attackerName, sizeof(attackerName), "environment");
+		}
+
+		char attackerTeam[16];
+		if (iAttacker > 0 && iAttacker <= MaxClients && IsClientInGame(iAttacker))
+		{
+			int ateam = GetClientTeam(iAttacker);
+			if (ateam == 2) strcopy(attackerTeam, sizeof(attackerTeam), "survivor");
+			else if (ateam == 3) strcopy(attackerTeam, sizeof(attackerTeam), "infected");
+			else strcopy(attackerTeam, sizeof(attackerTeam), "unknown");
+		}
+		else
+		{
+			strcopy(attackerTeam, sizeof(attackerTeam), "environment");
+		}
+
+		hEvent.GetString("weapon", weaponName, sizeof(weaponName));
+
+		char killEvent[512];
+		Format(killEvent, sizeof(killEvent),
+			"KILL_EVENT {\"victim\":\"%s\",\"victim_team\":\"%s\",\"attacker\":\"%s\",\"attacker_team\":\"%s\",\"weapon\":\"%s\",\"time\":%.1f}\n",
+			victimName, victimTeam, attackerName, attackerTeam, weaponName, GetGameTime());
+
+		LLM_SocketSend(killEvent);
+	}
 }
 
 void Event_OnIncap(Event hEvent, const char[] sName, bool bBroadcast)
@@ -1878,6 +1924,34 @@ void Event_OnIncap(Event hEvent, const char[] sName, bool bBroadcast)
 	{
 		g_iLLM_PlayerIncap[iClient]++;
 		g_iLLM_ChapIncaps[iClient]++;
+	}
+
+	// LLM: Send INCAP_EVENT via TCP
+	if (g_bLLM_Connected && iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+	{
+		char incapVictim[64], incapAttacker[64], incapWeapon[64];
+		GetClientName(iClient, incapVictim, sizeof(incapVictim));
+		ReplaceString(incapVictim, sizeof(incapVictim), "\"", "'");
+
+		int incapAttackerIdx = GetClientOfUserId(hEvent.GetInt("attacker"));
+		if (incapAttackerIdx > 0 && incapAttackerIdx <= MaxClients && IsClientInGame(incapAttackerIdx))
+		{
+			GetClientName(incapAttackerIdx, incapAttacker, sizeof(incapAttacker));
+			ReplaceString(incapAttacker, sizeof(incapAttacker), "\"", "'");
+		}
+		else
+		{
+			strcopy(incapAttacker, sizeof(incapAttacker), "environment");
+		}
+
+		hEvent.GetString("weapon", incapWeapon, sizeof(incapWeapon));
+
+		char incapEvent[512];
+		Format(incapEvent, sizeof(incapEvent),
+			"INCAP_EVENT {\"victim\":\"%s\",\"attacker\":\"%s\",\"weapon\":\"%s\",\"time\":%.1f}\n",
+			incapVictim, incapAttacker, incapWeapon, GetGameTime());
+
+		LLM_SocketSend(incapEvent);
 	}
 
 	iSecondarySlot = GetWeaponInInventory(iClient, 1);
@@ -1899,7 +1973,36 @@ void Event_OnRevive(Event hEvent, const char[] sName, bool bBroadcast)
 	// LLM score: track revive (the one performing the revive)
 	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
 		g_iLLM_PlayerRevive[iClient]++;
-	
+
+	// LLM: Send REVIVE_EVENT via TCP
+	if (g_bLLM_Connected)
+	{
+		int iSubject = GetClientOfUserId(hEvent.GetInt("subject"));
+		if (iSubject > 0 && iSubject <= MaxClients && IsClientInGame(iSubject))
+		{
+			char revTarget[64], revRescuer[64];
+			GetClientName(iSubject, revTarget, sizeof(revTarget));
+			ReplaceString(revTarget, sizeof(revTarget), "\"", "'");
+
+			if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+			{
+				GetClientName(iClient, revRescuer, sizeof(revRescuer));
+				ReplaceString(revRescuer, sizeof(revRescuer), "\"", "'");
+			}
+			else
+			{
+				strcopy(revRescuer, sizeof(revRescuer), "unknown");
+			}
+
+			char reviveEvent[512];
+			Format(reviveEvent, sizeof(reviveEvent),
+				"REVIVE_EVENT {\"target\":\"%s\",\"rescuer\":\"%s\",\"time\":%.1f}\n",
+				revTarget, revRescuer, GetGameTime());
+
+			LLM_SocketSend(reviveEvent);
+		}
+	}
+
 	for (int i = 0; i < g_hForbiddenItemList.Length; i++)
 	{
 		iEntIndex = EntRefToEntIndex(g_hForbiddenItemList.Get(i));
@@ -8529,61 +8632,67 @@ void LLM_CollectState(char[] buffer, int maxlen)
 	for (int b = 0; b < g_LLM_BotCount; b++)
 	{
 		int client = g_LLM_Bots[b].client;
-		if (!IsClientInGame(client) || !IsPlayerAlive(client)) continue;
+		if (!IsClientInGame(client)) continue;
 
-		if (bc == 0)
+		bool alive = IsPlayerAlive(client);
+
+		if (alive && bc == 0)
 		{
 			GetClientAbsOrigin(client, refPos); // use first bot as reference
 		}
 
 		char bName[64]; GetClientName(client, bName, sizeof(bName));
-		int hp = GetClientHealth(client);
-		float tempHp = GetEntPropFloat(client, Prop_Send, "m_healthBuffer");
-		bool incap = view_as<bool>(GetEntProp(client, Prop_Send, "m_isIncapacitated"));
-		bool bw = view_as<bool>(GetEntProp(client, Prop_Send, "m_bIsOnThirdStrike"));
-		float pos[3]; GetClientAbsOrigin(client, pos);
-		float angles[3]; GetClientEyeAngles(client, angles);
-		bool pinned = LLM_IsPinned(client);
-		char pinType[16]; LLM_GetPinType(client, pinType, sizeof(pinType));
+		int hp = alive ? GetClientHealth(client) : 0;
+		float tempHp = alive ? GetEntPropFloat(client, Prop_Send, "m_healthBuffer") : 0.0;
+		bool incap = alive ? view_as<bool>(GetEntProp(client, Prop_Send, "m_isIncapacitated")) : false;
+		bool bw = alive ? view_as<bool>(GetEntProp(client, Prop_Send, "m_bIsOnThirdStrike")) : false;
+		float pos[3]; if (alive) GetClientAbsOrigin(client, pos);
+		float angles[3]; if (alive) GetClientEyeAngles(client, angles);
+		bool pinned = alive ? LLM_IsPinned(client) : false;
+		char pinType[16]; if (alive) LLM_GetPinType(client, pinType, sizeof(pinType)); else strcopy(pinType, sizeof(pinType), "none");
 
 		// Weapons (all slots)
 		char primary[64]="none", secondary[64]="none", grenade[32]="none";
 		char healthItem[32]="none", pillsItem[32]="none";
 		int primaryAmmo = 0, reserveAmmo = 0;
-		int w;
-		w = GetPlayerWeaponSlot(client, 0);
-		if (w != -1) {
-			GetEntityClassname(w, primary, sizeof(primary));
-			primaryAmmo = HasEntProp(w, Prop_Send, "m_iClip1") ? GetEntProp(w, Prop_Send, "m_iClip1") : 0;
-			reserveAmmo = HasEntProp(w, Prop_Send, "m_iExtraAmmoCount") ? GetEntProp(w, Prop_Send, "m_iExtraAmmoCount") :
-			              (HasEntProp(w, Prop_Send, "m_iExtra1") ? GetEntProp(w, Prop_Send, "m_iExtra1") : 0);
+		if (alive)
+		{
+			int w;
+			w = GetPlayerWeaponSlot(client, 0);
+			if (w != -1) {
+				GetEntityClassname(w, primary, sizeof(primary));
+				primaryAmmo = HasEntProp(w, Prop_Send, "m_iClip1") ? GetEntProp(w, Prop_Send, "m_iClip1") : 0;
+				reserveAmmo = HasEntProp(w, Prop_Send, "m_iExtraAmmoCount") ? GetEntProp(w, Prop_Send, "m_iExtraAmmoCount") :
+				              (HasEntProp(w, Prop_Send, "m_iExtra1") ? GetEntProp(w, Prop_Send, "m_iExtra1") : 0);
+			}
+			w = GetPlayerWeaponSlot(client, 1);
+			if (w != -1) GetEntityClassname(w, secondary, sizeof(secondary));
+			w = GetPlayerWeaponSlot(client, 2);
+			if (w != -1) GetEntityClassname(w, grenade, sizeof(grenade));
+			w = GetPlayerWeaponSlot(client, 3);
+			if (w != -1) GetEntityClassname(w, healthItem, sizeof(healthItem));
+			w = GetPlayerWeaponSlot(client, 4);
+			if (w != -1) GetEntityClassname(w, pillsItem, sizeof(pillsItem));
 		}
-		w = GetPlayerWeaponSlot(client, 1);
-		if (w != -1) GetEntityClassname(w, secondary, sizeof(secondary));
-		w = GetPlayerWeaponSlot(client, 2);
-		if (w != -1) GetEntityClassname(w, grenade, sizeof(grenade));
-		w = GetPlayerWeaponSlot(client, 3);
-		if (w != -1) GetEntityClassname(w, healthItem, sizeof(healthItem));
-		w = GetPlayerWeaponSlot(client, 4);
-		if (w != -1) GetEntityClassname(w, pillsItem, sizeof(pillsItem));
 
-		float flowDist = L4D2Direct_GetFlowDistance(client);
+		float flowDist = alive ? L4D2Direct_GetFlowDistance(client) : 0.0;
 		float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
 		float flowPct = 0.0;
 		if (maxFlow > 0.0 && flowDist > 0.0)
 			flowPct = (flowDist / maxFlow) * 100.0;
 
 		// Enhanced: combat state, move target, look position, revive/use action
-		bool inCombat = g_bBot_IsInCombat[client];
-		char moveName[64]; strcopy(moveName, sizeof(moveName), g_sBot_MovePos_Name[client]);
-		float movePos[3]; movePos = g_fBot_MovePos_Position[client];
-		float lookPos[3]; lookPos = g_fBot_LookPosition[client];
-		int reviveTarget = L4D_GetPlayerReviveTarget(client);
-		int useAction = L4D2_GetPlayerUseAction(client);
+		bool inCombat = alive ? g_bBot_IsInCombat[client] : false;
+		char moveName[64]; if (alive) strcopy(moveName, sizeof(moveName), g_sBot_MovePos_Name[client]); else strcopy(moveName, sizeof(moveName), "");
+		float movePos[3]; if (alive) movePos = g_fBot_MovePos_Position[client];
+		float lookPos[3]; if (alive) lookPos = g_fBot_LookPosition[client];
+		int reviveTarget = alive ? L4D_GetPlayerReviveTarget(client) : 0;
+		int useAction = alive ? L4D2_GetPlayerUseAction(client) : 0;
 
 		if (bc > 0) Format(bots, sizeof(bots), "%s,", bots);
-		Format(bots, sizeof(bots), "%s{\"name\":\"%s\",\"is_idle_player\":%s,\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"flow_pct\":%.1f,\"pinned\":%s,\"pin_type\":\"%s\",\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d,\"action\":\"%s\",\"combat\":%s,\"move_target\":\"%s\",\"move_pos\":[%.0f,%.0f,%.0f],\"look_pos\":[%.0f,%.0f,%.0f],\"revive_target\":%d,\"use_action\":%d}",
+		Format(bots, sizeof(bots), "%s{\"name\":\"%s\",\"is_idle_player\":%s,\"alive\":%s,\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"bw\":%s,\"pos\":[%.0f,%.0f,%.0f],\"angles\":[%.1f,%.1f],\"flow\":%.0f,\"flow_pct\":%.1f,\"pinned\":%s,\"pin_type\":\"%s\",\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"ammo\":%d,\"reserve\":%d,\"action\":\"%s\",\"combat\":%s,\"move_target\":\"%s\",\"move_pos\":[%.0f,%.0f,%.0f],\"look_pos\":[%.0f,%.0f,%.0f],\"revive_target\":%d,\"use_action\":%d,\"death_count\":%d}",
 			bots, bName, g_LLM_Bots[b].is_idle_player?"true":"false",
+			alive?"true":"false",
 			hp, tempHp, incap?"true":"false", bw?"true":"false",
 			pos[0], pos[1], pos[2], angles[1], angles[0],
 			flowDist, flowPct,
@@ -8593,7 +8702,7 @@ void LLM_CollectState(char[] buffer, int maxlen)
 			inCombat?"true":"false", moveName,
 			movePos[0], movePos[1], movePos[2],
 			lookPos[0], lookPos[1], lookPos[2],
-			reviveTarget, useAction);
+			reviveTarget, useAction, g_iLLM_PlayerDeaths[client]);
 		bc++;
 	}
 
@@ -8602,14 +8711,15 @@ void LLM_CollectState(char[] buffer, int maxlen)
 	int hc = 0;
 	for (int i = 1; i <= MaxClients; i++)
 	{
-		if (!IsClientInGame(i) || IsFakeClient(i) || GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+		if (!IsClientInGame(i) || IsFakeClient(i) || GetClientTeam(i) != 2) continue;
 		// Skip if this client is already in bots[] (idle player case)
 		if (_LLM_FindBotIdx(i) >= 0) continue;
 
+		bool halive = IsPlayerAlive(i);
 		char hn[64]; GetClientName(i, hn, sizeof(hn));
-		int hhp = GetClientHealth(i);
-		float htempHp = GetEntPropFloat(i, Prop_Send, "m_healthBuffer");
-		bool hincap = view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated"));
+		int hhp = halive ? GetClientHealth(i) : 0;
+		float htempHp = halive ? GetEntPropFloat(i, Prop_Send, "m_healthBuffer") : 0.0;
+		bool hincap = halive ? view_as<bool>(GetEntProp(i, Prop_Send, "m_isIncapacitated")) : false;
 		float hpos[3]; GetClientAbsOrigin(i, hpos);
 		float hFlow = L4D2Direct_GetFlowDistance(i);
 		float hMaxFlow = L4D2Direct_GetMapMaxFlowDistance();
@@ -8632,9 +8742,9 @@ void LLM_CollectState(char[] buffer, int maxlen)
 		if (hw != -1) GetEntityClassname(hw, hPills, sizeof(hPills));
 
 		if (hc > 0) Format(humans, sizeof(humans), "%s,", humans);
-		Format(humans, sizeof(humans), "%s{\"name\":\"%s\",\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"pos\":[%.0f,%.0f,%.0f],\"flow\":%.0f,\"flow_pct\":%.1f,\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"}}",
-			humans, hn, hhp, htempHp, hincap?"true":"false", hpos[0], hpos[1], hpos[2], hFlow, hFlowPct,
-			hPrimary, hSecondary, hGrenade, hHealth, hPills);
+		Format(humans, sizeof(humans), "%s{\"name\":\"%s\",\"alive\":%s,\"hp\":%d,\"temp_hp\":%.0f,\"incap\":%s,\"pos\":[%.0f,%.0f,%.0f],\"flow\":%.0f,\"flow_pct\":%.1f,\"weapons\":{\"primary\":\"%s\",\"secondary\":\"%s\",\"grenade\":\"%s\",\"health\":\"%s\",\"pills\":\"%s\"},\"death_count\":%d}",
+			humans, hn, halive?"true":"false", hhp, htempHp, hincap?"true":"false", hpos[0], hpos[1], hpos[2], hFlow, hFlowPct,
+			hPrimary, hSecondary, hGrenade, hHealth, hPills, g_iLLM_PlayerDeaths[i]);
 		hc++;
 	}
 
