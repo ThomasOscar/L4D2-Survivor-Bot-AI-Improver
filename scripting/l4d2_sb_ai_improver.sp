@@ -9212,7 +9212,9 @@ void LLM_SendInfectedState()
 			rage = GetEntPropFloat(went, Prop_Send, "m_rage");
 		// Witch target
 		char wtarget[64] = "";
-		int wTarget = GetEntPropEnt(went, Prop_Send, "m_hTargetEntity");
+		int wTarget = -1;
+		if (HasEntProp(went, Prop_Send, "m_hTargetEntity"))
+			wTarget = GetEntPropEnt(went, Prop_Send, "m_hTargetEntity");
 		if (wTarget > 0 && wTarget <= MaxClients && IsClientInGame(wTarget))
 			GetClientName(wTarget, wtarget, sizeof(wtarget));
 		if (wic > 0) Format(witchesInf, sizeof(witchesInf), "%s,", witchesInf);
@@ -9708,7 +9710,8 @@ void _LLM_ApplyInfectedAction(const char[] botId, const char[] action, const cha
 			if (targetClient > 0)
 			{
 				// Set witch target — this is limited by engine, but we can try
-				SetEntPropEnt(witchEnt, Prop_Send, "m_hTargetEntity", targetClient);
+				if (HasEntProp(witchEnt, Prop_Send, "m_hTargetEntity"))
+					SetEntPropEnt(witchEnt, Prop_Send, "m_hTargetEntity", targetClient);
 			}
 		}
 	}
