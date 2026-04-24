@@ -2253,7 +2253,11 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 			float fFriendPos[3];
 			GetClientAbsOrigin(iAimFriend, fFriendPos);
 			fFriendPos[2] += 40.0; // aim at torso height
-			SnapViewToPosition(iClient, fFriendPos);
+			// Only snap aim if we can actually see the friend
+			if (IsVisibleVector(iClient, fFriendPos, MASK_VISIBLE_AND_NPCS))
+			{
+				SnapViewToPosition(iClient, fFriendPos);
+			}
 		}
 	}
 
@@ -6443,7 +6447,10 @@ bool IsCommonAttacking(int iEntity)
 
 bool IsCommonAlive(int iEntity)
 {
-	return (GetEntProp(iEntity, Prop_Data, "m_lifeState") == 0 && GetEntProp(iEntity, Prop_Send, "m_bIsBurning") == 0);
+	if (!IsValidEntity(iEntity)) return false;
+	if (GetEntProp(iEntity, Prop_Data, "m_lifeState") != 0) return false;
+	if (HasEntProp(iEntity, Prop_Send, "m_bIsBurning") && GetEntProp(iEntity, Prop_Send, "m_bIsBurning") != 0) return false;
+	return true;
 }
 
 bool IsCommonStumbling(int iEntity)
@@ -9139,7 +9146,18 @@ void LLM_SendInfectedState()
 	// === Director info (from infected perspective) ===
 	float maxFlow = L4D2Direct_GetMapMaxFlowDistance();
 	float flowPct = 0.0;
-	if (maxFlow > 0) flowPct = L4D2Direct_GetFlowDistance(1) / maxFlow * 100.0;
+	if (maxFlow > 0)
+	{
+		// Find a valid in-game survivor to get flow distance
+		for (int fi = 1; fi <= MaxClients; fi++)
+		{
+			if (IsClientInGame(fi) && GetClientTeam(fi) == 2 && IsPlayerAlive(fi))
+			{
+				flowPct = L4D2Direct_GetFlowDistance(fi) / maxFlow * 100.0;
+				break;
+			}
+		}
+	}
 	int pendingMob = L4D2Direct_GetPendingMobCount();
 	bool tankInPlay = false;
 	for (int i = 1; i <= MaxClients; i++)
@@ -9824,6 +9842,8 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 			if (strcmp(action, "attack_tank") == 0 && GetEntProp(i, Prop_Send, "m_zombieClass") != 8) continue;
 			float sp[3]; GetClientAbsOrigin(i, sp);
 			float dist = GetVectorDistance(botPos, sp);
+			// LOS check - skip targets not visible through walls
+			if (!IsVisibleVector(bot, sp, MASK_VISIBLE_AND_NPCS)) continue;
 			if (dist < bestDist) { bestDist = dist; bestSI = i; }
 		}
 
@@ -9847,7 +9867,8 @@ void _LLM_ApplyBotStrategy(int botIdx, const char[] action, const char[] target)
 			if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i)) continue;
 			float sp[3]; GetClientAbsOrigin(i, sp);
 			float dist = GetVectorDistance(botPos, sp);
-			if (dist < 500.0) { threat = i; threatPos = sp; break; }
+			// LOS check - don't evade threats behind walls
+			if (dist < 500.0 && IsVisibleVector(bot, sp, MASK_VISIBLE_AND_NPCS)) { threat = i; threatPos = sp; break; }
 		}
 
 		if (threat > 0)
