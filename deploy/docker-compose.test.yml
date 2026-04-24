@@ -24,7 +24,7 @@ services:
       - l4d2-game-network
     environment:
       - L4D2_RESTART_BY_RCON=true
-      - L4D2_MANAGER_PASSWORD=TestL4d2Mgr2026
+      - L4D2_MANAGER_PASSWORD=BHomFU7aB7KTGD#gYu
       - L4D2_RCON_URL=l4d2-server-test:27015
-      - L4D2_RCON_PASSWORD=testserver123
+      - L4D2_RCON_PASSWORD=dy$RYiYZP5h2RZ2jp4
       - L4D2_GAME_PATH=/left4dead2

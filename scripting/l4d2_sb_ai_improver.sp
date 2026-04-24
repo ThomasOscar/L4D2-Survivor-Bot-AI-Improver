@@ -664,6 +664,14 @@ static int g_iBot_NearestInfectedCount[MAXSURVIVORS+1];
 static int g_iBot_ThreatInfectedCount[MAXSURVIVORS+1]; 
 static int g_iBot_GrenadeInfectedCount[MAXSURVIVORS+1];
 
+// --------- 4E: Stuck detection ---------
+static float g_fBot_LastPos[MAXSURVIVORS+1][3];
+static float g_fBot_LastMoveTime[MAXSURVIVORS+1];
+
+// --------- 4F: Map button interaction ---------
+static int g_iBot_PressingButton[MAXSURVIVORS+1];
+static float g_fBot_ButtonPressStart[MAXSURVIVORS+1];
+
 // -------------------------
 
 #define VISION_CHECK_MAXDIST		16777216.0
@@ -1738,6 +1746,10 @@ void ResetClientPluginVariables(int iClient)
 	SetVectorToZero(g_fBot_Grenade_AimPos[iClient]);
 	SetVectorToZero(g_fBot_LookPosition[iClient]);
 	SetVectorToZero(g_fBot_MovePos_Position[iClient]);
+	SetVectorToZero(g_fBot_LastPos[iClient]);
+	g_fBot_LastMoveTime[iClient] = 0.0;
+	g_iBot_PressingButton[iClient] = 0;
+	g_fBot_ButtonPressStart[iClient] = 0.0;
 
 	for (int i = 0; i < MAXENTITIES; i++)
 	{
@@ -1965,7 +1977,7 @@ void Event_OnSurvivorGrabbed(Event hEvent, const char[] sName, bool bBroadcast)
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (!IsClientSurvivor(i) || !IsFakeClient(i))continue;
-		float fReactTime = GetRandomFloat(0.33, 0.66); if (i == iVictim)fReactTime *= 0.5;
+		float fReactTime = GetRandomFloat(0.15, 0.30); if (i == iVictim)fReactTime *= 0.5;
 		g_fBot_PinnedReactTime[i] = GetGameTime() + fReactTime;
 	}
 }
@@ -2224,8 +2236,59 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 	// LLM: Apply strategic overrides after IB's normal processing
 	LLM_ApplyOverrides(iClient, iButtons, fVel, fAngles);
 
-	// LLM: Send state periodically (call for all survivor bots to find tracked bot)
-	if (IsClientSurvivor(iClient)) LLM_SendState();
+	// ============ 4E: Bot Aim Correction & Stuck Detection ============
+	// Only apply when bot is not actively firing and not being pinned/incapped
+	if (!g_bClient_IsFiringWeapon[iClient] && !g_bClient_IsLookingAtPosition[iClient]
+		&& !L4D_IsPlayerIncapacitated(iClient) && !L4D_IsPlayerPinned(iClient))
+	{
+		// Aim correction: face toward teammate who needs help
+		int iAimFriend = 0;
+		if (g_iBot_PinnedFriend[iClient] > 0 && IsValidClient(g_iBot_PinnedFriend[iClient]))
+			iAimFriend = g_iBot_PinnedFriend[iClient];
+		else if (g_iBot_IncapacitatedFriend[iClient] > 0 && IsValidClient(g_iBot_IncapacitatedFriend[iClient]))
+			iAimFriend = g_iBot_IncapacitatedFriend[iClient];
+
+		if (iAimFriend > 0)
+		{
+			float fFriendPos[3];
+			GetClientAbsOrigin(iAimFriend, fFriendPos);
+			fFriendPos[2] += 40.0; // aim at torso height
+			SnapViewToPosition(iClient, fFriendPos);
+		}
+	}
+
+	// Stuck detection: if bot hasn't moved >10 units in 3 seconds, try to escape
+	{
+		float fCurPos[3];
+		GetClientAbsOrigin(iClient, fCurPos);
+		float fMoveDist = GetVectorDistance(fCurPos, g_fBot_LastPos[iClient], true);
+		float fNow = GetGameTime();
+
+		if (fMoveDist < 100.0) // squared: 10 units
+		{
+			if (g_fBot_LastMoveTime[iClient] > 0.0 && fNow - g_fBot_LastMoveTime[iClient] > 3.0)
+			{
+				// Anti-stuck: jump and move in a random direction
+				iButtons |= IN_JUMP;
+				float fRandAngle = GetRandomFloat(-180.0, 180.0);
+				float fEscapeDir[3];
+				fEscapeDir[0] = Cosine(DegToRad(fRandAngle)) * 200.0 + fCurPos[0];
+				fEscapeDir[1] = Sine(DegToRad(fRandAngle)) * 200.0 + fCurPos[1];
+				fEscapeDir[2] = fCurPos[2];
+				SetMoveToPosition(iClient, fEscapeDir, 3, "Unstuck", 0.0, 5.0, true, true);
+				g_fBot_LastMoveTime[iClient] = fNow;
+			}
+		}
+		else
+		{
+			g_fBot_LastMoveTime[iClient] = fNow;
+			g_fBot_LastPos[iClient][0] = fCurPos[0];
+			g_fBot_LastPos[iClient][1] = fCurPos[1];
+			g_fBot_LastPos[iClient][2] = fCurPos[2];
+		}
+	}
+
+	// LLM: State sending moved to Timer_LLM_SendState (independent timer)
 	if (g_iBotProcessing_ProcessedCount >= iAliveBots)
 	{
 		iGameDifficulty = GetCurrentGameDifficulty();
@@ -2715,6 +2778,95 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 	}
 
+	// ============ PRIORITY 0: 救援倒地队友 ============
+	if (IsValidClient(g_iBot_IncapacitatedFriend[iClient]) && 
+		L4D_IsPlayerIncapacitated(g_iBot_IncapacitatedFriend[iClient]) &&
+		!L4D_IsPlayerIncapacitated(iClient))
+	{
+		int iIncapFriend = g_iBot_IncapacitatedFriend[iClient];
+		float fIncapPos[3];
+		GetClientAbsOrigin(iIncapFriend, fIncapPos);
+		float fIncapDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fIncapPos, true);
+		
+		if (fIncapDist <= 4096.0)  // 64 单位内，可以救援
+		{
+			SnapViewToPosition(iClient, fIncapPos);
+			iButtons |= IN_USE;
+			return iAliveBots;
+		}
+		else if (fIncapDist <= 360000.0)  // 600 单位内，移动过去
+		{
+			ClearMoveToPosition(iClient);
+			SetMoveToPosition(iClient, fIncapPos, 5, "Rescue_Incap", 0.0, 50.0, true, true);
+			return iAliveBots;
+		}
+	}
+
+	// ============ 酸液主动躲避 ============
+	{
+		int iAcidArea = -1;
+		while ((iAcidArea = FindEntityByClassname(iAcidArea, "insect_swarm")) != INVALID_ENT_REFERENCE)
+		{
+			if (!IsValidEntity(iAcidArea)) continue;
+			float fAcidPos[3];
+			GetEntPropVector(iAcidArea, Prop_Send, "m_vecOrigin", fAcidPos);
+			float fAcidDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fAcidPos, true);
+			
+			if (fAcidDist < 22500.0)  // 150 单位内
+			{
+				int iNavArea;
+				float fEscapePos[3], fPathPos[3];
+				float fLastEscDist = -1.0;
+				for (int j = 0; j < 12; j++)
+				{
+					LBI_TryGetPathableLocationWithin(iClient, 250.0 + (50.0 * j), fPathPos);
+					if (!IsValidVector(fPathPos)) continue;
+					
+					float fPathDist = GetClientTravelDistance(iClient, fPathPos, true);
+					if (fLastEscDist != -1.0 && fPathDist >= fLastEscDist)
+						continue;
+					
+					iNavArea = L4D_GetNearestNavArea(fPathPos);
+					if (!iNavArea || LBI_IsDamagingNavArea(iNavArea, true) || !LBI_IsReachableNavArea(iClient, iNavArea))
+						continue;
+					
+					fLastEscDist = fPathDist;
+					fEscapePos = fPathPos;
+				}
+				
+				if (IsValidVector(fEscapePos))
+				{
+					ClearMoveToPosition(iClient);
+					SetMoveToPosition(iClient, fEscapePos, 4, "EscapeInferno", 0.0, 5.0, true, true);
+				}
+				break;
+			}
+		}
+	}
+
+	// ============ 脱队紧急归队 ============
+	if (!g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient])
+	{
+		int iNearest = -1;
+		float fMinTeamDist = 999999.0;
+		for (int t = 1; t <= MaxClients; t++)
+		{
+			if (t == iClient || !IsValidClient(t) || !IsClientSurvivor(t)) continue;
+			if (L4D_IsPlayerIncapacitated(t) || !IsPlayerAlive(t)) continue;
+			float fTeamDist = GetVectorDistance(g_fClientAbsOrigin[iClient], g_fClientAbsOrigin[t], true);
+			if (fTeamDist < fMinTeamDist) { fMinTeamDist = fTeamDist; iNearest = t; }
+		}
+		
+		if (iNearest != -1 && fMinTeamDist > 250000.0)  // 500 单位
+		{
+			float fNearPos[3];
+			GetClientAbsOrigin(iNearest, fNearPos);
+			ClearMoveToPosition(iClient);
+			SetMoveToPosition(iClient, fNearPos, 5, "Emergency_Regroup", 0.0, 100.0, true, true);
+			return iAliveBots;
+		}
+	}
+
 	int iPinnedFriend = g_iBot_PinnedFriend[iClient];
 	int iPinnedAttacker = g_iBot_PinnedFriend_Attacker[iClient];
 	if (!IsValidClient(iPinnedFriend) || !IsValidClient(iPinnedAttacker) || !IsPlayerAlive(iPinnedAttacker))
@@ -2921,7 +3073,9 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 				iButtons |= IN_SPEED;
 
 			int iCrowning = g_iCvar_WitchBehavior_AllowCrowning;
-			if ((iCrowning == 2 || iCrowning == 1 && !g_bTeamHasHumanPlayer) && iCurWeapon == iWpnSlots[0] && fWitchDist <= 1048576.0 && !L4D_IsPlayerOnThirdStrike(iClient) && (!IsValidClient(iTeamLeader) || fWitchDist <= 262144.0) && !IsWeaponReloading(iCurWeapon, false) && iHasShotgun && IsVisibleEntity(iClient, iWitchTarget)) // 1024 & 512
+			int iWitchHarasserVictim = (iWitchHarasser > 0 && IsValidClient(iWitchHarasser) ? iWitchHarasser : -1);
+			bool bWitchIsThreateningTeam = (fRage >= 0.5 && iWitchHarasserVictim != -1);
+			if (bWitchIsThreateningTeam && (iCrowning == 2 || iCrowning == 1 && !g_bTeamHasHumanPlayer) && iCurWeapon == iWpnSlots[0] && fWitchDist <= 1048576.0 && !L4D_IsPlayerOnThirdStrike(iClient) && (!IsValidClient(iTeamLeader) || fWitchDist <= 262144.0) && !IsWeaponReloading(iCurWeapon, false) && iHasShotgun && IsVisibleEntity(iClient, iWitchTarget)) // 1024 & 512
 			{
 				if (fWitchDist <= 16777216.0) // 4096
 				{
@@ -3360,6 +3514,98 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 	}
 
+	// ============ 4F: Map Button Interaction ============
+	// Priority lower than rescue/Tank/Witch but higher than scavenge
+	if (!iTankTarget && !iPinnedFriend && !g_iBot_WitchTarget[iClient]
+		&& !IsSurvivorBusy(iClient) && !IsSurvivorBotBlindedByVomit(iClient))
+	{
+		// Continue pressing button if already interacting
+		if (g_iBot_PressingButton[iClient] != 0)
+		{
+			int iPressBtn = g_iBot_PressingButton[iClient];
+			bool bStillValid = IsValidEntity(iPressBtn);
+			bool bTimeout = (fCurTime - g_fBot_ButtonPressStart[iClient] > 10.0);
+
+			if (!bStillValid || bTimeout)
+			{
+				g_iBot_PressingButton[iClient] = 0;
+				g_fBot_ButtonPressStart[iClient] = 0.0;
+			}
+			else
+			{
+				// Check if button is still unlocked
+				int iBtnLocked = GetEntProp(iPressBtn, Prop_Data, "m_bLocked");
+				if (iBtnLocked)
+				{
+					g_iBot_PressingButton[iClient] = 0;
+					g_fBot_ButtonPressStart[iClient] = 0.0;
+				}
+				else
+				{
+					float fBtnPos[3];
+					GetEntPropVector(iPressBtn, Prop_Send, "m_vecOrigin", fBtnPos);
+					SnapViewToPosition(iClient, fBtnPos);
+					iButtons |= IN_USE;
+				}
+			}
+		}
+		else
+		{
+			// Scan for nearby func_button and func_button_timed
+			int iScanButton = -1;
+			float fClosestButtonDist = 999999.0;
+			int iClosestButton = -1;
+			float fClosestButtonPos[3];
+
+			for (int iClassType = 0; iClassType < 2; iClassType++)
+			{
+				char sClassName[32];
+				if (iClassType == 0)
+					strcopy(sClassName, sizeof(sClassName), "func_button");
+				else
+					strcopy(sClassName, sizeof(sClassName), "func_button_timed");
+
+				iScanButton = -1;
+				while ((iScanButton = FindEntityByClassname(iScanButton, sClassName)) != INVALID_ENT_REFERENCE)
+				{
+					if (!IsValidEntity(iScanButton)) continue;
+
+					// Check if button is unlocked
+					int iBtnLocked = GetEntProp(iScanButton, Prop_Data, "m_bLocked");
+					if (iBtnLocked) continue;
+
+					float fButtonPos[3];
+					GetEntPropVector(iScanButton, Prop_Send, "m_vecOrigin", fButtonPos);
+					float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fButtonPos, true);
+
+					if (fDist < fClosestButtonDist && fDist < 10000.0) // 100 units squared
+					{
+						fClosestButtonDist = fDist;
+						iClosestButton = iScanButton;
+						fClosestButtonPos[0] = fButtonPos[0];
+						fClosestButtonPos[1] = fButtonPos[1];
+						fClosestButtonPos[2] = fButtonPos[2];
+					}
+				}
+			}
+
+			if (iClosestButton != -1)
+			{
+				if (fClosestButtonDist <= 4096.0) // 64 units squared, can press
+				{
+					SnapViewToPosition(iClient, fClosestButtonPos);
+					iButtons |= IN_USE;
+					g_iBot_PressingButton[iClient] = iClosestButton;
+					g_fBot_ButtonPressStart[iClient] = fCurTime;
+				}
+				else // Move toward button
+				{
+					SetMoveToPosition(iClient, fClosestButtonPos, 2, "PressButton", 0.0, 30.0, true, true);
+				}
+			}
+		}
+	}
+
 	int iScavengeItem = g_iBot_ScavengeItem[iClient];
 	if (iScavengeItem)
 	{
@@ -3551,7 +3797,7 @@ Action OnSurvivorTakeDamage(int iClient, int &iAttacker, int &iInflictor, float 
 	int iNavArea;
 	float fCurDist, fLastDist = -1.0;
 	float fEscapePos[3], fPathPos[3];
-	for (int i = 0; i < 12; i++)
+	for (int i = 0; i < 20; i++)
 	{
 		LBI_TryGetPathableLocationWithin(iClient, 250.0 + (50.0 * i), fPathPos);
 		
@@ -6936,7 +7182,7 @@ bool LBI_IsDamagingNavArea(int iNavArea, bool bIgnoreWitches = false)
 			{
 				GetEntityAbsOrigin(iWitch, fWitchPos);
 				LBI_GetClosestPointOnNavArea(iNavArea, fWitchPos, fClosePoint);
-				if (GetVectorDistance(fWitchPos, fClosePoint, true) <= 14400.0)return false;
+				if (GetVectorDistance(fWitchPos, fClosePoint, true) <= 62500.0)return false;
 			}
 		}
 		return true;
@@ -7722,8 +7968,8 @@ void LLM_Init()
 	g_bHasWeaponHandling = LibraryExists("WeaponHandling");
 	PrintToServer("[LLM] Plugin discovery: skill_detect=%d, WeaponHandling=%d", g_bHasSkillDetect, g_bHasWeaponHandling);
 
-	// Phase 5.2: Plugin enumeration timer (every 60s)
-	CreateTimer(60.0, Timer_EnumeratePlugins, _, TIMER_REPEAT);
+	// Phase 5.2: Plugin enumeration timer (every 120s)
+	CreateTimer(120.0, Timer_EnumeratePlugins, _, TIMER_REPEAT);
 
 	PrintToServer("[LLM] Module initialized (ib_llm_enabled=%d)", g_hCvar_LLM_Enabled.IntValue);
 }
@@ -7786,6 +8032,9 @@ void LLM_OnMapStart()
 
 	// Export nav mesh after a short delay (nav needs time to initialize)
 	CreateTimer(15.0, LLM_TimerExportNav, _, TIMER_FLAG_NO_MAPCHANGE);
+
+	// Phase 5.x: Independent STATE send timer (replaces per-frame call in OnPlayerRunCmd)
+	CreateTimer(g_hCvar_LLM_Interval.FloatValue, Timer_LLM_SendState, _, TIMER_REPEAT|TIMER_FLAG_NO_MAPCHANGE);
 
 	PrintToServer("[LLM] OnMapStart - LLM layer active");
 }
@@ -8229,13 +8478,15 @@ void LLM_FlushRetryBuffer()
 
 // ===================== State Collection =====================
 
+public Action Timer_LLM_SendState(Handle timer)
+{
+	LLM_SendState();
+	return Plugin_Continue;
+}
+
 void LLM_SendState()
 {
 	if (!g_bLLM_Connected || !g_hCvar_LLM_Enabled.BoolValue) return;
-
-	float interval = g_hCvar_LLM_Interval.FloatValue;
-	if (GetGameTime() - g_fLLM_LastSendTime < interval) return;
-	g_fLLM_LastSendTime = GetGameTime();
 
 	// Refresh bot list if empty (ControlAll refreshes are handled by events)
 	if (g_LLM_BotCount == 0 && g_bLLM_ControlAll)
@@ -8294,7 +8545,12 @@ void LLM_CollectState(char[] buffer, int maxlen)
 		int primaryAmmo = 0, reserveAmmo = 0;
 		int w;
 		w = GetPlayerWeaponSlot(client, 0);
-		if (w != -1) { GetEntityClassname(w, primary, sizeof(primary)); primaryAmmo = GetEntProp(w, Prop_Send, "m_iClip1"); reserveAmmo = GetEntProp(w, Prop_Send, "m_iExtra1"); }
+		if (w != -1) {
+			GetEntityClassname(w, primary, sizeof(primary));
+			primaryAmmo = HasEntProp(w, Prop_Send, "m_iClip1") ? GetEntProp(w, Prop_Send, "m_iClip1") : 0;
+			reserveAmmo = HasEntProp(w, Prop_Send, "m_iExtraAmmoCount") ? GetEntProp(w, Prop_Send, "m_iExtraAmmoCount") :
+			              (HasEntProp(w, Prop_Send, "m_iExtra1") ? GetEntProp(w, Prop_Send, "m_iExtra1") : 0);
+		}
 		w = GetPlayerWeaponSlot(client, 1);
 		if (w != -1) GetEntityClassname(w, secondary, sizeof(secondary));
 		w = GetPlayerWeaponSlot(client, 2);
