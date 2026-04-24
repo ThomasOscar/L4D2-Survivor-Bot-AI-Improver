@@ -177,6 +177,23 @@ int g_iLLM_ChapHeals[MAXPLAYERS+1];      // heals this chapter
 int g_iLLM_ChapSIKills[MAXPLAYERS+1];    // SI kills this chapter
 int g_iLLM_ChapCommonKills[MAXPLAYERS+1]; // common kills this chapter
 
+// === 伤害追踪 ===
+int g_iLLM_ChapDamageDealt[MAXPLAYERS+1];     // 造成伤害
+int g_iLLM_ChapDamageTaken[MAXPLAYERS+1];     // 受到伤害
+int g_iLLM_ChapHeadshots[MAXPLAYERS+1];       // 爆头次数
+int g_iLLM_ChapFriendlyFire[MAXPLAYERS+1];    // 友军伤害次数
+
+// === 特殊目标击杀 ===
+int g_iLLM_ChapTankKills[MAXPLAYERS+1];       // Tank 击杀
+int g_iLLM_ChapWitchKills[MAXPLAYERS+1];      // Witch 击杀
+
+// === 资源使用 ===
+int g_iLLM_ChapMedkitsUsed[MAXPLAYERS+1];     // 急救包使用
+int g_iLLM_ChapPillsUsed[MAXPLAYERS+1];       // 痛片/肾上腺素使用
+
+// === 复活追踪 ===
+int g_iLLM_ChapRevives[MAXPLAYERS+1];         // 复活队友次数
+
 // ============================================================
 // Phase 5.2: Dynamic Plugin Discovery Framework
 // ============================================================
@@ -907,6 +924,8 @@ public void OnPluginStart()
 	HookEvent("round_start", 			Event_OnRoundStart);
 	HookEvent("mission_lost", 			Event_OnMissionLost);
 	HookEvent("map_transition", 			Event_OnMapTransition);
+	HookEvent("finale_win", 				Event_OnFinaleWin);
+	HookEvent("finale_start", 				Event_OnFinaleStart);
 
 	HookEvent("weapon_fire", 			Event_OnWeaponFire);
 	HookEvent("player_death", 			Event_OnPlayerDeath);
@@ -924,6 +943,12 @@ public void OnPluginStart()
 	HookEvent("charger_carry_start", 	Event_OnSurvivorGrabbed);
 
 	HookEvent("charger_charge_start",	Event_OnChargeStart);
+
+	HookEvent("player_hurt",			Event_OnPlayerHurt);
+	HookEvent("witch_killed",			Event_OnWitchKilled);
+	HookEvent("friendly_fire",			Event_OnFriendlyFire);
+	HookEvent("pills_used",				Event_OnPillsUsed);
+	HookEvent("adrenaline_used",		Event_OnAdrenalineUsed);
 	
 	HookEvent("witch_harasser_set", 	Event_OnWitchHaraserSet);
 	
@@ -1833,6 +1858,10 @@ void Event_OnPlayerDeath(Event hEvent, const char[] sName, bool bBroadcast)
 		{
 			g_iLLM_PlayerSIKills[iAttacker]++;
 			g_iLLM_ChapSIKills[iAttacker]++;
+
+			// Track Tank kills specifically
+			if (L4D2_GetPlayerZombieClass(iVictim) == L4D2ZombieClass_Tank)
+				g_iLLM_ChapTankKills[iAttacker]++;
 		}
 	}
 
@@ -1972,7 +2001,10 @@ void Event_OnRevive(Event hEvent, const char[] sName, bool bBroadcast)
 
 	// LLM score: track revive (the one performing the revive)
 	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+	{
 		g_iLLM_PlayerRevive[iClient]++;
+		g_iLLM_ChapRevives[iClient]++;
+	}
 
 	// LLM: Send REVIVE_EVENT via TCP
 	if (g_bLLM_Connected)
@@ -2024,7 +2056,61 @@ void Event_OnHealSuccess(Event hEvent, const char[] sName, bool bBroadcast)
 	{
 		g_iLLM_PlayerHeal[healer]++;
 		g_iLLM_ChapHeals[healer]++;
+		g_iLLM_ChapMedkitsUsed[healer]++;
 	}
+}
+
+// === Chapter stats: event handlers for extended tracking ===
+public void Event_OnPlayerHurt(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int attacker = GetClientOfUserId(hEvent.GetInt("attacker"));
+	int victim = GetClientOfUserId(hEvent.GetInt("userid"));
+	int damage = hEvent.GetInt("dmg_health");
+
+	// 攻击者是生还者 → 造成伤害
+	if (attacker > 0 && attacker <= MaxClients && IsClientInGame(attacker) && GetClientTeam(attacker) == 2)
+	{
+		g_iLLM_ChapDamageDealt[attacker] += damage;
+
+		// 检查是否爆头
+		int hitgroup = hEvent.GetInt("hitgroup");
+		if (hitgroup == 1) // 1 = head
+			g_iLLM_ChapHeadshots[attacker]++;
+	}
+
+	// 受害者是生还者 → 受到伤害
+	if (victim > 0 && victim <= MaxClients && IsClientInGame(victim) && GetClientTeam(victim) == 2)
+	{
+		g_iLLM_ChapDamageTaken[victim] += damage;
+	}
+}
+
+public void Event_OnWitchKilled(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int attacker = GetClientOfUserId(hEvent.GetInt("userid"));
+	if (attacker > 0 && attacker <= MaxClients && IsClientInGame(attacker) && GetClientTeam(attacker) == 2)
+		g_iLLM_ChapWitchKills[attacker]++;
+}
+
+public void Event_OnFriendlyFire(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int attacker = GetClientOfUserId(hEvent.GetInt("attacker"));
+	if (attacker > 0 && attacker <= MaxClients && IsClientInGame(attacker))
+		g_iLLM_ChapFriendlyFire[attacker]++;
+}
+
+public void Event_OnPillsUsed(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int client = GetClientOfUserId(hEvent.GetInt("userid"));
+	if (client > 0 && client <= MaxClients && IsClientInGame(client))
+		g_iLLM_ChapPillsUsed[client]++;
+}
+
+public void Event_OnAdrenalineUsed(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	int client = GetClientOfUserId(hEvent.GetInt("userid"));
+	if (client > 0 && client <= MaxClients && IsClientInGame(client))
+		g_iLLM_ChapPillsUsed[client]++;  // 合并到 pills 计数
 }
 
 // LLM: Track item pickups for statistics
@@ -2049,11 +2135,101 @@ void LLM_SendRoundOutcome(const char[] outcome)
 void Event_OnMissionLost(Event hEvent, const char[] sName, bool bBroadcast)
 {
 	LLM_SendRoundOutcome("team_wipe");
+	_LLM_SendChapterComplete("mission_failed");
 }
 
 void Event_OnMapTransition(Event hEvent, const char[] sName, bool bBroadcast)
 {
 	LLM_SendRoundOutcome("escaped");
+	_LLM_SendChapterComplete("chapter_completed");
+}
+
+void Event_OnFinaleStart(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	PrintToServer("[LLM] Finale started");
+}
+
+void Event_OnFinaleWin(Event hEvent, const char[] sName, bool bBroadcast)
+{
+	PrintToServer("[LLM] Finale WIN - campaign complete!");
+	_LLM_SendChapterComplete("finale_victory");
+}
+
+void _LLM_SendChapterComplete(const char[] outcome)
+{
+	char msg[2048];
+	char botsJson[1536];
+	botsJson[0] = '\0';
+
+	bool first = true;
+	for (int i = 0; i < g_LLM_BotCount; i++)
+	{
+		int client = g_LLM_Bots[i].client;
+		if (!IsClientInGame(client)) continue;
+
+		char botName[64];
+		GetClientName(client, botName, sizeof(botName));
+
+		char botEntry[512];
+		char separator[4];
+		if (first) separator[0] = '\0';
+		else strcopy(separator, sizeof(separator), ",");
+		char aliveStr[8];
+		strcopy(aliveStr, sizeof(aliveStr), IsPlayerAlive(client) ? "true" : "false");
+
+		// Build in two parts due to Format argument limit
+		char part1[256];
+		Format(part1, sizeof(part1), "%s{\"name\":\"%s\",\"alive\":%s,\"deaths\":%d,\"incaps\":%d,\"heals\":%d,\"si_kills\":%d,\"common_kills\":%d",
+			separator, botName, aliveStr,
+			g_iLLM_ChapDeaths[client],
+			g_iLLM_ChapIncaps[client],
+			g_iLLM_ChapHeals[client],
+			g_iLLM_ChapSIKills[client],
+			g_iLLM_ChapCommonKills[client]);
+
+		char part2[256];
+		Format(part2, sizeof(part2), ",\"damage_dealt\":%d,\"damage_taken\":%d,\"headshots\":%d,\"friendly_fire\":%d,\"tank_kills\":%d,\"witch_kills\":%d,\"medkits_used\":%d,\"pills_used\":%d,\"revives\":%d}",
+			g_iLLM_ChapDamageDealt[client],
+			g_iLLM_ChapDamageTaken[client],
+			g_iLLM_ChapHeadshots[client],
+			g_iLLM_ChapFriendlyFire[client],
+			g_iLLM_ChapTankKills[client],
+			g_iLLM_ChapWitchKills[client],
+			g_iLLM_ChapMedkitsUsed[client],
+			g_iLLM_ChapPillsUsed[client],
+			g_iLLM_ChapRevives[client]);
+
+		Format(botEntry, sizeof(botEntry), "%s%s", part1, part2);
+		StrCat(botsJson, sizeof(botsJson), botEntry);
+		first = false;
+	}
+
+	Format(msg, sizeof(msg),
+		"CHAPTER_COMPLETE {\"chapter\":%d,\"outcome\":\"%s\",\"bots\":[%s]}\n",
+		g_iLLM_CurrentChapter, outcome, botsJson);
+
+	LLM_SocketSend(msg);
+	PrintToServer("[LLM] Chapter %d complete: %s (%d bots)", g_iLLM_CurrentChapter, outcome, g_LLM_BotCount);
+
+	// Reset chapter stats
+	g_iLLM_CurrentChapter++;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		g_iLLM_ChapDeaths[i] = 0;
+		g_iLLM_ChapIncaps[i] = 0;
+		g_iLLM_ChapHeals[i] = 0;
+		g_iLLM_ChapSIKills[i] = 0;
+		g_iLLM_ChapCommonKills[i] = 0;
+		g_iLLM_ChapDamageDealt[i] = 0;
+		g_iLLM_ChapDamageTaken[i] = 0;
+		g_iLLM_ChapHeadshots[i] = 0;
+		g_iLLM_ChapFriendlyFire[i] = 0;
+		g_iLLM_ChapTankKills[i] = 0;
+		g_iLLM_ChapWitchKills[i] = 0;
+		g_iLLM_ChapMedkitsUsed[i] = 0;
+		g_iLLM_ChapPillsUsed[i] = 0;
+		g_iLLM_ChapRevives[i] = 0;
+	}
 }
 
 // Mark entity as used by certain client
@@ -9801,6 +9977,52 @@ void LLM_ParseDirectorDecision(const char[] json)
 
 void _LLM_ApplyDirectorAction(const char[] action, const char[] params)
 {
+	// --- SI count gate: block spawn_si / place_tank when at limit ---
+	if (StrEqual(action, "spawn_si", false) || StrEqual(action, "place_tank", false))
+	{
+		int currentSI = 0;
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (IsClientInGame(i) && GetClientTeam(i) == 3 && IsPlayerAlive(i))
+				currentSI++;
+		}
+		ConVar hMaxZombies = FindConVar("z_max_player_zombies");
+		int maxSI = (hMaxZombies != null) ? hMaxZombies.IntValue : 8;
+		if (currentSI >= maxSI)
+		{
+			// At limit: try to take over an idle SI instead of spawning
+			if (StrEqual(action, "spawn_si", false))
+			{
+				int idleSI = _FindIdleSI(params);
+				if (idleSI > 0)
+				{
+					int idx = _LLM_FindInfectedIdx(idleSI);
+					if (idx == -1)
+					{
+						_LLM_RegisterInfected(idleSI, params);
+						idx = g_LLM_InfectedCount - 1;
+					}
+
+					if (idx >= 0)
+					{
+						strcopy(g_LLM_Infected[idx].action, 32, "attack_target");
+						g_LLM_Infected[idx].actionExpire = GetGameTime() + 8.0;
+						PrintToServer("[LLM-Director] Took over existing SI #%d instead of spawning", idleSI);
+					}
+				}
+				else
+				{
+					PrintToServer("[LLM-Director] spawn_si cancelled: at limit %d/%d, no idle SI", currentSI, maxSI);
+				}
+			}
+			else
+			{
+				PrintToServer("[LLM-Director] %s cancelled: SI count %d/%d at limit", action, currentSI, maxSI);
+			}
+			return;
+		}
+	}
+
 	// White-list validation
 	if (StrEqual(action, "spawn_si", false))
 	{
@@ -11236,6 +11458,24 @@ int _LLM_FindInfectedIdx(int entity)
 	{
 		if (g_LLM_Infected[i].entity == entity)
 			return i;
+	}
+	return -1;
+}
+
+// Find an idle (not LLM-controlled) special infected bot
+int _FindIdleSI(const char[] preferredClass)
+{
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i))
+			continue;
+		if (IsFakeClient(i))
+		{
+			// Check if this SI is already under LLM Infected control
+			int idx = _LLM_FindInfectedIdx(i);
+			if (idx == -1)  // Not controlled → can take over
+				return i;
+		}
 	}
 	return -1;
 }
