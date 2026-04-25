@@ -5384,9 +5384,20 @@ int CheckForItemsToScavenge(int iClient)
 
 	static ArrayList hItemList, hWpnWithAmmoList, hFoundMeleeList;
 
-	hItemList = new ArrayList();
-	hWpnWithAmmoList = new ArrayList();
-	hFoundMeleeList = new ArrayList();
+	if (hItemList == null)
+		hItemList = new ArrayList();
+	else
+		hItemList.Clear();
+
+	if (hWpnWithAmmoList == null)
+		hWpnWithAmmoList = new ArrayList();
+	else
+		hWpnWithAmmoList.Clear();
+
+	if (hFoundMeleeList == null)
+		hFoundMeleeList = new ArrayList();
+	else
+		hFoundMeleeList.Clear();
 
 	iItem = 0;
 	iItemBits = g_iCvar_ItemScavenge_Items;
@@ -6363,6 +6374,29 @@ public void OnMapEnd()
 
 void CreateEntityArrayLists()
 {
+	// Delete old handles to prevent leaks on map change
+	delete g_hMeleeList;
+	delete g_hPistolList;
+	delete g_hSMGList;
+	delete g_hShotgunT1List;
+	delete g_hShotgunT2List;
+	delete g_hAssaultRifleList;
+	delete g_hSniperRifleList;
+	delete g_hTier3List;
+	delete g_hAmmopileList;
+	delete g_hUpgradePackList;
+	delete g_hLaserSightList;
+	delete g_hFirstAidKitList;
+	delete g_hDefibrillatorList;
+	delete g_hPainPillsList;
+	delete g_hAdrenalineList;
+	delete g_hGrenadeList;
+	delete g_hDeployedAmmoPacks;
+	delete g_hForbiddenItemList;
+	delete g_hWitchList;
+	delete g_hBadPathEntities;
+	delete g_hWeaponsToCheckLater;
+
 	g_hMeleeList 			= new ArrayList();
 	g_hPistolList 			= new ArrayList();
 	g_hSMGList 				= new ArrayList();
@@ -6431,6 +6465,7 @@ void ClearHashMaps()
 
 void InitItemFlagMap()
 {
+	delete g_hItemFlagMap;
 	g_hItemFlagMap = CreateTrie();
 	g_hItemFlagMap.SetValue("weapon_melee"			, FLAG_WEAPON | FLAG_MELEE );
 	g_hItemFlagMap.SetValue("weapon_chainsaw"		, FLAG_WEAPON | FLAG_MELEE | FLAG_CHAINSAW);
@@ -6476,6 +6511,7 @@ void InitItemFlagMap()
 
 void InitMeleeIDs()
 {
+	delete g_hMeleeIDs;
 	g_hMeleeIDs = CreateTrie();
 	int iTable = FindStringTable("meleeweapons");
 	
@@ -6539,6 +6575,7 @@ void InitMeleePrefs()
 
 void InitCheckCases()
 {
+	delete g_hCheckCases;
 	g_hCheckCases = CreateTrie();
 	g_hCheckCases.SetValue("witch", 1 );
 	g_hCheckCases.SetValue("weapon_ammo_spawn", 2 );
@@ -6692,6 +6729,7 @@ void InitWeaponAndTierMap()
 	g_bIsSemiAuto[L4D2WeaponId_Molotov] = true;
 	g_bIsSemiAuto[L4D2WeaponId_Vomitjar] = true;
 	
+	delete g_hWeaponMap;
 	g_hWeaponMap = CreateTrie();
 	
 	for (int i = 0; i < 56; i++) // L4D2WeaponId_MAX is 56
