@@ -664,6 +664,17 @@ static float g_fBot_MovePos_Tolerance[MAXSURVIVORS+1];
 static bool g_bBot_MovePos_IgnoreDamaging[MAXSURVIVORS+1];
 static char g_sBot_MovePos_Name[MAXSURVIVORS+1][64];
 
+// Progress monitoring: detect unreachable targets (stuck protection)
+static float g_fBot_MovePos_LastProgressTime[MAXSURVIVORS+1]; // Last time bot made progress toward target
+static float g_fBot_MovePos_LastDist[MAXSURVIVORS+1]; // Last measured distance to target
+static int g_iBot_MovePos_StuckCount[MAXSURVIVORS+1]; // Consecutive stuck detections
+
+// Phase-level failure counters (abandon after N failures)
+static int g_iPhase_FormationFails[MAXSURVIVORS+1]; // Formation position unreachable count
+static int g_iPhase_RetreatFails[MAXSURVIVORS+1]; // Retreat position unreachable count
+static float g_fPhase_FormationCooldown; // Cooldown after formation failures
+static float g_fPhase_RetreatCooldown[MAXSURVIVORS+1]; // Cooldown after retreat failures
+
 static int g_iBot_NearbyFriends[MAXSURVIVORS+1];
 static int g_iBot_NearbyInfectedCount[MAXSURVIVORS+1]; 
 static int g_iBot_NearestInfectedCount[MAXSURVIVORS+1]; 
@@ -706,12 +717,19 @@ static int g_iButtonSeqStep[MAXSURVIVORS+1];
 
 // --------- Phase1: Environment hazard avoidance ---------
 static float g_fHazardNextCheck[MAXSURVIVORS+1];
+static int g_iHazardFallConfirm[MAXSURVIVORS+1]; // Consecutive fall detection count for confirmation
 
 // --------- Phase1: Crescendo event response ---------
 static bool g_bCrescendoActive = false;
 static float g_fCrescendoStartTime = 0.0;
 static float g_fCrescendoLastHordeTime = 0.0;
 static int g_iCrescendoCommonCount = 0;
+
+// Phase fix: Track whether survivors have left the starting saferoom
+static bool g_bSurvivorsLeftSafeArea = false;
+
+// Phase 1-3 master enable/disable switch (default OFF for safety)
+ConVar g_hCvar_PhaseEnabled;
 
 // --------- Phase4: Failure tracking ---------
 #define FAIL_UNKNOWN       0
@@ -1103,6 +1121,8 @@ void CreateAndHookConVars()
 
 	g_hCvar_ImprovedMelee_ChainsawLimit 			= CreateConVar("ib_melee_chainsaw_limit", "1", "The total number of chainsaws allowed on the team. <0: Bots never use chainsaw>", FCVAR_NOTIFY, true, 0.0);
 	g_hCvar_ImprovedMelee_SwitchCount2 				= CreateConVar("ib_melee_chainsaw_switch_count", "7", "The nearby infected count required for bot to switch to chainsaw.", FCVAR_NOTIFY, true, 1.0);
+
+	g_hCvar_PhaseEnabled							= CreateConVar("ib_phase_enabled", "1", "Enable Phase 1-3 advanced behaviors (0=disabled, 1=enabled). Set to 0 to restore vanilla bot navigation.", FCVAR_NOTIFY, true, 0.0, true, 1.0);
 
 	g_hCvar_TargetSelection_Enabled					= CreateConVar("ib_targeting_enabled", "1", "Enables survivor bots' improved target selection.", FCVAR_NOTIFY, true, 0.0, true, 1.0);
 	g_hCvar_TargetSelection_ShootRange				= CreateConVar("ib_targeting_range", "1750", "Range at which target need to be for bots to start firing at it.", FCVAR_NOTIFY, true, 0.0);
@@ -1763,6 +1783,8 @@ void ResetDataOnRoundChange()
 {
 	g_iBotProcessing_ProcessedCount = 0;
 	g_fBotProcessing_NextProcessTime = (GetGameTime() + g_fCvar_NextProcessTime);
+
+	g_bSurvivorsLeftSafeArea = false; // Reset safe area flag on round change
 
 	g_fBot_Grenade_NextThrowTime = g_fBot_Grenade_NextThrowTime_Molotov = (GetGameTime() + 5.0);
 
@@ -2725,7 +2747,8 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 		}
 	}
 
-	// Stuck detection: if bot hasn't moved >10 units in 3 seconds, try to escape
+	// Stuck detection: if bot hasn't moved >10 units in 5 seconds, try to escape
+	// IMPROVED: Increased threshold to 5s, added jump cooldown, and limit retries
 	{
 		float fCurPos[3];
 		GetClientAbsOrigin(iClient, fCurPos);
@@ -2734,17 +2757,30 @@ public Action OnPlayerRunCmd(int iClient, int &iButtons, int &iImpulse, float fV
 
 		if (fMoveDist < 100.0) // squared: 10 units
 		{
-			if (g_fBot_LastMoveTime[iClient] > 0.0 && fNow - g_fBot_LastMoveTime[iClient] > 3.0)
+			if (g_fBot_LastMoveTime[iClient] > 0.0 && fNow - g_fBot_LastMoveTime[iClient] > 5.0)
 			{
-				// Anti-stuck: jump and move in a random direction
-				iButtons |= IN_JUMP;
-				float fRandAngle = GetRandomFloat(-180.0, 180.0);
-				float fEscapeDir[3];
-				fEscapeDir[0] = Cosine(DegToRad(fRandAngle)) * 200.0 + fCurPos[0];
-				fEscapeDir[1] = Sine(DegToRad(fRandAngle)) * 200.0 + fCurPos[1];
-				fEscapeDir[2] = fCurPos[2];
-				SetMoveToPosition(iClient, fEscapeDir, 3, "Unstuck", 0.0, 5.0, true, true);
-				g_fBot_LastMoveTime[iClient] = fNow;
+				// Before jumping, first try clearing any active MoveToPosition
+				// The root cause is often an unreachable move target
+				if (IsValidVector(g_fBot_MovePos_Position[iClient]))
+				{
+					// Clear the unreachable target first — may fix stuck without jumping
+					ClearMoveToPosition(iClient);
+					g_fBot_MovePos_LastDist[iClient] = 0.0;
+					g_fBot_MovePos_LastProgressTime[iClient] = 0.0;
+					g_fBot_LastMoveTime[iClient] = fNow; // Give bot time to recover
+				}
+				else
+				{
+					// No active move target but still stuck — use jump escape
+					iButtons |= IN_JUMP;
+					float fRandAngle = GetRandomFloat(-180.0, 180.0);
+					float fEscapeDir[3];
+					fEscapeDir[0] = Cosine(DegToRad(fRandAngle)) * 200.0 + fCurPos[0];
+					fEscapeDir[1] = Sine(DegToRad(fRandAngle)) * 200.0 + fCurPos[1];
+					fEscapeDir[2] = fCurPos[2];
+					SetMoveToPosition(iClient, fEscapeDir, 3, "Unstuck", 0.0, 5.0, true, true);
+					g_fBot_LastMoveTime[iClient] = fNow;
+				}
 			}
 		}
 		else
@@ -3312,12 +3348,30 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 	}
 
+	// ============ Saferoom Guard: Skip Phase 1-3 behaviors in starting saferoom ============
+	// Detect if any human player has left the safe area
+	if (!g_bSurvivorsLeftSafeArea)
+	{
+		for (int iSafe = 1; iSafe <= MaxClients; iSafe++)
+		{
+			if (!IsClientInGame(iSafe) || !IsClientSurvivor(iSafe) || !IsPlayerAlive(iSafe))
+				continue;
+			if (!L4D_IsInFirstCheckpoint(iSafe))
+			{
+				g_bSurvivorsLeftSafeArea = true;
+				break;
+			}
+		}
+	}
+
+	bool bInStartingSaferoom = !g_bSurvivorsLeftSafeArea && L4D_IsInFirstCheckpoint(iClient);
+
 	// ============ Phase1: Environment Hazard Avoidance (highest priority) ============
-	if (Phase1_AvoidEnvironmentalHazards(iClient, iButtons))
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom && Phase1_AvoidEnvironmentalHazards(iClient, iButtons))
 		return iAliveBots;
 
 	// ============ Phase1: Crescendo Defense ============
-	if (g_bCrescendoActive && !g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient])
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && g_bCrescendoActive && !g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient])
 	{
 		if (Phase1_CrescendoDefense(iClient, iButtons))
 			return iAliveBots;
@@ -3438,12 +3492,38 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		float fMoveTolerance = g_fBot_MovePos_Tolerance[iClient];
 		float fMoveDuration = g_fBot_MovePos_Duration[iClient];
 
+		// PROGRESS MONITORING: Detect if bot is making progress toward target
+		// If bot hasn't gotten closer in 5 seconds, target is likely unreachable
+		{
+			float fPrevDist = g_fBot_MovePos_LastDist[iClient];
+			if (fPrevDist > 0.0 && fMoveDist < fPrevDist - 400.0) // Made progress (>20 units closer, squared)
+			{
+				g_fBot_MovePos_LastProgressTime[iClient] = fCurTime;
+				g_iBot_MovePos_StuckCount[iClient] = 0;
+			}
+			else if (g_fBot_MovePos_LastProgressTime[iClient] > 0.0 && fCurTime - g_fBot_MovePos_LastProgressTime[iClient] > 5.0)
+			{
+				// No progress for 5 seconds — target is unreachable, abandon it
+				g_iBot_MovePos_StuckCount[iClient]++;
+				ClearMoveToPosition(iClient);
+				g_fBot_MovePos_LastDist[iClient] = 0.0;
+				g_fBot_MovePos_LastProgressTime[iClient] = 0.0;
+				// Signal to Phase failure counters
+				g_iPhase_FormationFails[iClient]++;
+			}
+			g_fBot_MovePos_LastDist[iClient] = fMoveDist;
+			if (g_fBot_MovePos_LastProgressTime[iClient] <= 0.0)
+				g_fBot_MovePos_LastProgressTime[iClient] = fCurTime;
+		}
+
 		if (fCurTime > fMoveDuration || fMoveTolerance >= 0.0 && fMoveDist <= (fMoveTolerance*fMoveTolerance) || 
 			!g_bBot_MovePos_IgnoreDamaging[iClient] && LBI_IsDamagingPosition(fMovePos) || !LBI_IsReachablePosition(iClient, fMovePos, false) || 
 			iPinnedFriend && L4D_GetPinnedInfected(iPinnedFriend) && L4D2_GetPlayerZombieClass(L4D_GetPinnedInfected(iPinnedFriend)) != L4D2ZombieClass_Smoker
 		)
 		{
 			ClearMoveToPosition(iClient);
+			g_fBot_MovePos_LastDist[iClient] = 0.0;
+			g_fBot_MovePos_LastProgressTime[iClient] = 0.0;
 		}
 		else if (fCurTime > g_fBot_NextMoveCommandTime[iClient])
 		{
@@ -4086,20 +4166,20 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 	}
 
 	// ============ Phase1: Button Sequence State Machine ============
-	if (!g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient] && g_iButtonSeqState[iClient] != BTN_SEQ_IDLE)
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient] && g_iButtonSeqState[iClient] != BTN_SEQ_IDLE)
 	{
 		Phase1_HandleButtonSequence(iClient, iButtons, fCurTime);
 	}
 
 	// ============ Phase1: Scavenge (Gascan Pour) ============
-	if (!g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient] && !L4D_IsPlayerPinned(iClient)
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient] && !L4D_IsPlayerPinned(iClient)
 		&& !IsSurvivorBotBlindedByVomit(iClient))
 	{
 		Phase1_HandleScavenge(iClient, iButtons, fCurTime);
 	}
 
 	int iScavengeItem = g_iBot_ScavengeItem[iClient];
-	if (iScavengeItem)
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && iScavengeItem)
 	{
 		if (!L4D_IsValidEnt(iScavengeItem) || 1 <= GetEntityOwner(iScavengeItem) <= MaxClients)
 		{
@@ -4174,21 +4254,28 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 	}
 
 	// ============ Phase2: Smart Retreat (highest priority, affects team behavior) ============
-	Phase2_SmartRetreat(iClient);
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
+		Phase2_SmartRetreat(iClient);
 
 	// ============ Phase2: Focus Fire Protocol (Tank priority) ============
-	Phase2_FocusFireProtocol(iClient);
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
+		Phase2_FocusFireProtocol(iClient);
 
 	// ============ Phase2: Formation Manager (regular, lower than combat) ============
-	Phase2_FormationManager(iClient);
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
+		Phase2_FormationManager(iClient);
 
 	// ============ Phase2: Resource Allocation (runs alongside) ============
-	Phase2_ResourceAllocation(iClient);
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
+		Phase2_ResourceAllocation(iClient);
 
 	// ============ Phase3: Special Infected Kill Skills ============
-	if (Phase3_HunterCounterSkill(iClient)) return iAliveBots; // Hunter handling highest priority
-	Phase3_TankRockDodge(iClient); // Rock dodge (non-blocking)
-	Phase3_WitchControl(iClient); // Witch handling
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
+	{
+		if (Phase3_HunterCounterSkill(iClient)) return iAliveBots; // Hunter handling highest priority
+		Phase3_TankRockDodge(iClient); // Rock dodge (non-blocking)
+		Phase3_WitchControl(iClient); // Witch handling
+	}
 
 	return iAliveBots;
 }
@@ -12598,10 +12685,10 @@ bool Phase1_AvoidEnvironmentalHazards(int iClient, int &iButtons)
 		float fForward[3];
 		GetAngleVectors(fEyeAng, fForward, NULL_VECTOR, NULL_VECTOR);
 
-		// Check 200 units ahead
+		// Check 100 units ahead (reduced from 200 to lower false positives on slopes/stairs)
 		float fAheadPos[3];
-		fAheadPos[0] = fMyPos[0] + fForward[0] * 200.0;
-		fAheadPos[1] = fMyPos[1] + fForward[1] * 200.0;
+		fAheadPos[0] = fMyPos[0] + fForward[0] * 100.0;
+		fAheadPos[1] = fMyPos[1] + fForward[1] * 100.0;
 		fAheadPos[2] = fMyPos[2];
 
 		// Trace downward from ahead position
@@ -12616,14 +12703,24 @@ bool Phase1_AvoidEnvironmentalHazards(int iClient, int &iButtons)
 
 		if (!bHitGround)
 		{
-			// No ground ahead — stop moving forward, find alternate path
-			float fSafePos[3];
-			fSafePos[0] = fMyPos[0] - fForward[0] * 100.0;
-			fSafePos[1] = fMyPos[1] - fForward[1] * 100.0;
-			fSafePos[2] = fMyPos[2];
-			ClearMoveToPosition(iClient);
-			SetMoveToPosition(iClient, fSafePos, 5, "AvoidFall", 0.0, 5.0, true, true);
-			return true;
+			// Require 3 consecutive detections to confirm (prevents single-tick false positives)
+			g_iHazardFallConfirm[iClient]++;
+			if (g_iHazardFallConfirm[iClient] >= 3)
+			{
+				// Confirmed: no ground ahead — stop moving forward, find alternate path
+				float fSafePos[3];
+				fSafePos[0] = fMyPos[0] - fForward[0] * 100.0;
+				fSafePos[1] = fMyPos[1] - fForward[1] * 100.0;
+				fSafePos[2] = fMyPos[2];
+				ClearMoveToPosition(iClient);
+				SetMoveToPosition(iClient, fSafePos, 5, "AvoidFall", 0.0, 5.0, true, true);
+				g_iHazardFallConfirm[iClient] = 0;
+				return true;
+			}
+		}
+		else
+		{
+			g_iHazardFallConfirm[iClient] = 0; // Reset on safe detection
 		}
 	}
 
@@ -12693,9 +12790,9 @@ bool Phase1_AvoidEnvironmentalHazards(int iClient, int &iButtons)
 			GetEntPropVector(iAlarm, Prop_Send, "m_vecOrigin", fAlarmPos);
 			float fDist = GetVectorDistance(fMyPos, fAlarmPos, true);
 
-			if (fDist < 90000.0) // 300 units
+			if (fDist < 22500.0) // 150 units (reduced from 300 to avoid excessive detours)
 			{
-				// Detour around alarm car
+				// Detour around alarm car — validate target is reachable
 				float fAwayDir[3];
 				SubtractVectors(fMyPos, fAlarmPos, fAwayDir);
 				NormalizeVector(fAwayDir, fAwayDir);
@@ -12705,8 +12802,24 @@ bool Phase1_AvoidEnvironmentalHazards(int iClient, int &iButtons)
 				fDetourPos[0] = fMyPos[0] + fAwayDir[1] * 350.0;
 				fDetourPos[1] = fMyPos[1] - fAwayDir[0] * 350.0;
 				fDetourPos[2] = fMyPos[2];
-				SetMoveToPosition(iClient, fDetourPos, 3, "AvoidAlarmCar", 0.0, 20.0, true, true);
-				return true;
+
+				// REACHABILITY: Only set detour if position is on valid nav
+				int iDetourNav = L4D_GetNearestNavArea(fDetourPos, 120.0, true, true, false);
+				if (iDetourNav)
+				{
+					SetMoveToPosition(iClient, fDetourPos, 3, "AvoidAlarmCar", 0.0, 20.0, true, true);
+					return true;
+				}
+				// Plan B: try opposite perpendicular direction
+				fDetourPos[0] = fMyPos[0] - fAwayDir[1] * 350.0;
+				fDetourPos[1] = fMyPos[1] + fAwayDir[0] * 350.0;
+				iDetourNav = L4D_GetNearestNavArea(fDetourPos, 120.0, true, true, false);
+				if (iDetourNav)
+				{
+					SetMoveToPosition(iClient, fDetourPos, 3, "AvoidAlarmCar", 0.0, 20.0, true, true);
+					return true;
+				}
+				// Both directions unreachable — don't force detour, let bot follow team
 			}
 		}
 	}
@@ -12742,7 +12855,18 @@ bool Phase1_AvoidEnvironmentalHazards(int iClient, int &iButtons)
 
 public bool Phase1_TraceFilter_NoPlayers(int entity, int contentsMask, any data)
 {
-	return (entity != data && entity > MaxClients);
+	// Filter out players AND small props (furniture, tables, etc.)
+	if (entity <= 0 || entity == data || entity <= MaxClients)
+		return false;
+
+	// Allow world (entity 0 is handled above, but worldspawn is entity 0)
+	// For non-player entities, filter out prop_dynamic and prop_physics (furniture)
+	char sClassname[32];
+	GetEntityClassname(entity, sClassname, sizeof(sClassname));
+	if (StrContains(sClassname, "prop_dynamic") != -1 || StrContains(sClassname, "prop_physics") != -1)
+		return false; // Ignore furniture/props so trace passes through to find actual ground
+
+	return true;
 }
 
 // ==================== Phase1 Sub4: Crescendo Event Response ====================
@@ -13163,6 +13287,30 @@ void Phase2_FormationManager(int iClient)
 {
 	float fCurTime = GetGameTime();
 
+	// ROOT CAUSE FIX: Only activate formation during combat scenarios
+	// Without this guard, formation constantly sets unreachable positions,
+	// causing bots to get stuck → anti-stuck triggers IN_JUMP → endless jumping
+	bool bShouldFormation = g_bCrescendoActive || g_bFocusFireActive;
+	if (!bShouldFormation)
+	{
+		// Clear any stale formation positions when not in combat
+		g_fAssignedPos[iClient][0] = 0.0;
+		g_fAssignedPos[iClient][1] = 0.0;
+		g_fAssignedPos[iClient][2] = 0.0;
+		g_iPhase_FormationFails[iClient] = 0; // Reset failures when not active
+		return;
+	}
+
+	// FAILURE LIMIT: If bot failed to reach formation position 3+ times, cooldown 30 seconds
+	if (g_iPhase_FormationFails[iClient] >= 3)
+	{
+		if (fCurTime < g_fPhase_FormationCooldown)
+			return; // Still in cooldown, let bot follow naturally
+		// Cooldown expired, reset and try again
+		g_iPhase_FormationFails[iClient] = 0;
+	}
+	g_fPhase_FormationCooldown = fCurTime + 30.0;
+
 	// Only first bot processes formation update for the whole team
 	if (fCurTime - g_fFormationUpdateTime < 2.0)
 	{
@@ -13460,6 +13608,28 @@ void Phase2_MoveToFormationPos(int iClient)
 	// Only move if more than 80 units away from assigned position
 	if (fDist > 6400.0) // 80^2
 	{
+		// REACHABILITY CHECK: Verify target is on valid nav mesh and reachable
+		int iTargetNav = L4D_GetNearestNavArea(g_fAssignedPos[iClient], 120.0, true, true, false);
+		if (!iTargetNav)
+		{
+			// Target not on nav mesh — clear invalid position to prevent stuck loop
+			g_fAssignedPos[iClient][0] = 0.0;
+			g_fAssignedPos[iClient][1] = 0.0;
+			g_fAssignedPos[iClient][2] = 0.0;
+			return;
+		}
+
+		// Verify nav path exists from bot to target
+		int iBotNav = g_iClientNavArea[iClient];
+		if (iBotNav && !L4D2_NavAreaBuildPath(view_as<Address>(iBotNav), view_as<Address>(iTargetNav), 800.0, 2, false))
+		{
+			// No navigable path — clear position
+			g_fAssignedPos[iClient][0] = 0.0;
+			g_fAssignedPos[iClient][1] = 0.0;
+			g_fAssignedPos[iClient][2] = 0.0;
+			return;
+		}
+
 		SetMoveToPosition(iClient, g_fAssignedPos[iClient], 1, "Formation", 0.0, 50.0, true, false);
 	}
 }
@@ -13848,6 +14018,15 @@ void Phase2_ExecuteRetreat(int iClient)
 	if (g_bFocusFireActive && iClient == g_iKiteRunner)
 		return;
 
+	// FAILURE LIMIT: If retreat failed 3+ times, cooldown 20 seconds
+	float fCurTime = GetGameTime();
+	if (g_iPhase_RetreatFails[iClient] >= 3)
+	{
+		if (fCurTime < g_fPhase_RetreatCooldown[iClient])
+			return; // Cooldown active, follow normally
+		g_iPhase_RetreatFails[iClient] = 0;
+	}
+
 	// Find direction with highest flow distance (toward saferoom)
 	float fBotPos[3];
 	GetClientAbsOrigin(iClient, fBotPos);
@@ -13855,7 +14034,6 @@ void Phase2_ExecuteRetreat(int iClient)
 	float fBotFlow = L4D2Direct_GetFlowDistance(iClient);
 
 	// Try to move forward in flow (higher flow = closer to saferoom)
-	// Use forward direction as approximation
 	float fAngles[3];
 	GetClientEyeAngles(iClient, fAngles);
 	float fForward[3];
@@ -13880,7 +14058,18 @@ void Phase2_ExecuteRetreat(int iClient)
 
 		if (fTargetFlow > fBotFlow)
 		{
-			SetMoveToPosition(iClient, fNavCenter, 3, "Retreat", 0.0, 80.0, true, false);
+			// REACHABILITY CHECK: Verify bot can actually reach the retreat position
+			int iBotNav = g_iClientNavArea[iClient];
+			if (iBotNav && L4D2_NavAreaBuildPath(view_as<Address>(iBotNav), pNavAddr, 600.0, 2, false))
+			{
+				SetMoveToPosition(iClient, fNavCenter, 3, "Retreat", 0.0, 80.0, true, false);
+			}
+			else
+			{
+				// Unreachable retreat position — count failure
+				g_iPhase_RetreatFails[iClient]++;
+				g_fPhase_RetreatCooldown[iClient] = fCurTime + 20.0;
+			}
 		}
 	}
 }
