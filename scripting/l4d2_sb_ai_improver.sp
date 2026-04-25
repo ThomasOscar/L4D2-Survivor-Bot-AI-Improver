@@ -775,6 +775,16 @@ static int g_iTankRockEntity; // Flying rock entity
 static bool g_bWitchCrownAttempt[MAXPLAYERS+1]; // Attempting cr0wn
 static int g_iWitchCrownTarget[MAXPLAYERS+1]; // cr0wn target Witch
 
+// Phase 5.2: Comprehensive SI Rescue System
+static float g_fRescueScanTime[MAXPLAYERS+1];         // Last rescue scan time
+static int   g_iRescueFailCount[MAXPLAYERS+1];         // Consecutive rescue fail count
+static float g_fRescueFailResetTime[MAXPLAYERS+1];     // Time to reset fail counter
+
+// Phase 5.2: Prop carry/throw state
+static int   g_iBot_PropTarget[MAXPLAYERS+1];          // Prop entity bot wants to pick up
+static float g_fBot_PropScanTime[MAXPLAYERS+1];        // Last prop scan time
+static float g_fBot_PropThrowTime[MAXPLAYERS+1];       // Cooldown for throwing props
+
 // -------------------------
 
 #define VISION_CHECK_MAXDIST		16777216.0
