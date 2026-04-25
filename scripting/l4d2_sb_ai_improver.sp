@@ -678,6 +678,85 @@ static float g_fBot_LastMoveTime[MAXSURVIVORS+1];
 static int g_iBot_PressingButton[MAXSURVIVORS+1];
 static float g_fBot_ButtonPressStart[MAXSURVIVORS+1];
 
+// --------- Phase1: Scavenge (gascan pour) system ---------
+#define SCAV_IDLE           0
+#define SCAV_SEEKING_GASCAN 1
+#define SCAV_CARRYING       2
+#define SCAV_GOING_TO_POUR  3
+#define SCAV_POURING        4
+
+static int g_iScavengeState[MAXSURVIVORS+1];
+static int g_iScavengePourTarget[MAXSURVIVORS+1];
+static int g_iScavengeGascan[MAXSURVIVORS+1];
+static float g_fScavengeTimeout[MAXSURVIVORS+1];
+static float g_fScavengeNextScan[MAXSURVIVORS+1];
+
+// --------- Phase1: Button sequence state machine ---------
+#define BTN_SEQ_IDLE           0
+#define BTN_SEQ_SEARCHING      1
+#define BTN_SEQ_APPROACHING    2
+#define BTN_SEQ_PRESSING       3
+#define BTN_SEQ_WAITING_RESULT 4
+#define BTN_SEQ_NEXT_STEP      5
+
+static int g_iButtonSeqState[MAXSURVIVORS+1];
+static int g_iButtonSeqTarget[MAXSURVIVORS+1];
+static float g_fButtonSeqTimeout[MAXSURVIVORS+1];
+static int g_iButtonSeqStep[MAXSURVIVORS+1];
+
+// --------- Phase1: Environment hazard avoidance ---------
+static float g_fHazardNextCheck[MAXSURVIVORS+1];
+
+// --------- Phase1: Crescendo event response ---------
+static bool g_bCrescendoActive = false;
+static float g_fCrescendoStartTime = 0.0;
+static float g_fCrescendoLastHordeTime = 0.0;
+static int g_iCrescendoCommonCount = 0;
+
+// --------- Phase4: Failure tracking ---------
+#define FAIL_UNKNOWN       0
+#define FAIL_WIPE_BY_SI    1
+#define FAIL_WIPE_BY_TANK  2
+#define FAIL_WIPE_BY_WITCH 3
+#define FAIL_ENVIRONMENT   4
+#define FAIL_ATTRITION     5
+
+static int g_iLastDeathCause[MAXPLAYERS+1];
+static float g_fLastDownPos[MAXPLAYERS+1][3];
+static char g_sLastActions[MAXPLAYERS+1][512];
+static int g_iLastActionCount[MAXPLAYERS+1];
+static float g_fLastActionTime[MAXPLAYERS+1];
+
+// --------- Phase2: Tactical Cooperation ---------
+// Formation management
+static int g_iFormationType;  // 0=none, 1=column, 2=fan, 3=arc
+static float g_fFormationCenter[3];
+static float g_fAssignedPos[MAXPLAYERS+1][3];
+static float g_fFormationUpdateTime;
+
+// Focus fire
+static bool g_bFocusFireActive;
+static int g_iFocusFireTarget;
+static int g_iKiteRunner;
+static float g_fFocusFireLastCheck;
+
+// Smart retreat
+static bool g_bRetreatMode;
+static float g_fRetreatCheckTime;
+
+// --------- Phase3: Special Infected Kill Skills ---------
+// Hunter counter
+static float g_fHunterScanTime[MAXPLAYERS+1]; // Last Hunter scan time
+
+// Tank rock dodge
+static bool g_bTankThrowingRock[MAXPLAYERS+1]; // Tank is throwing rock
+static float g_fRockDodgeTime[MAXPLAYERS+1]; // Dodge cooldown
+static int g_iTankRockEntity; // Flying rock entity
+
+// Witch control
+static bool g_bWitchCrownAttempt[MAXPLAYERS+1]; // Attempting cr0wn
+static int g_iWitchCrownTarget[MAXPLAYERS+1]; // cr0wn target Witch
+
 // -------------------------
 
 #define VISION_CHECK_MAXDIST		16777216.0
@@ -1765,6 +1844,22 @@ void ResetClientPluginVariables(int iClient)
 	g_iBot_PressingButton[iClient] = 0;
 	g_fBot_ButtonPressStart[iClient] = 0.0;
 
+	// Phase1: Scavenge reset
+	g_iScavengeState[iClient] = SCAV_IDLE;
+	g_iScavengePourTarget[iClient] = 0;
+	g_iScavengeGascan[iClient] = 0;
+	g_fScavengeTimeout[iClient] = 0.0;
+	g_fScavengeNextScan[iClient] = 0.0;
+
+	// Phase1: Button sequence reset
+	g_iButtonSeqState[iClient] = BTN_SEQ_IDLE;
+	g_iButtonSeqTarget[iClient] = 0;
+	g_fButtonSeqTimeout[iClient] = 0.0;
+	g_iButtonSeqStep[iClient] = 0;
+
+	// Phase1: Hazard check reset
+	g_fHazardNextCheck[iClient] = 0.0;
+
 	for (int i = 0; i < MAXENTITIES; i++)
 	{
 		g_iBot_VisionMemory_State[iClient][0][i] = g_iBot_VisionMemory_State[iClient][1][i] = 0;
@@ -1825,6 +1920,9 @@ void Event_OnWeaponFire(Event hEvent, const char[] sName, bool bBroadcast)
 		g_fBot_PreventFireTime[iClient] = (GetGameTime() + GetRandomFloat(fMinDelay, fMaxDelay));
 	}
 	
+	// Phase4: Track action
+	Phase4_RecordAction(iClient, "shoot");
+
 	RequestFrame(NullifyAimPunch, iClient);
 }
 
@@ -1859,6 +1957,27 @@ void Event_OnPlayerDeath(Event hEvent, const char[] sName, bool bBroadcast)
 	{
 		g_iLLM_PlayerDeaths[iVictim]++;
 		g_iLLM_ChapDeaths[iVictim]++;
+
+		// Phase4: Record death position and cause (if not already set by incap)
+		float fDeathPos[3];
+		GetClientAbsOrigin(iVictim, fDeathPos);
+		g_fLastDownPos[iVictim][0] = fDeathPos[0];
+		g_fLastDownPos[iVictim][1] = fDeathPos[1];
+		g_fLastDownPos[iVictim][2] = fDeathPos[2];
+
+		if (g_iLastDeathCause[iVictim] == FAIL_UNKNOWN)
+		{
+			if (iAttacker > 0 && iAttacker <= MaxClients && IsClientInGame(iAttacker) && GetClientTeam(iAttacker) == 3)
+			{
+				int zc = view_as<int>(L4D2_GetPlayerZombieClass(iAttacker));
+				if (zc == view_as<int>(L4D2ZombieClass_Tank))
+					g_iLastDeathCause[iVictim] = FAIL_WIPE_BY_TANK;
+				else
+					g_iLastDeathCause[iVictim] = FAIL_WIPE_BY_SI;
+			}
+			else
+				g_iLastDeathCause[iVictim] = FAIL_ENVIRONMENT;
+		}
 	}
 
 	// LLM score: track common infected kills by survivor
@@ -1942,6 +2061,37 @@ void Event_OnIncap(Event hEvent, const char[] sName, bool bBroadcast)
 	{
 		g_iLLM_PlayerIncap[iClient]++;
 		g_iLLM_ChapIncaps[iClient]++;
+
+		// Phase4: Record incap position and cause
+		if (IsClientSurvivor(iClient))
+		{
+			float fPos[3];
+			GetClientAbsOrigin(iClient, fPos);
+			g_fLastDownPos[iClient][0] = fPos[0];
+			g_fLastDownPos[iClient][1] = fPos[1];
+			g_fLastDownPos[iClient][2] = fPos[2];
+
+			int incapAttIdx = GetClientOfUserId(hEvent.GetInt("attacker"));
+			char incapWpn[64];
+			hEvent.GetString("weapon", incapWpn, sizeof(incapWpn));
+
+			if (incapAttIdx > 0 && incapAttIdx <= MaxClients && IsClientInGame(incapAttIdx) && GetClientTeam(incapAttIdx) == 3)
+			{
+				int zClass = view_as<int>(L4D2_GetPlayerZombieClass(incapAttIdx));
+				if (zClass == view_as<int>(L4D2ZombieClass_Tank))
+					g_iLastDeathCause[iClient] = FAIL_WIPE_BY_TANK;
+				else if (StrEqual(incapWpn, "witch") || IsWitch(incapAttIdx))
+					g_iLastDeathCause[iClient] = FAIL_WIPE_BY_WITCH;
+				else
+					g_iLastDeathCause[iClient] = FAIL_WIPE_BY_SI;
+			}
+			else if (StrContains(incapWpn, "fall") != -1 || StrContains(incapWpn, "drown") != -1)
+				g_iLastDeathCause[iClient] = FAIL_ENVIRONMENT;
+			else if (incapAttIdx <= 0 || !IsClientInGame(incapAttIdx))
+				g_iLastDeathCause[iClient] = FAIL_ENVIRONMENT;
+			else
+				g_iLastDeathCause[iClient] = FAIL_ATTRITION;
+		}
 	}
 
 	// LLM: Send INCAP_EVENT via TCP
@@ -2041,6 +2191,10 @@ void Event_OnHealSuccess(Event hEvent, const char[] sName, bool bBroadcast)
 {
 	int subject = GetClientOfUserId(hEvent.GetInt("subject"));
 	int healer = GetClientOfUserId(hEvent.GetInt("userid"));
+
+	// Phase4: Track action
+	if (healer > 0 && healer <= MaxClients && IsClientInGame(healer))
+		Phase4_RecordAction(healer, "heal");
 	if (healer > 0 && healer <= MaxClients && IsClientInGame(healer) && subject != healer)
 	{
 		g_iLLM_PlayerHeal[healer]++;
@@ -2146,9 +2300,38 @@ void Event_OnFinaleWin(Event hEvent, const char[] sName, bool bBroadcast)
 
 void _LLM_SendChapterComplete(const char[] outcome)
 {
-	char msg[2048];
+	char msg[4096];
 	char botsJson[1536];
 	botsJson[0] = '\0';
+
+	// Phase4: Determine failure type before building message
+	int failType = FAIL_UNKNOWN;
+	char failStr[32];
+	failStr[0] = '\0';
+	char lastDownPosJson[128];
+	lastDownPosJson[0] = '\0';
+	char lastActionsStr[512];
+	lastActionsStr[0] = '\0';
+
+	if (!StrEqual(outcome, "success") && !StrEqual(outcome, "finale_victory"))
+	{
+		failType = Phase4_DetermineFailureType();
+		Phase4_GetFailureString(failType, failStr, sizeof(failStr));
+
+		// Find last downed survivor for position
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (!IsClientInGame(i) || GetClientTeam(i) != 2) continue;
+			if (g_fLastDownPos[i][0] != 0.0 || g_fLastDownPos[i][1] != 0.0)
+			{
+				Format(lastDownPosJson, sizeof(lastDownPosJson),
+					"{\\\"x\\\":%.1f,\\\"y\\\":%.1f,\\\"z\\\":%.1f}",
+					g_fLastDownPos[i][0], g_fLastDownPos[i][1], g_fLastDownPos[i][2]);
+				strcopy(lastActionsStr, sizeof(lastActionsStr), g_sLastActions[i]);
+				break;
+			}
+		}
+	}
 
 	bool first = true;
 	for (int i = 0; i < g_LLM_BotCount; i++)
@@ -2194,8 +2377,8 @@ void _LLM_SendChapterComplete(const char[] outcome)
 	}
 
 	Format(msg, sizeof(msg),
-		"CHAPTER_COMPLETE {\"chapter\":%d,\"outcome\":\"%s\",\"bots\":[%s]}\n",
-		g_iLLM_CurrentChapter, outcome, botsJson);
+		"CHAPTER_COMPLETE {\"chapter\":%d,\"outcome\":\"%s\",\"failure_type\":\"%s\",\"last_down_position\":\"%s\",\"last_actions\":\"%s\",\"bots\":[%s]}\n",
+		g_iLLM_CurrentChapter, outcome, failStr, lastDownPosJson, lastActionsStr, botsJson);
 
 	LLM_SocketSend(msg);
 	PrintToServer("[LLM] Chapter %d complete: %s (%d bots)", g_iLLM_CurrentChapter, outcome, g_LLM_BotCount);
@@ -2218,6 +2401,15 @@ void _LLM_SendChapterComplete(const char[] outcome)
 		g_iLLM_ChapMedkitsUsed[i] = 0;
 		g_iLLM_ChapPillsUsed[i] = 0;
 		g_iLLM_ChapRevives[i] = 0;
+
+		// Phase4: Reset failure tracking per chapter
+		g_iLastDeathCause[i] = FAIL_UNKNOWN;
+		g_fLastDownPos[i][0] = 0.0;
+		g_fLastDownPos[i][1] = 0.0;
+		g_fLastDownPos[i][2] = 0.0;
+		g_sLastActions[i][0] = '\0';
+		g_iLastActionCount[i] = 0;
+		g_fLastActionTime[i] = 0.0;
 	}
 }
 
@@ -2227,6 +2419,10 @@ void Event_OnPlayerUse(Event hEvent, const char[] sName, bool bBroadcast)
 	static int iClient, iEntity;
 	iClient = GetClientOfUserId(hEvent.GetInt("userid"));
 	iEntity = hEvent.GetInt("targetid");
+
+	// Phase4: Track action
+	if (iClient > 0 && iClient <= MaxClients && IsClientInGame(iClient))
+		Phase4_RecordAction(iClient, "use");
 	
 	g_iItem_Used[iEntity] |= (1 << (iClient - 1));
 	if (IsFakeClient(iClient) && iEntity == g_iBot_ScavengeItem[iClient] && g_iWeaponID[iEntity])
@@ -3116,6 +3312,17 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 	}
 
+	// ============ Phase1: Environment Hazard Avoidance (highest priority) ============
+	if (Phase1_AvoidEnvironmentalHazards(iClient, iButtons))
+		return iAliveBots;
+
+	// ============ Phase1: Crescendo Defense ============
+	if (g_bCrescendoActive && !g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient])
+	{
+		if (Phase1_CrescendoDefense(iClient, iButtons))
+			return iAliveBots;
+	}
+
 	// ============ 脱队紧急归队 ============
 	if (!g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient])
 	{
@@ -3878,6 +4085,19 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 	}
 
+	// ============ Phase1: Button Sequence State Machine ============
+	if (!g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient] && g_iButtonSeqState[iClient] != BTN_SEQ_IDLE)
+	{
+		Phase1_HandleButtonSequence(iClient, iButtons, fCurTime);
+	}
+
+	// ============ Phase1: Scavenge (Gascan Pour) ============
+	if (!g_iBot_TankTarget[iClient] && !g_iBot_PinnedFriend[iClient] && !L4D_IsPlayerPinned(iClient)
+		&& !IsSurvivorBotBlindedByVomit(iClient))
+	{
+		Phase1_HandleScavenge(iClient, iButtons, fCurTime);
+	}
+
 	int iScavengeItem = g_iBot_ScavengeItem[iClient];
 	if (iScavengeItem)
 	{
@@ -3952,6 +4172,23 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 			}
 		}
 	}
+
+	// ============ Phase2: Smart Retreat (highest priority, affects team behavior) ============
+	Phase2_SmartRetreat(iClient);
+
+	// ============ Phase2: Focus Fire Protocol (Tank priority) ============
+	Phase2_FocusFireProtocol(iClient);
+
+	// ============ Phase2: Formation Manager (regular, lower than combat) ============
+	Phase2_FormationManager(iClient);
+
+	// ============ Phase2: Resource Allocation (runs alongside) ============
+	Phase2_ResourceAllocation(iClient);
+
+	// ============ Phase3: Special Infected Kill Skills ============
+	if (Phase3_HunterCounterSkill(iClient)) return iAliveBots; // Hunter handling highest priority
+	Phase3_TankRockDodge(iClient); // Rock dodge (non-blocking)
+	Phase3_WitchControl(iClient); // Witch handling
 
 	return iAliveBots;
 }
@@ -5803,6 +6040,12 @@ public void OnEntityCreated(int iEntity, const char[] sClassname)
 	g_iWeaponID[iEntity] = 0;
 	g_iMeleeID[iEntity] = -1;
 	g_iItemFlags[iEntity] = 0;
+	
+	// Phase3: Detect tank rock projectile
+	if (StrEqual(sClassname, "tank_rock"))
+	{
+		g_iTankRockEntity = EntIndexToEntRef(iEntity);
+	}
 	
 	CheckEntityForStuff(iEntity, sClassname);
 }
@@ -8240,6 +8483,11 @@ void LLM_Init()
 	HookEvent("bot_player_replace", LLM_EventPlayerReplace);
 	HookEvent("player_team", LLM_EventPlayerTeam);
 
+	// Phase1: Crescendo event hooks
+	HookEvent("create_panic_event", Phase1_EventCrescendoStart);
+	HookEvent("triggered_car_alarm", Phase1_EventCrescendoStart);
+	HookEvent("panic_event_finished", Phase1_EventCrescendoEnd);
+
 	// Phase 5.2: Plugin discovery initialization
 	g_bHasSkillDetect = LibraryExists("skill_detect");
 	g_bHasWeaponHandling = LibraryExists("WeaponHandling");
@@ -8261,6 +8509,12 @@ void LLM_OnMapStart()
 	LLM_LoadTerrain();
 	LLM_Connect();
 	g_iLLM_EventCount = 0;
+
+	// Phase1: Reset crescendo state
+	g_bCrescendoActive = false;
+	g_fCrescendoStartTime = 0.0;
+	g_fCrescendoLastHordeTime = 0.0;
+	g_iCrescendoCommonCount = 0;
 	g_iLLM_EventIndex = 0;
 	for (int i = 0; i < LLM_RECENT_EVENTS_MAX; i++) g_fLLM_EventTime[i] = 0.0;
 	g_iLLM_TrackedBot = -1;
@@ -8286,6 +8540,18 @@ void LLM_OnMapStart()
 		g_iLLM_ChapCommonKills[i] = 0;
 	}
 	g_iLLM_CurrentChapter = 0;
+
+	// Phase4: Reset failure tracking
+	for (int j = 0; j <= MAXPLAYERS; j++)
+	{
+		g_iLastDeathCause[j] = FAIL_UNKNOWN;
+		g_fLastDownPos[j][0] = 0.0;
+		g_fLastDownPos[j][1] = 0.0;
+		g_fLastDownPos[j][2] = 0.0;
+		g_sLastActions[j][0] = '\0';
+		g_iLastActionCount[j] = 0;
+		g_fLastActionTime[j] = 0.0;
+	}
 
 	// Phase 5.2: Reset skill event counters
 	g_iSkillEvent_Skeets = 0;
@@ -11866,6 +12132,779 @@ void Phase51_WitchCrownBehavior(int iBot, int &iButtons)
 }
 
 // ============================================================
+// ============================================================
+// Phase 1: Map Mechanism Enhancement — 4 Subsystems
+// ============================================================
+
+// ==================== Phase1 Sub1: Scavenge (Gascan Pour) System ====================
+
+void Phase1_HandleScavenge(int iClient, int &iButtons, float fCurTime)
+{
+	// Check if bot is pinned/incap — interrupt scavenge
+	if (L4D_IsPlayerPinned(iClient) || L4D_IsPlayerIncapacitated(iClient))
+	{
+		g_iScavengeState[iClient] = SCAV_IDLE;
+		g_iScavengeGascan[iClient] = 0;
+		g_iScavengePourTarget[iClient] = 0;
+		return;
+	}
+
+	// Timeout protection: 30 seconds per scavenge cycle
+	if (g_iScavengeState[iClient] != SCAV_IDLE && fCurTime > g_fScavengeTimeout[iClient])
+	{
+		g_iScavengeState[iClient] = SCAV_IDLE;
+		g_iScavengeGascan[iClient] = 0;
+		g_iScavengePourTarget[iClient] = 0;
+		return;
+	}
+
+	switch (g_iScavengeState[iClient])
+	{
+		case SCAV_IDLE:
+		{
+			// Only scan periodically
+			if (fCurTime < g_fScavengeNextScan[iClient])
+				return;
+			g_fScavengeNextScan[iClient] = fCurTime + 3.0;
+
+			// Find a pour target first (generator, car, etc.)
+			int iPourTarget = Phase1_FindScavengePourTarget(iClient);
+			if (iPourTarget <= 0)
+				return;
+
+			g_iScavengePourTarget[iClient] = iPourTarget;
+			g_iScavengeState[iClient] = SCAV_SEEKING_GASCAN;
+			g_fScavengeTimeout[iClient] = fCurTime + 30.0;
+		}
+		case SCAV_SEEKING_GASCAN:
+		{
+			// Look for nearest weapon_gascan
+			int iGascan = Phase1_FindNearestGascan(iClient);
+			if (iGascan <= 0)
+			{
+				// No gascan found, go idle
+				g_iScavengeState[iClient] = SCAV_IDLE;
+				return;
+			}
+
+			g_iScavengeGascan[iClient] = iGascan;
+			float fGascanPos[3];
+			GetEntPropVector(iGascan, Prop_Send, "m_vecOrigin", fGascanPos);
+			float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fGascanPos, true);
+
+			if (fDist <= 4096.0) // 64 units, close enough to grab
+			{
+				SnapViewToPosition(iClient, fGascanPos);
+				iButtons |= IN_USE;
+				g_iScavengeState[iClient] = SCAV_CARRYING;
+			}
+			else if (fDist <= 1000000.0) // 1000 units max search range
+			{
+				SetMoveToPosition(iClient, fGascanPos, 2, "ScavGascan", 0.0, 60.0, true, true);
+			}
+			else
+			{
+				g_iScavengeState[iClient] = SCAV_IDLE;
+			}
+		}
+		case SCAV_CARRYING:
+		{
+			// Check if we actually have a gascan in hand
+			int iActiveWpn = L4D_GetPlayerCurrentWeapon(iClient);
+			if (iActiveWpn <= 0)
+			{
+				g_iScavengeState[iClient] = SCAV_SEEKING_GASCAN;
+				return;
+			}
+
+			char sWpnClass[64];
+			GetEntityClassname(iActiveWpn, sWpnClass, sizeof(sWpnClass));
+			if (StrContains(sWpnClass, "gascan") == -1)
+			{
+				// Don't have gascan, try to pick it up again
+				g_iScavengeState[iClient] = SCAV_SEEKING_GASCAN;
+				return;
+			}
+
+			g_iScavengeState[iClient] = SCAV_GOING_TO_POUR;
+		}
+		case SCAV_GOING_TO_POUR:
+		{
+			// Validate pour target
+			int iPourTarget = g_iScavengePourTarget[iClient];
+			if (!IsValidEntity(iPourTarget))
+			{
+				g_iScavengeState[iClient] = SCAV_IDLE;
+				return;
+			}
+
+			float fTargetPos[3];
+			GetEntPropVector(iPourTarget, Prop_Send, "m_vecOrigin", fTargetPos);
+			float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fTargetPos, true);
+
+			if (fDist <= 10000.0) // 100 units, close enough to pour
+			{
+				SnapViewToPosition(iClient, fTargetPos);
+				iButtons |= IN_ATTACK;
+				g_iScavengeState[iClient] = SCAV_POURING;
+			}
+			else
+			{
+				SetMoveToPosition(iClient, fTargetPos, 3, "ScavPour", 0.0, 80.0, true, true);
+			}
+		}
+		case SCAV_POURING:
+		{
+			// Check if gascan was consumed (no longer holding it)
+			int iActiveWpn = L4D_GetPlayerCurrentWeapon(iClient);
+			bool bStillHolding = false;
+			if (iActiveWpn > 0 && IsValidEntity(iActiveWpn))
+			{
+				char sWpnClass[64];
+				GetEntityClassname(iActiveWpn, sWpnClass, sizeof(sWpnClass));
+				bStillHolding = (StrContains(sWpnClass, "gascan") >= 0);
+			}
+
+			if (!bStillHolding)
+			{
+				// Pour complete or gascan dropped
+				g_iScavengeState[iClient] = SCAV_IDLE;
+				g_iScavengeGascan[iClient] = 0;
+				g_iScavengePourTarget[iClient] = 0;
+			}
+			else
+			{
+				// Keep pressing attack to pour
+				int iPourTarget = g_iScavengePourTarget[iClient];
+				if (IsValidEntity(iPourTarget))
+				{
+					float fTargetPos[3];
+					GetEntPropVector(iPourTarget, Prop_Send, "m_vecOrigin", fTargetPos);
+					SnapViewToPosition(iClient, fTargetPos);
+				}
+				iButtons |= IN_ATTACK;
+			}
+		}
+	}
+}
+
+int Phase1_FindScavengePourTarget(int iClient)
+{
+	// Scan for scavenge pour targets: point_prop_use_target, or prop_dynamic with generator/car keywords
+	int iBestTarget = -1;
+	float fBestDist = 4000000.0; // 2000 units max
+
+	// Check point_prop_use_target (official scavenge entities)
+	int iEnt = -1;
+	while ((iEnt = FindEntityByClassname(iEnt, "point_prop_use_target")) != INVALID_ENT_REFERENCE)
+	{
+		if (!IsValidEntity(iEnt)) continue;
+		float fPos[3];
+		GetEntPropVector(iEnt, Prop_Send, "m_vecOrigin", fPos);
+		float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fPos, true);
+		if (fDist < fBestDist)
+		{
+			fBestDist = fDist;
+			iBestTarget = iEnt;
+		}
+	}
+
+	// Also check prop_dynamic with generator/car model names
+	iEnt = -1;
+	while ((iEnt = FindEntityByClassname(iEnt, "prop_dynamic")) != INVALID_ENT_REFERENCE)
+	{
+		if (!IsValidEntity(iEnt)) continue;
+		char sModel[128];
+		GetEntPropString(iEnt, Prop_Data, "m_ModelName", sModel, sizeof(sModel));
+		if (StrContains(sModel, "generator") == -1 && StrContains(sModel, "car") == -1
+			&& StrContains(sModel, "fuel") == -1)
+			continue;
+
+		float fPos[3];
+		GetEntPropVector(iEnt, Prop_Send, "m_vecOrigin", fPos);
+		float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fPos, true);
+		if (fDist < fBestDist)
+		{
+			fBestDist = fDist;
+			iBestTarget = iEnt;
+		}
+	}
+
+	return iBestTarget;
+}
+
+int Phase1_FindNearestGascan(int iClient)
+{
+	int iBestGascan = -1;
+	float fBestDist = 1000000.0; // 1000 units
+
+	int iEnt = -1;
+	while ((iEnt = FindEntityByClassname(iEnt, "weapon_gascan")) != INVALID_ENT_REFERENCE)
+	{
+		if (!IsValidEntity(iEnt)) continue;
+
+		// Skip if already owned by someone
+		int iOwner = GetEntityOwner(iEnt);
+		if (1 <= iOwner <= MaxClients) continue;
+
+		float fPos[3];
+		GetEntPropVector(iEnt, Prop_Send, "m_vecOrigin", fPos);
+		float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fPos, true);
+		if (fDist < fBestDist)
+		{
+			fBestDist = fDist;
+			iBestGascan = iEnt;
+		}
+	}
+
+	return iBestGascan;
+}
+
+// ==================== Phase1 Sub2: Button Sequence State Machine ====================
+
+void Phase1_HandleButtonSequence(int iClient, int &iButtons, float fCurTime)
+{
+	// Timeout protection
+	if (fCurTime > g_fButtonSeqTimeout[iClient])
+	{
+		g_iButtonSeqState[iClient] = BTN_SEQ_IDLE;
+		g_iButtonSeqTarget[iClient] = 0;
+		g_iButtonSeqStep[iClient] = 0;
+		return;
+	}
+
+	switch (g_iButtonSeqState[iClient])
+	{
+		case BTN_SEQ_SEARCHING:
+		{
+			// Find the target button entity
+			int iTarget = g_iButtonSeqTarget[iClient];
+			if (!IsValidEntity(iTarget))
+			{
+				g_iButtonSeqState[iClient] = BTN_SEQ_IDLE;
+				return;
+			}
+			g_iButtonSeqState[iClient] = BTN_SEQ_APPROACHING;
+		}
+		case BTN_SEQ_APPROACHING:
+		{
+			int iTarget = g_iButtonSeqTarget[iClient];
+			if (!IsValidEntity(iTarget))
+			{
+				g_iButtonSeqState[iClient] = BTN_SEQ_IDLE;
+				return;
+			}
+
+			float fBtnPos[3];
+			GetEntPropVector(iTarget, Prop_Send, "m_vecOrigin", fBtnPos);
+			float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fBtnPos, true);
+
+			if (fDist <= 4096.0) // 64 units, close enough
+			{
+				g_iButtonSeqState[iClient] = BTN_SEQ_PRESSING;
+			}
+			else
+			{
+				SetMoveToPosition(iClient, fBtnPos, 3, "BtnSeqApproach", 0.0, 60.0, true, true);
+			}
+		}
+		case BTN_SEQ_PRESSING:
+		{
+			int iTarget = g_iButtonSeqTarget[iClient];
+			if (!IsValidEntity(iTarget))
+			{
+				g_iButtonSeqState[iClient] = BTN_SEQ_IDLE;
+				return;
+			}
+
+			float fBtnPos[3];
+			GetEntPropVector(iTarget, Prop_Send, "m_vecOrigin", fBtnPos);
+			SnapViewToPosition(iClient, fBtnPos);
+			iButtons |= IN_USE;
+			g_iButtonSeqState[iClient] = BTN_SEQ_WAITING_RESULT;
+		}
+		case BTN_SEQ_WAITING_RESULT:
+		{
+			// Wait for the mechanical result (elevator arriving, door opening, bridge lowering)
+			// Check for func_elevator / func_movelinear entities near the button
+			int iMover = Phase1_FindNearbyMover(iClient);
+			if (iMover > 0)
+			{
+				// Check if the mover is still in motion
+				float fVelocity[3];
+				GetEntPropVector(iMover, Prop_Data, "m_vecVelocity", fVelocity);
+				float fSpeed = GetVectorLength(fVelocity, true);
+
+				if (fSpeed < 1.0) // Mover has stopped
+				{
+					g_iButtonSeqState[iClient] = BTN_SEQ_NEXT_STEP;
+				}
+				// else: keep waiting, mover still moving
+			}
+			else
+			{
+				// No mover found, just wait 3 seconds then proceed
+				g_iButtonSeqState[iClient] = BTN_SEQ_NEXT_STEP;
+			}
+		}
+		case BTN_SEQ_NEXT_STEP:
+		{
+			g_iButtonSeqStep[iClient]++;
+
+			// Look for next button in sequence
+			int iNextBtn = Phase1_FindNextSequenceButton(iClient, g_iButtonSeqStep[iClient]);
+			if (iNextBtn > 0)
+			{
+				g_iButtonSeqTarget[iClient] = iNextBtn;
+				g_iButtonSeqState[iClient] = BTN_SEQ_APPROACHING;
+				g_fButtonSeqTimeout[iClient] = fCurTime + 20.0;
+			}
+			else
+			{
+				// Sequence complete
+				g_iButtonSeqState[iClient] = BTN_SEQ_IDLE;
+				g_iButtonSeqTarget[iClient] = 0;
+				g_iButtonSeqStep[iClient] = 0;
+			}
+		}
+	}
+}
+
+int Phase1_FindNearbyMover(int iClient)
+{
+	// Search for func_elevator or func_movelinear within 500 units
+	char sClassNames[][] = { "func_elevator", "func_movelinear" };
+	float fBestDist = 250000.0; // 500 units
+	int iBest = -1;
+
+	for (int c = 0; c < sizeof(sClassNames); c++)
+	{
+		int iEnt = -1;
+		while ((iEnt = FindEntityByClassname(iEnt, sClassNames[c])) != INVALID_ENT_REFERENCE)
+		{
+			if (!IsValidEntity(iEnt)) continue;
+			float fPos[3];
+			GetEntPropVector(iEnt, Prop_Send, "m_vecOrigin", fPos);
+			float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fPos, true);
+			if (fDist < fBestDist)
+			{
+				fBestDist = fDist;
+				iBest = iEnt;
+			}
+		}
+	}
+
+	return iBest;
+}
+
+int Phase1_FindNextSequenceButton(int iClient, int iStep)
+{
+	// Find the next func_button in sequence based on map and step
+	// For multi-button maps, look for unlocked buttons near the player
+	char mapName[128];
+	GetCurrentMap(mapName, sizeof(mapName));
+
+	// For elevators (c1m1, c1m4), look for buttons on different floors
+	// For bridges (c5m5), look for the bridge control
+	// Generic: find next unlocked button within range
+	int iBestButton = -1;
+	float fBestDist = 640000.0; // 800 units
+
+	int iEnt = -1;
+	while ((iEnt = FindEntityByClassname(iEnt, "func_button")) != INVALID_ENT_REFERENCE)
+	{
+		if (!IsValidEntity(iEnt)) continue;
+
+		// Skip locked buttons
+		int iLocked = GetEntProp(iEnt, Prop_Data, "m_bLocked");
+		if (iLocked) continue;
+
+		float fPos[3];
+		GetEntPropVector(iEnt, Prop_Send, "m_vecOrigin", fPos);
+		float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fPos, true);
+		if (fDist < fBestDist)
+		{
+			fBestDist = fDist;
+			iBestButton = iEnt;
+		}
+	}
+
+	return iBestButton;
+}
+
+// ==================== Phase1 Sub3: Environment Hazard Avoidance ====================
+
+bool Phase1_AvoidEnvironmentalHazards(int iClient, int &iButtons)
+{
+	float fCurTime = GetGameTime();
+
+	// Throttle: check every 0.3 seconds to reduce overhead
+	if (fCurTime < g_fHazardNextCheck[iClient])
+		return false;
+	g_fHazardNextCheck[iClient] = fCurTime + 0.3;
+
+	// Skip if incapacitated or pinned
+	if (L4D_IsPlayerIncapacitated(iClient) || L4D_IsPlayerPinned(iClient))
+		return false;
+
+	float fMyPos[3];
+	GetClientAbsOrigin(iClient, fMyPos);
+
+	// --- 1. Fall detection: trace forward+down to check for ground ---
+	{
+		float fEyeAng[3];
+		GetClientEyeAngles(iClient, fEyeAng);
+		fEyeAng[0] = 0.0; // flatten pitch
+		fEyeAng[2] = 0.0;
+
+		float fForward[3];
+		GetAngleVectors(fEyeAng, fForward, NULL_VECTOR, NULL_VECTOR);
+
+		// Check 200 units ahead
+		float fAheadPos[3];
+		fAheadPos[0] = fMyPos[0] + fForward[0] * 200.0;
+		fAheadPos[1] = fMyPos[1] + fForward[1] * 200.0;
+		fAheadPos[2] = fMyPos[2];
+
+		// Trace downward from ahead position
+		float fDownPos[3];
+		fDownPos[0] = fAheadPos[0];
+		fDownPos[1] = fAheadPos[1];
+		fDownPos[2] = fAheadPos[2] - 300.0;
+
+		Handle hTrace = TR_TraceRayFilterEx(fAheadPos, fDownPos, MASK_PLAYERSOLID, RayType_EndPoint, Phase1_TraceFilter_NoPlayers, iClient);
+		bool bHitGround = TR_DidHit(hTrace);
+		delete hTrace;
+
+		if (!bHitGround)
+		{
+			// No ground ahead — stop moving forward, find alternate path
+			float fSafePos[3];
+			fSafePos[0] = fMyPos[0] - fForward[0] * 100.0;
+			fSafePos[1] = fMyPos[1] - fForward[1] * 100.0;
+			fSafePos[2] = fMyPos[2];
+			ClearMoveToPosition(iClient);
+			SetMoveToPosition(iClient, fSafePos, 5, "AvoidFall", 0.0, 5.0, true, true);
+			return true;
+		}
+	}
+
+	// --- 2. Deep water detection ---
+	{
+		int iWaterLevel = GetEntProp(iClient, Prop_Data, "m_nWaterLevel");
+		if (iWaterLevel >= 3) // fully submerged
+		{
+			// Try to find non-water path
+			float fEscapePos[3], fPathPos[3];
+			for (int i = 0; i < 8; i++)
+			{
+				LBI_TryGetPathableLocationWithin(iClient, 200.0 + (50.0 * i), fPathPos);
+				if (!IsValidVector(fPathPos)) continue;
+
+				// Check if this position is above water
+				if (fPathPos[2] > fMyPos[2] + 30.0)
+				{
+					fEscapePos = fPathPos;
+					break;
+				}
+			}
+
+			if (IsValidVector(fEscapePos))
+			{
+				ClearMoveToPosition(iClient);
+				SetMoveToPosition(iClient, fEscapePos, 4, "EscapeWater", 0.0, 10.0, true, true);
+				return true;
+			}
+		}
+	}
+
+	// --- 3. Fire/inferno detection ---
+	{
+		int iFlame = -1;
+		while ((iFlame = FindEntityByClassname(iFlame, "inferno")) != INVALID_ENT_REFERENCE)
+		{
+			if (!IsValidEntity(iFlame)) continue;
+			float fFlamePos[3];
+			GetEntPropVector(iFlame, Prop_Send, "m_vecOrigin", fFlamePos);
+			float fDist = GetVectorDistance(fMyPos, fFlamePos, true);
+
+			if (fDist < 40000.0) // 200 units
+			{
+				// Move away from fire
+				float fAwayDir[3];
+				SubtractVectors(fMyPos, fFlamePos, fAwayDir);
+				NormalizeVector(fAwayDir, fAwayDir);
+				float fEscapePos[3];
+				fEscapePos[0] = fMyPos[0] + fAwayDir[0] * 250.0;
+				fEscapePos[1] = fMyPos[1] + fAwayDir[1] * 250.0;
+				fEscapePos[2] = fMyPos[2];
+				ClearMoveToPosition(iClient);
+				SetMoveToPosition(iClient, fEscapePos, 4, "AvoidFire", 0.0, 5.0, true, true);
+				return true;
+			}
+		}
+	}
+
+	// --- 4. Alarm car detection ---
+	{
+		int iAlarm = -1;
+		while ((iAlarm = FindEntityByClassname(iAlarm, "prop_car_alarm")) != INVALID_ENT_REFERENCE)
+		{
+			if (!IsValidEntity(iAlarm)) continue;
+			float fAlarmPos[3];
+			GetEntPropVector(iAlarm, Prop_Send, "m_vecOrigin", fAlarmPos);
+			float fDist = GetVectorDistance(fMyPos, fAlarmPos, true);
+
+			if (fDist < 90000.0) // 300 units
+			{
+				// Detour around alarm car
+				float fAwayDir[3];
+				SubtractVectors(fMyPos, fAlarmPos, fAwayDir);
+				NormalizeVector(fAwayDir, fAwayDir);
+
+				// Move perpendicular to avoid (turn 90 degrees)
+				float fDetourPos[3];
+				fDetourPos[0] = fMyPos[0] + fAwayDir[1] * 350.0;
+				fDetourPos[1] = fMyPos[1] - fAwayDir[0] * 350.0;
+				fDetourPos[2] = fMyPos[2];
+				SetMoveToPosition(iClient, fDetourPos, 3, "AvoidAlarmCar", 0.0, 20.0, true, true);
+				return true;
+			}
+		}
+	}
+
+	// --- 5. Spitter acid detection (insect_swarm, already handled above but add fast-escape) ---
+	{
+		int iAcid = -1;
+		while ((iAcid = FindEntityByClassname(iAcid, "insect_swarm")) != INVALID_ENT_REFERENCE)
+		{
+			if (!IsValidEntity(iAcid)) continue;
+			float fAcidPos[3];
+			GetEntPropVector(iAcid, Prop_Send, "m_vecOrigin", fAcidPos);
+			float fDist = GetVectorDistance(fMyPos, fAcidPos, true);
+
+			if (fDist < 22500.0) // 150 units
+			{
+				float fAwayDir[3];
+				SubtractVectors(fMyPos, fAcidPos, fAwayDir);
+				NormalizeVector(fAwayDir, fAwayDir);
+				float fEscapePos[3];
+				fEscapePos[0] = fMyPos[0] + fAwayDir[0] * 200.0;
+				fEscapePos[1] = fMyPos[1] + fAwayDir[1] * 200.0;
+				fEscapePos[2] = fMyPos[2];
+				ClearMoveToPosition(iClient);
+				SetMoveToPosition(iClient, fEscapePos, 4, "AvoidAcid", 0.0, 5.0, true, true);
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+public bool Phase1_TraceFilter_NoPlayers(int entity, int contentsMask, any data)
+{
+	return (entity != data && entity > MaxClients);
+}
+
+// ==================== Phase1 Sub4: Crescendo Event Response ====================
+
+public void Phase1_EventCrescendoStart(Event event, const char[] name, bool dontBroadcast)
+{
+	g_bCrescendoActive = true;
+	g_fCrescendoStartTime = GetGameTime();
+	g_fCrescendoLastHordeTime = GetGameTime();
+	g_iCrescendoCommonCount = 0;
+	LLM_AddEvent("crescendo_start");
+	PrintToServer("[Phase1] Crescendo event started: %s", name);
+}
+
+public void Phase1_EventCrescendoEnd(Event event, const char[] name, bool dontBroadcast)
+{
+	g_bCrescendoActive = false;
+	LLM_AddEvent("crescendo_end");
+	PrintToServer("[Phase1] Crescendo event ended");
+}
+
+bool Phase1_CrescendoDefense(int iClient, int &iButtons)
+{
+	if (!g_bCrescendoActive)
+		return false;
+
+	float fCurTime = GetGameTime();
+
+	// Auto-detect crescendo end: 30 seconds without significant horde
+	int iCommonCount = 0;
+	int iEnt = -1;
+	while ((iEnt = FindEntityByClassname(iEnt, "infected")) != INVALID_ENT_REFERENCE)
+	{
+		if (IsValidEntity(iEnt)) iCommonCount++;
+	}
+
+	if (iCommonCount > 5)
+	{
+		g_fCrescendoLastHordeTime = fCurTime;
+	}
+	else if (fCurTime - g_fCrescendoLastHordeTime > 30.0 && fCurTime - g_fCrescendoStartTime > 10.0)
+	{
+		// Crescendo seems over
+		g_bCrescendoActive = false;
+		LLM_AddEvent("crescendo_end_auto");
+		PrintToServer("[Phase1] Crescendo auto-ended (no horde for 30s)");
+		return false;
+	}
+
+	g_iCrescendoCommonCount = iCommonCount;
+
+	// --- Priority target: Boomer > other SI > common ---
+	int iBoomerTarget = 0;
+	float fBoomerDist = 999999.0;
+	int iSITarget = 0;
+	float fSIDist = 999999.0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i) || L4D_IsPlayerGhost(i))
+			continue;
+
+		float fDist = GetClientDistance(iClient, i, true);
+		if (fDist > 1000000.0) continue; // 1000 units max
+
+		L4D2ZombieClassType iClass = L4D2_GetPlayerZombieClass(i);
+		if (iClass == L4D2ZombieClass_Boomer)
+		{
+			if (fDist < fBoomerDist)
+			{
+				fBoomerDist = fDist;
+				iBoomerTarget = i;
+			}
+		}
+		else if (iClass != L4D2ZombieClass_Tank)
+		{
+			if (fDist < fSIDist)
+			{
+				fSIDist = fDist;
+				iSITarget = i;
+			}
+		}
+	}
+
+	// Shoot Boomer with highest priority
+	if (iBoomerTarget > 0 && IsVisibleEntity(iClient, iBoomerTarget, MASK_VISIBLE_AND_NPCS))
+	{
+		float fTargetPos[3];
+		GetClientAbsOrigin(iBoomerTarget, fTargetPos);
+		fTargetPos[2] += 40.0;
+
+		// Make sure no teammates too close to boomer (avoid bile splash)
+		bool bSafeToShoot = true;
+		for (int j = 1; j <= MaxClients; j++)
+		{
+			if (j == iClient || !IsClientInGame(j) || GetClientTeam(j) != 2 || !IsPlayerAlive(j))
+				continue;
+			if (GetClientDistance(j, iBoomerTarget, true) < 40000.0) // 200 units
+			{
+				bSafeToShoot = false;
+				break;
+			}
+		}
+
+		if (bSafeToShoot)
+		{
+			SnapViewToPosition(iClient, fTargetPos);
+			PressAttackButton(iClient, iButtons);
+			return true;
+		}
+	}
+
+	// Target other SI during crescendo
+	if (iSITarget > 0 && IsVisibleEntity(iClient, iSITarget, MASK_VISIBLE_AND_NPCS))
+	{
+		float fTargetPos[3];
+		GetClientAbsOrigin(iSITarget, fTargetPos);
+		fTargetPos[2] += 40.0;
+		SnapViewToPosition(iClient, fTargetPos);
+		PressAttackButton(iClient, iButtons);
+		return true;
+	}
+
+	// During crescendo, try to find a defensive position (wall/corner)
+	// Only reposition if not already in a good spot
+	if (!LBI_IsSurvivorInCombat(iClient))
+	{
+		// Try to find cover position
+		float fCoverPos[3];
+		if (Phase1_FindCrescendoCover(iClient, fCoverPos))
+		{
+			float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fCoverPos, true);
+			if (fDist > 2500.0) // 50 units, don't micro-adjust
+			{
+				SetMoveToPosition(iClient, fCoverPos, 3, "CrescendoCover", 0.0, 40.0, true, true);
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool Phase1_FindCrescendoCover(int iClient, float fOutPos[3])
+{
+	// Try to find a wall/corner position nearby for defensive posture
+	float fMyPos[3];
+	GetClientAbsOrigin(iClient, fMyPos);
+
+	// Check in 8 directions for walls
+	float fBestScore = 0.0;
+	bool bFound = false;
+
+	for (int i = 0; i < 8; i++)
+	{
+		float fAngle = float(i) * 45.0;
+		float fDir[3];
+		fDir[0] = Cosine(DegToRad(fAngle));
+		fDir[1] = Sine(DegToRad(fAngle));
+		fDir[2] = 0.0;
+
+		// Trace to find wall distance
+		float fTraceEnd[3];
+		fTraceEnd[0] = fMyPos[0] + fDir[0] * 300.0;
+		fTraceEnd[1] = fMyPos[1] + fDir[1] * 300.0;
+		fTraceEnd[2] = fMyPos[2] + HUMAN_HALF_HEIGHT;
+
+		float fTraceStart[3];
+		fTraceStart[0] = fMyPos[0];
+		fTraceStart[1] = fMyPos[1];
+		fTraceStart[2] = fMyPos[2] + HUMAN_HALF_HEIGHT;
+
+		Handle hTrace = TR_TraceRayFilterEx(fTraceStart, fTraceEnd, MASK_PLAYERSOLID, RayType_EndPoint, Phase1_TraceFilter_NoPlayers, iClient);
+		if (TR_DidHit(hTrace))
+		{
+			float fHitPos[3];
+			TR_GetEndPosition(fHitPos, hTrace);
+			float fWallDist = GetVectorDistance(fMyPos, fHitPos);
+
+			// Good cover: wall within 50-150 units (not too close, not too far)
+			if (fWallDist >= 50.0 && fWallDist <= 150.0)
+			{
+				float fScore = 150.0 - fWallDist; // prefer closer walls
+				if (fScore > fBestScore)
+				{
+					fBestScore = fScore;
+					// Position 30 units from wall
+					fOutPos[0] = fHitPos[0] - fDir[0] * 30.0;
+					fOutPos[1] = fHitPos[1] - fDir[1] * 30.0;
+					fOutPos[2] = fMyPos[2];
+					bFound = true;
+				}
+			}
+		}
+		delete hTrace;
+	}
+
+	return bFound;
+}
+
 // Phase 5.1: ten_day Feature Integration - Gear Transfer
 // ============================================================
 // Allows human players to press R (reload) while aiming at a
@@ -11986,4 +13025,1754 @@ void Phase51_TransferWeapon(int iBot, int iPlayer, int iWeapon)
 
 	// Give weapon to player
 	GivePlayerItem(iPlayer, sClass);
+}
+
+// =========================================================================
+// Phase4: Failure tracking helper functions
+// =========================================================================
+
+void Phase4_RecordAction(int iClient, const char[] action)
+{
+	if (iClient <= 0 || iClient > MAXPLAYERS) return;
+
+	float fNow = GetGameTime();
+	// Throttle: don't record same action within 0.5s
+	if (fNow - g_fLastActionTime[iClient] < 0.5) return;
+	g_fLastActionTime[iClient] = fNow;
+
+	// Append action, keep last 10
+	if (g_iLastActionCount[iClient] >= 10)
+	{
+		// Remove first action (up to first comma)
+		int commaPos = StrContains(g_sLastActions[iClient], ",");
+		if (commaPos != -1)
+		{
+			char temp[512];
+			strcopy(temp, sizeof(temp), g_sLastActions[iClient][commaPos + 1]);
+			strcopy(g_sLastActions[iClient], sizeof(g_sLastActions[]), temp);
+		}
+		else
+		{
+			g_sLastActions[iClient][0] = '\0';
+		}
+		g_iLastActionCount[iClient]--;
+	}
+
+	if (g_sLastActions[iClient][0] != '\0')
+		StrCat(g_sLastActions[iClient], sizeof(g_sLastActions[]), ",");
+	StrCat(g_sLastActions[iClient], sizeof(g_sLastActions[]), action);
+	g_iLastActionCount[iClient]++;
+}
+
+int Phase4_DetermineFailureType()
+{
+	int siDeaths = 0, tankDeaths = 0, witchDeaths = 0, envDeaths = 0, attrDeaths = 0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 2) continue;
+
+		switch(g_iLastDeathCause[i])
+		{
+			case FAIL_WIPE_BY_SI: siDeaths++;
+			case FAIL_WIPE_BY_TANK: tankDeaths++;
+			case FAIL_WIPE_BY_WITCH: witchDeaths++;
+			case FAIL_ENVIRONMENT: envDeaths++;
+			case FAIL_ATTRITION: attrDeaths++;
+		}
+	}
+
+	// Determine dominant cause
+	int maxVal = siDeaths;
+	int result = FAIL_WIPE_BY_SI;
+
+	if (tankDeaths > maxVal) { maxVal = tankDeaths; result = FAIL_WIPE_BY_TANK; }
+	if (witchDeaths > maxVal) { maxVal = witchDeaths; result = FAIL_WIPE_BY_WITCH; }
+	if (envDeaths > maxVal) { maxVal = envDeaths; result = FAIL_ENVIRONMENT; }
+	if (attrDeaths > maxVal) { maxVal = attrDeaths; result = FAIL_ATTRITION; }
+
+	// If no clear cause, default to attrition
+	if (maxVal == 0)
+		return FAIL_ATTRITION;
+
+	return result;
+}
+
+void Phase4_GetFailureString(int failType, char[] buffer, int maxlen)
+{
+	switch(failType)
+	{
+		case FAIL_WIPE_BY_SI: strcopy(buffer, maxlen, "wipe_by_si");
+		case FAIL_WIPE_BY_TANK: strcopy(buffer, maxlen, "wipe_by_tank");
+		case FAIL_WIPE_BY_WITCH: strcopy(buffer, maxlen, "wipe_by_witch");
+		case FAIL_ENVIRONMENT: strcopy(buffer, maxlen, "environment_death");
+		case FAIL_ATTRITION: strcopy(buffer, maxlen, "attrition");
+		default: strcopy(buffer, maxlen, "unknown");
+	}
+}
+
+// ============================================================
+// Phase 2: Tactical Cooperation — Formation / Focus Fire / Retreat
+// ============================================================
+
+// ==================== Phase2 Sub5: Formation Manager ====================
+
+/**
+ * Determines terrain type from NavArea dimensions and assigns formation.
+ * Updates every 2 seconds. Bots move toward assigned positions.
+ */
+void Phase2_FormationManager(int iClient)
+{
+	float fCurTime = GetGameTime();
+
+	// Only first bot processes formation update for the whole team
+	if (fCurTime - g_fFormationUpdateTime < 2.0)
+	{
+		// Just move toward assigned position if valid
+		Phase2_MoveToFormationPos(iClient);
+		return;
+	}
+
+	// Check if this is the first alive bot (leader updates formation)
+	int iFirstBot = Phase2_GetFirstAliveBot();
+	if (iFirstBot != iClient)
+	{
+		Phase2_MoveToFormationPos(iClient);
+		return;
+	}
+
+	g_fFormationUpdateTime = fCurTime;
+
+	// Determine terrain type from NavArea
+	int iNavArea = g_iClientNavArea[iClient];
+	if (!iNavArea)
+		return;
+
+	float fNWCorner[3], fSECorner[3];
+	LBI_GetNavAreaCorners(iNavArea, fNWCorner, fSECorner);
+
+	float fWidth = FloatAbs(fSECorner[0] - fNWCorner[0]);
+	float fHeight = FloatAbs(fSECorner[1] - fNWCorner[1]);
+	float fNavSize = (fWidth > fHeight) ? fWidth : fHeight;
+	float fNavMin = (fWidth < fHeight) ? fWidth : fHeight;
+
+	// Determine formation type
+	int iOldFormation = g_iFormationType;
+
+	if (g_bCrescendoActive || Phase2_IsNearSaferoom(iClient))
+	{
+		g_iFormationType = 3; // arc defense
+	}
+	else if (fNavMin < 150.0)
+	{
+		g_iFormationType = 1; // column — narrow passage
+	}
+	else if (fNavSize > 400.0)
+	{
+		g_iFormationType = 2; // fan — open area
+	}
+	else
+	{
+		// Keep current formation in medium areas, default to column
+		if (g_iFormationType == 0)
+			g_iFormationType = 1;
+	}
+
+	// Collect alive survivor bots
+	int iBots[MAXPLAYERS+1];
+	int iBotCount = 0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i) || !IsFakeClient(i))
+			continue;
+		if (L4D_IsPlayerIncapacitated(i) || L4D_IsPlayerPinned(i))
+			continue;
+
+		iBots[iBotCount++] = i;
+	}
+
+	if (iBotCount < 2)
+		return;
+
+	// Calculate team center
+	float fCenter[3];
+	for (int i = 0; i < iBotCount; i++)
+	{
+		float fPos[3];
+		GetClientAbsOrigin(iBots[i], fPos);
+		fCenter[0] += fPos[0];
+		fCenter[1] += fPos[1];
+		fCenter[2] += fPos[2];
+	}
+	fCenter[0] /= float(iBotCount);
+	fCenter[1] /= float(iBotCount);
+	fCenter[2] /= float(iBotCount);
+	g_fFormationCenter = fCenter;
+
+	switch (g_iFormationType)
+	{
+		case 1: Phase2_CalcColumnFormation(iBots, iBotCount, fCenter);
+		case 2: Phase2_CalcFanFormation(iBots, iBotCount, fCenter);
+		case 3: Phase2_CalcArcFormation(iBots, iBotCount, fCenter, iClient);
+	}
+
+	Phase2_MoveToFormationPos(iClient);
+}
+
+/**
+ * Column formation: bots line up along the path direction.
+ * Medics (with first aid kit) go to the back.
+ */
+void Phase2_CalcColumnFormation(int[] iBots, int iBotCount, float fCenter[3])
+{
+	// Sort: medics to back
+	// Find team's forward direction (average facing)
+	float fForward[3];
+	for (int i = 0; i < iBotCount; i++)
+	{
+		float fAng[3];
+		GetClientEyeAngles(iBots[i], fAng);
+		float fDir[3];
+		GetAngleVectors(fAng, fDir, NULL_VECTOR, NULL_VECTOR);
+		fForward[0] += fDir[0];
+		fForward[1] += fDir[1];
+	}
+	float fLen = SquareRoot(fForward[0] * fForward[0] + fForward[1] * fForward[1]);
+	if (fLen > 0.0)
+	{
+		fForward[0] /= fLen;
+		fForward[1] /= fLen;
+	}
+	else
+	{
+		fForward[0] = 1.0;
+		fForward[1] = 0.0;
+	}
+
+	// Sort bots: non-medic first, medic last
+	int iSorted[MAXPLAYERS+1];
+	int iFront = 0, iBack = iBotCount - 1;
+
+	for (int i = 0; i < iBotCount; i++)
+	{
+		if (Phase2_HasFirstAidKit(iBots[i]))
+			iSorted[iBack--] = iBots[i];
+		else
+			iSorted[iFront++] = iBots[i];
+	}
+
+	// Assign positions along forward direction, spacing ~100 units
+	float fOffset = -((iBotCount - 1) * 100.0) / 2.0;
+	for (int i = 0; i < iBotCount; i++)
+	{
+		g_fAssignedPos[iSorted[i]][0] = fCenter[0] + fForward[0] * fOffset;
+		g_fAssignedPos[iSorted[i]][1] = fCenter[1] + fForward[1] * fOffset;
+		g_fAssignedPos[iSorted[i]][2] = fCenter[2];
+		fOffset += 100.0;
+	}
+}
+
+/**
+ * Fan formation: bots spread out evenly by angle around center,
+ * facing the common threat direction.
+ */
+void Phase2_CalcFanFormation(int[] iBots, int iBotCount, float fCenter[3])
+{
+	// Determine threat direction (average direction to known enemies)
+	float fThreatDir[3];
+	int iThreatCount = 0;
+
+	for (int i = 0; i < iBotCount; i++)
+	{
+		int iTarget = g_iBot_TargetInfected[iBots[i]];
+		if (iTarget > 0 && IsValidEntity(iTarget))
+		{
+			float fTargetPos[3];
+			GetEntPropVector(iTarget, Prop_Data, "m_vecAbsOrigin", fTargetPos);
+			fThreatDir[0] += fTargetPos[0] - fCenter[0];
+			fThreatDir[1] += fTargetPos[1] - fCenter[1];
+			iThreatCount++;
+		}
+	}
+
+	if (iThreatCount == 0)
+	{
+		// Default: use first bot's facing direction
+		float fAng[3];
+		GetClientEyeAngles(iBots[0], fAng);
+		GetAngleVectors(fAng, fThreatDir, NULL_VECTOR, NULL_VECTOR);
+	}
+	else
+	{
+		float fLen = SquareRoot(fThreatDir[0] * fThreatDir[0] + fThreatDir[1] * fThreatDir[1]);
+		if (fLen > 0.0)
+		{
+			fThreatDir[0] /= fLen;
+			fThreatDir[1] /= fLen;
+		}
+	}
+
+	// Spread bots in a fan: each bot gets an equal angle slice
+	float fBaseAngle = ArcTangent2(fThreatDir[1], fThreatDir[0]);
+	float fSpread = 3.14159 / 2.0; // 90 degrees total spread
+	float fStep = (iBotCount > 1) ? (fSpread * 2.0 / float(iBotCount - 1)) : 0.0;
+	float fStartAngle = fBaseAngle - fSpread;
+
+	for (int i = 0; i < iBotCount; i++)
+	{
+		float fAngle = fStartAngle + fStep * float(i);
+		float fRadius = 150.0;
+		g_fAssignedPos[iBots[i]][0] = fCenter[0] + Cosine(fAngle) * fRadius;
+		g_fAssignedPos[iBots[i]][1] = fCenter[1] + Sine(fAngle) * fRadius;
+		g_fAssignedPos[iBots[i]][2] = fCenter[2];
+	}
+}
+
+/**
+ * Arc formation: bots line up along wall direction for defense.
+ * Finds nearest wall via trace, then spreads bots along it.
+ */
+void Phase2_CalcArcFormation(int[] iBots, int iBotCount, float fCenter[3], int iLeader)
+{
+	// Find nearest wall by tracing in 8 directions
+	float fBestWallNormal[3];
+	float fBestWallDist = 999999.0;
+	bool bFoundWall = false;
+
+	for (int d = 0; d < 8; d++)
+	{
+		float fAngle = float(d) * 45.0;
+		float fDir[3];
+		fDir[0] = Cosine(DegToRad(fAngle));
+		fDir[1] = Sine(DegToRad(fAngle));
+		fDir[2] = 0.0;
+
+		float fEnd[3];
+		fEnd[0] = fCenter[0] + fDir[0] * 500.0;
+		fEnd[1] = fCenter[1] + fDir[1] * 500.0;
+		fEnd[2] = fCenter[2] + 40.0;
+
+		float fStart[3];
+		fStart[0] = fCenter[0];
+		fStart[1] = fCenter[1];
+		fStart[2] = fCenter[2] + 40.0;
+
+		Handle hTrace = TR_TraceRayFilterEx(fStart, fEnd, MASK_PLAYERSOLID, RayType_EndPoint, Base_TraceFilter);
+		if (TR_DidHit(hTrace))
+		{
+			float fHitPos[3];
+			TR_GetEndPosition(fHitPos, hTrace);
+			float fDist = GetVectorDistance(fCenter, fHitPos);
+			if (fDist < fBestWallDist)
+			{
+				fBestWallDist = fDist;
+				TR_GetPlaneNormal(hTrace, fBestWallNormal);
+				bFoundWall = true;
+			}
+		}
+		delete hTrace;
+	}
+
+	if (!bFoundWall)
+	{
+		// Fallback to fan formation if no wall found
+		Phase2_CalcFanFormation(iBots, iBotCount, fCenter);
+		return;
+	}
+
+	// Wall tangent direction (perpendicular to wall normal in XY plane)
+	float fTangent[3];
+	fTangent[0] = -fBestWallNormal[1];
+	fTangent[1] = fBestWallNormal[0];
+	fTangent[2] = 0.0;
+
+	// Position bots along the tangent line, facing away from wall
+	float fSpacing = 120.0;
+	float fTotalWidth = float(iBotCount - 1) * fSpacing;
+
+	for (int i = 0; i < iBotCount; i++)
+	{
+		float fOff = -fTotalWidth / 2.0 + float(i) * fSpacing;
+		// Place slightly away from wall (use wall normal to push forward)
+		g_fAssignedPos[iBots[i]][0] = fCenter[0] + fTangent[0] * fOff + fBestWallNormal[0] * 60.0;
+		g_fAssignedPos[iBots[i]][1] = fCenter[1] + fTangent[1] * fOff + fBestWallNormal[1] * 60.0;
+		g_fAssignedPos[iBots[i]][2] = fCenter[2];
+	}
+}
+
+/**
+ * Move bot toward its assigned formation position without interrupting shooting.
+ */
+void Phase2_MoveToFormationPos(int iClient)
+{
+	if (!IsValidVector(g_fAssignedPos[iClient]))
+		return;
+
+	// Don't override if bot is busy with higher priority tasks
+	if (g_iBot_TankTarget[iClient] || g_iBot_PinnedFriend[iClient] || g_iBot_IncapacitatedFriend[iClient])
+		return;
+
+	// Don't override if in retreat mode (retreat handles movement)
+	if (g_bRetreatMode)
+		return;
+
+	float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], g_fAssignedPos[iClient], true);
+
+	// Only move if more than 80 units away from assigned position
+	if (fDist > 6400.0) // 80^2
+	{
+		SetMoveToPosition(iClient, g_fAssignedPos[iClient], 1, "Formation", 0.0, 50.0, true, false);
+	}
+}
+
+bool Phase2_HasFirstAidKit(int iClient)
+{
+	int iSlot3 = GetPlayerWeaponSlot(iClient, 3);
+	if (iSlot3 == -1 || !IsValidEntity(iSlot3))
+		return false;
+
+	char sClass[64];
+	GetEntityClassname(iSlot3, sClass, sizeof(sClass));
+	return (StrContains(sClass, "first_aid_kit") != -1);
+}
+
+bool Phase2_IsNearSaferoom(int iClient)
+{
+	int iNavArea = g_iClientNavArea[iClient];
+	if (!iNavArea)
+		return false;
+
+	// Check checkpoint attributes via nav area spawn attributes
+	int iAttribs = L4D_GetNavArea_SpawnAttributes(view_as<Address>(iNavArea));
+	// CHECKPOINT = 0x2000
+	return (iAttribs & 0x2000) != 0;
+}
+
+int Phase2_GetFirstAliveBot()
+{
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i) && IsClientSurvivor(i) && IsPlayerAlive(i) && IsFakeClient(i)
+			&& !L4D_IsPlayerIncapacitated(i))
+			return i;
+	}
+	return -1;
+}
+
+// ==================== Phase2 Sub6: Focus Fire Protocol ====================
+
+/**
+ * Coordinates team fire on Tank. Identifies kite runner and
+ * positions other bots for side/rear shots.
+ */
+void Phase2_FocusFireProtocol(int iClient)
+{
+	float fCurTime = GetGameTime();
+
+	// Only update focus fire state every 0.5s (first bot does the check)
+	if (fCurTime - g_fFocusFireLastCheck >= 0.5)
+	{
+		g_fFocusFireLastCheck = fCurTime;
+		Phase2_UpdateFocusFireState();
+	}
+
+	if (!g_bFocusFireActive || !IsValidClient(g_iFocusFireTarget) || !IsClientInGame(g_iFocusFireTarget))
+		return;
+
+	float fTankPos[3];
+	GetClientAbsOrigin(g_iFocusFireTarget, fTankPos);
+	float fBotPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+	float fDistToTank = GetVectorDistance(fBotPos, fTankPos, true);
+
+	// Kite runner: the bot being chased by Tank
+	if (iClient == g_iKiteRunner)
+	{
+		Phase2_KiteRunnerBehavior(iClient, g_iFocusFireTarget, fTankPos, fBotPos, fDistToTank);
+		return;
+	}
+
+	// All other bots: focus fire Tank from safe angle
+	Phase2_DPSBotBehavior(iClient, g_iFocusFireTarget, fTankPos, fBotPos, fDistToTank);
+}
+
+void Phase2_UpdateFocusFireState()
+{
+	int iTank = 0;
+
+	// Find active Tank
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i))
+			continue;
+
+		int iZombieClass = GetEntProp(i, Prop_Send, "m_zombieClass");
+		if (iZombieClass == 8) // Tank
+		{
+			iTank = i;
+			break;
+		}
+	}
+
+	if (!iTank)
+	{
+		g_bFocusFireActive = false;
+		g_iFocusFireTarget = 0;
+		g_iKiteRunner = 0;
+		return;
+	}
+
+	g_bFocusFireActive = true;
+	g_iFocusFireTarget = iTank;
+
+	// Determine kite runner: closest survivor bot to Tank's facing direction
+	float fTankPos[3], fTankAng[3];
+	GetClientAbsOrigin(iTank, fTankPos);
+	GetClientEyeAngles(iTank, fTankAng);
+
+	float fTankForward[3];
+	GetAngleVectors(fTankAng, fTankForward, NULL_VECTOR, NULL_VECTOR);
+
+	int iBestKiter = 0;
+	float fBestKiteScore = 999999.0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i) || !IsFakeClient(i))
+			continue;
+		if (L4D_IsPlayerIncapacitated(i) || L4D_IsPlayerPinned(i))
+			continue;
+
+		float fSurPos[3];
+		GetClientAbsOrigin(i, fSurPos);
+
+		// Direction from tank to survivor
+		float fToSurvivor[3];
+		SubtractVectors(fSurPos, fTankPos, fToSurvivor);
+		float fDist = GetVectorLength(fToSurvivor);
+		if (fDist <= 0.0) continue;
+
+		// Normalize
+		fToSurvivor[0] /= fDist;
+		fToSurvivor[1] /= fDist;
+
+		// Dot product with tank's forward (higher = more in front of tank)
+		float fDot = fTankForward[0] * fToSurvivor[0] + fTankForward[1] * fToSurvivor[1];
+
+		// Score: lower is more likely the chase target (close + in front)
+		float fScore = fDist * (1.0 - fDot);
+		if (fScore < fBestKiteScore)
+		{
+			fBestKiteScore = fScore;
+			iBestKiter = i;
+		}
+	}
+
+	g_iKiteRunner = iBestKiter;
+}
+
+/**
+ * Kite runner: maintain 300-400 unit distance, backpedal and strafe.
+ */
+void Phase2_KiteRunnerBehavior(int iClient, int iTank, float fTankPos[3], float fBotPos[3], float fDistSqr)
+{
+	float fDist = SquareRoot(fDistSqr);
+
+	// Calculate away direction
+	float fAwayDir[3];
+	SubtractVectors(fBotPos, fTankPos, fAwayDir);
+	float fLen = SquareRoot(fAwayDir[0] * fAwayDir[0] + fAwayDir[1] * fAwayDir[1]);
+	if (fLen > 0.0)
+	{
+		fAwayDir[0] /= fLen;
+		fAwayDir[1] /= fLen;
+	}
+
+	// If too close (< 300), run away
+	if (fDist < 300.0)
+	{
+		float fEscapePos[3];
+		// Add some strafe component for unpredictability
+		float fStrafeAngle = (GetGameTickCount() % 2 == 0) ? 30.0 : -30.0;
+		float fRad = DegToRad(fStrafeAngle);
+		float fStrafeX = fAwayDir[0] * Cosine(fRad) - fAwayDir[1] * Sine(fRad);
+		float fStrafeY = fAwayDir[0] * Sine(fRad) + fAwayDir[1] * Cosine(fRad);
+
+		fEscapePos[0] = fBotPos[0] + fStrafeX * 200.0;
+		fEscapePos[1] = fBotPos[1] + fStrafeY * 200.0;
+		fEscapePos[2] = fBotPos[2];
+
+		SetMoveToPosition(iClient, fEscapePos, 4, "KiteTank", 0.0, 30.0, true, true);
+	}
+	// If in sweet spot (300-400), hold position and shoot
+	// If too far (> 400), let normal AI handle approach
+
+	// Always face and shoot the Tank
+	BotLookAtPosition(iClient, fTankPos, 0.2);
+}
+
+/**
+ * DPS bots: shoot Tank from side/rear angle, avoid friendly fire.
+ */
+void Phase2_DPSBotBehavior(int iClient, int iTank, float fTankPos[3], float fBotPos[3], float fDistSqr)
+{
+	// Check if we should switch to a better weapon for Tank
+	Phase2_SwitchToAntiTankWeapon(iClient);
+
+	// Check friendly fire before shooting
+	if (Phase2_WouldCauseFriendlyFire(iClient, fTankPos))
+		return; // Don't shoot this tick, let normal AI handle pause
+
+	// Try to position at Tank's side/rear
+	float fTankAng[3];
+	GetClientEyeAngles(iTank, fTankAng);
+	float fTankFwd[3];
+	GetAngleVectors(fTankAng, fTankFwd, NULL_VECTOR, NULL_VECTOR);
+
+	// Direction from Tank to Bot
+	float fToBot[3];
+	SubtractVectors(fBotPos, fTankPos, fToBot);
+	float fLen = SquareRoot(fToBot[0] * fToBot[0] + fToBot[1] * fToBot[1]);
+	if (fLen <= 0.0) return;
+	fToBot[0] /= fLen;
+	fToBot[1] /= fLen;
+
+	// Check angle between Tank's forward and direction to bot
+	float fDot = fTankFwd[0] * fToBot[0] + fTankFwd[1] * fToBot[1];
+
+	// If we're too much in front of Tank (dot > cos(45) = 0.707), reposition
+	if (fDot > 0.707)
+	{
+		// Move to Tank's side: perpendicular to Tank's forward
+		float fSidePos[3];
+		float fSideDir = (GetGameTickCount() % 2 == 0) ? 1.0 : -1.0;
+		fSidePos[0] = fTankPos[0] + (-fTankFwd[1] * fSideDir) * 300.0;
+		fSidePos[1] = fTankPos[1] + (fTankFwd[0] * fSideDir) * 300.0;
+		fSidePos[2] = fBotPos[2];
+
+		SetMoveToPosition(iClient, fSidePos, 3, "FlankTank", 0.0, 50.0, true, false);
+	}
+
+	// Always prioritize shooting Tank
+	BotLookAtPosition(iClient, fTankPos, 0.2);
+}
+
+/**
+ * Switch to automatic rifle or shotgun for Tank fights.
+ * If bot has melee and is close, switch to ranged.
+ */
+void Phase2_SwitchToAntiTankWeapon(int iClient)
+{
+	int iActiveWeapon = L4D_GetPlayerCurrentWeapon(iClient);
+	if (!L4D_IsValidEnt(iActiveWeapon))
+		return;
+
+	char sClass[64];
+	GetEntityClassname(iActiveWeapon, sClass, sizeof(sClass));
+
+	// If currently using melee, switch to primary (slot 0)
+	if (StrContains(sClass, "melee") != -1 || StrContains(sClass, "chainsaw") != -1)
+	{
+		int iPrimary = GetPlayerWeaponSlot(iClient, 0);
+		if (iPrimary != -1)
+			SwitchWeaponSlot(iClient, 0);
+	}
+}
+
+/**
+ * Check if shooting toward target would hit a teammate.
+ * Uses trace ray to detect friendlies in the line of fire.
+ */
+bool Phase2_WouldCauseFriendlyFire(int iClient, float fTargetPos[3])
+{
+	float fEyePos[3];
+	GetClientEyePosition(iClient, fEyePos);
+
+	Handle hTrace = TR_TraceRayFilterEx(fEyePos, fTargetPos, MASK_SHOT, RayType_EndPoint, Phase2_FriendlyFireFilter, iClient);
+	bool bHit = TR_DidHit(hTrace);
+	int iHitEntity = -1;
+
+	if (bHit)
+		iHitEntity = TR_GetEntityIndex(hTrace);
+
+	delete hTrace;
+
+	// If we hit a teammate before reaching target, it's friendly fire
+	if (bHit && iHitEntity > 0 && iHitEntity <= MaxClients && IsClientInGame(iHitEntity) && IsClientSurvivor(iHitEntity))
+		return true;
+
+	return false;
+}
+
+bool Phase2_FriendlyFireFilter(int iEntity, int iContentsMask, int iData)
+{
+	// Pass through the shooting bot itself
+	if (iEntity == iData)
+		return false;
+
+	// Hit survivors (potential friendly fire)
+	if (iEntity > 0 && iEntity <= MaxClients)
+		return true;
+
+	// Hit world geometry
+	if (iEntity == 0)
+		return true;
+
+	// Pass through other entities
+	return false;
+}
+
+// ==================== Phase2 Sub7: Smart Retreat & Resource Allocation ====================
+
+/**
+ * Evaluates team health and triggers retreat mode when average HP is critical.
+ * Every 3 seconds rechecks conditions.
+ */
+void Phase2_SmartRetreat(int iClient)
+{
+	float fCurTime = GetGameTime();
+
+	// Only check every 3 seconds
+	if (fCurTime - g_fRetreatCheckTime < 3.0)
+	{
+		if (g_bRetreatMode)
+			Phase2_ExecuteRetreat(iClient);
+		return;
+	}
+
+	// Only first bot does the team-wide check
+	int iFirstBot = Phase2_GetFirstAliveBot();
+	if (iFirstBot != iClient)
+	{
+		if (g_bRetreatMode)
+			Phase2_ExecuteRetreat(iClient);
+		return;
+	}
+
+	g_fRetreatCheckTime = fCurTime;
+
+	// Calculate team average HP (including temp health)
+	float fTotalHP = 0.0;
+	int iAliveCount = 0;
+	int iDownCount = 0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+			continue;
+
+		if (L4D_IsPlayerIncapacitated(i))
+		{
+			iDownCount++;
+			continue;
+		}
+
+		float fHP = float(GetClientHealth(i)) + L4D_GetTempHealth(i);
+		fTotalHP += fHP;
+		iAliveCount++;
+	}
+
+	if (iAliveCount == 0)
+		return;
+
+	float fAvgHP = fTotalHP / float(iAliveCount);
+	float fAvgPercent = fAvgHP / 100.0; // Max HP is 100
+
+	// Retreat triggers
+	if (!g_bRetreatMode)
+	{
+		if (fAvgPercent < 0.40 || (iDownCount > 0 && fAvgPercent < 0.50))
+			g_bRetreatMode = true;
+	}
+	else
+	{
+		// Exit retreat when team recovers
+		if (fAvgPercent > 0.60 && iDownCount == 0)
+			g_bRetreatMode = false;
+	}
+
+	if (g_bRetreatMode)
+		Phase2_ExecuteRetreat(iClient);
+}
+
+/**
+ * Retreat behavior: move toward higher flow (saferoom direction),
+ * minimize engagement, shoot only close threats.
+ */
+void Phase2_ExecuteRetreat(int iClient)
+{
+	// Don't override if bot is handling something critical
+	if (g_iBot_PinnedFriend[iClient] || g_iBot_IncapacitatedFriend[iClient])
+		return;
+
+	// Don't override Tank kiting
+	if (g_bFocusFireActive && iClient == g_iKiteRunner)
+		return;
+
+	// Find direction with highest flow distance (toward saferoom)
+	float fBotPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+
+	float fBotFlow = L4D2Direct_GetFlowDistance(iClient);
+
+	// Try to move forward in flow (higher flow = closer to saferoom)
+	// Use forward direction as approximation
+	float fAngles[3];
+	GetClientEyeAngles(iClient, fAngles);
+	float fForward[3];
+	GetAngleVectors(fAngles, fForward, NULL_VECTOR, NULL_VECTOR);
+
+	// Find a defensible position ahead
+	float fRetreatPos[3];
+	fRetreatPos[0] = fBotPos[0] + fForward[0] * 300.0;
+	fRetreatPos[1] = fBotPos[1] + fForward[1] * 300.0;
+	fRetreatPos[2] = fBotPos[2];
+
+	// Verify the retreat position is on nav mesh
+	int iNavArea = L4D_GetNearestNavArea(fRetreatPos, 200.0, true, true, false);
+	if (iNavArea)
+	{
+		float fNavCenter[3];
+		LBI_GetNavAreaCenter(iNavArea, fNavCenter);
+
+		// Only retreat if the target has higher flow
+		Address pNavAddr = view_as<Address>(iNavArea);
+		float fTargetFlow = L4D2Direct_GetTerrorNavAreaFlow(pNavAddr);
+
+		if (fTargetFlow > fBotFlow)
+		{
+			SetMoveToPosition(iClient, fNavCenter, 3, "Retreat", 0.0, 80.0, true, false);
+		}
+	}
+}
+
+/**
+ * Resource allocation: bots with medkits heal low-HP teammates,
+ * bots with pills/adrenaline share with teammates under attack.
+ */
+void Phase2_ResourceAllocation(int iClient)
+{
+	if (!IsFakeClient(iClient) || !IsPlayerAlive(iClient) || L4D_IsPlayerIncapacitated(iClient))
+		return;
+
+	// Check if bot has healing items
+	int iSlot3 = GetPlayerWeaponSlot(iClient, 3); // Health slot (medkit/defib)
+	int iSlot4 = GetPlayerWeaponSlot(iClient, 4); // Pills/adrenaline slot
+
+	// First aid kit: heal lowest HP teammate
+	if (iSlot3 != -1 && IsValidEntity(iSlot3))
+	{
+		char sClass[64];
+		GetEntityClassname(iSlot3, sClass, sizeof(sClass));
+
+		if (StrContains(sClass, "first_aid_kit") != -1)
+		{
+			int iBestTarget = -1;
+			float fLowestHP = 999.0;
+
+			for (int i = 1; i <= MaxClients; i++)
+			{
+				if (i == iClient || !IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+					continue;
+				if (L4D_IsPlayerIncapacitated(i))
+					continue;
+
+				float fHP = float(GetClientHealth(i)) + L4D_GetTempHealth(i);
+				if (fHP < 40.0 && fHP < fLowestHP)
+				{
+					fLowestHP = fHP;
+					iBestTarget = i;
+				}
+			}
+
+			if (iBestTarget > 0)
+			{
+				// Move toward the teammate to heal them
+				float fTargetPos[3];
+				GetClientAbsOrigin(iBestTarget, fTargetPos);
+				float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fTargetPos, true);
+
+				if (fDist > 10000.0) // > 100 units away
+				{
+					SetMoveToPosition(iClient, fTargetPos, 2, "HealTeammate", 0.0, 60.0, true, false);
+				}
+			}
+		}
+	}
+
+	// Pills/Adrenaline: share with teammate under attack or low HP
+	if (iSlot4 != -1 && IsValidEntity(iSlot4))
+	{
+		// Don't use pills if everyone is healthy
+		bool bAllHealthy = true;
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+				continue;
+			if (L4D_IsPlayerIncapacitated(i))
+				continue;
+
+			float fHP = float(GetClientHealth(i)) + L4D_GetTempHealth(i);
+			if (fHP < 70.0)
+			{
+				bAllHealthy = false;
+				break;
+			}
+		}
+
+		if (bAllHealthy)
+			return;
+
+		// Find best recipient: pinned/attacked teammate with lowest HP
+		int iBestTarget = -1;
+		float fBestScore = 999999.0;
+
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (i == iClient || !IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+				continue;
+			if (L4D_IsPlayerIncapacitated(i))
+				continue;
+
+			float fHP = float(GetClientHealth(i)) + L4D_GetTempHealth(i);
+			if (fHP >= 70.0)
+				continue;
+
+			// Score: lower HP = lower score = higher priority
+			// Being pinned/attacked adds bonus priority
+			float fScore = fHP;
+			if (L4D_IsPlayerPinned(i))
+				fScore -= 50.0;
+
+			if (fScore < fBestScore)
+			{
+				fBestScore = fScore;
+				iBestTarget = i;
+			}
+		}
+
+		if (iBestTarget > 0)
+		{
+			float fTargetPos[3];
+			GetClientAbsOrigin(iBestTarget, fTargetPos);
+			float fDist = GetVectorDistance(g_fClientAbsOrigin[iClient], fTargetPos, true);
+
+			if (fDist > 10000.0) // > 100 units
+			{
+				SetMoveToPosition(iClient, fTargetPos, 2, "ShareMeds", 0.0, 60.0, true, false);
+			}
+		}
+	}
+}
+
+// ============================================================
+// Phase 3: Special Infected Kill Skills — Hunter / Tank / Witch
+// ============================================================
+
+// ==================== Phase3 Task8: Hunter Counter Skill ====================
+
+/**
+ * Detect and counter Hunters: crouching, pouncing, or pinning teammates.
+ * Returns true if bot is actively handling a Hunter threat (blocks other behavior).
+ */
+bool Phase3_HunterCounterSkill(int iClient)
+{
+	float fCurTime = GetGameTime();
+
+	// Scan cooldown: every 0.3s
+	if (fCurTime - g_fHunterScanTime[iClient] < 0.3)
+		return false;
+
+	g_fHunterScanTime[iClient] = fCurTime;
+
+	float fBotPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+
+	// Priority 1: Rescue teammate pinned by Hunter
+	int iPinnedMate = -1;
+	int iPinningHunter = -1;
+	float fBestPinDist = 999999.0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (i == iClient || !IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+			continue;
+
+		if (!HasEntProp(i, Prop_Send, "m_pounceAttacker"))
+			continue;
+
+		int iAttacker = GetEntPropEnt(i, Prop_Send, "m_pounceAttacker");
+		if (iAttacker <= 0 || iAttacker > MaxClients || !IsClientInGame(iAttacker) || !IsPlayerAlive(iAttacker))
+			continue;
+
+		float fMatePos[3];
+		GetClientAbsOrigin(i, fMatePos);
+		float fDist = GetVectorDistance(fBotPos, fMatePos, true);
+
+		if (fDist < fBestPinDist)
+		{
+			fBestPinDist = fDist;
+			iPinnedMate = i;
+			iPinningHunter = iAttacker;
+		}
+	}
+
+	if (iPinnedMate > 0 && iPinningHunter > 0)
+	{
+		float fHunterPos[3];
+		GetClientAbsOrigin(iPinningHunter, fHunterPos);
+		float fDistSqr = GetVectorDistance(fBotPos, fHunterPos, true);
+
+		// Close enough to shoot — switch to shotgun if available for pushback
+		if (fDistSqr < 90000.0) // 300 units
+		{
+			Phase3_SwitchToShotgun(iClient);
+		}
+
+		// Check friendly fire before shooting
+		if (!Phase2_WouldCauseFriendlyFire(iClient, fHunterPos))
+		{
+			BotLookAtPosition(iClient, fHunterPos, 0.3);
+		}
+
+		// Move toward pinned teammate if too far
+		if (fDistSqr > 40000.0) // > 200 units
+		{
+			SetMoveToPosition(iClient, fHunterPos, 5, "RescuePinned", 0.0, 50.0, true, true);
+		}
+
+		return true;
+	}
+
+	// Priority 2: Detect crouching/pouncing Hunters nearby
+	int iBestHunter = -1;
+	float fBestHunterDist = 999999.0;
+	bool bBestIsPouncing = false;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i))
+			continue;
+
+		// Check zombie class == 3 (Hunter)
+		if (!HasEntProp(i, Prop_Send, "m_zombieClass"))
+			continue;
+
+		int iZClass = GetEntProp(i, Prop_Send, "m_zombieClass");
+		if (iZClass != 3)
+			continue;
+
+		if (L4D_IsPlayerGhost(i))
+			continue;
+
+		float fHunterPos[3];
+		GetClientAbsOrigin(i, fHunterPos);
+		float fDistSqr = GetVectorDistance(fBotPos, fHunterPos, true);
+
+		// Only care about Hunters within 500 units (250000 sq)
+		if (fDistSqr > 250000.0)
+			continue;
+
+		// Check if Hunter is attempting to pounce
+		bool bPouncing = false;
+		if (HasEntProp(i, Prop_Send, "m_isAttemptingToPounce"))
+		{
+			bPouncing = (GetEntProp(i, Prop_Send, "m_isAttemptingToPounce") == 1);
+		}
+
+		// Detect crouching Hunter (low speed, on ground, not yet pouncing)
+		bool bCrouching = false;
+		if (!bPouncing)
+		{
+			float fVel[3];
+			GetEntPropVector(i, Prop_Data, "m_vecVelocity", fVel);
+			float fSpeedSqr = fVel[0] * fVel[0] + fVel[1] * fVel[1];
+			int iFlags = GetEntityFlags(i);
+
+			// Low speed + on ground + ducking = crouching Hunter preparing pounce
+			if (fSpeedSqr < 2500.0 && (iFlags & FL_ONGROUND) && (iFlags & FL_DUCKING))
+			{
+				// Check if facing a survivor
+				if (Phase3_IsFacingSurvivor(i))
+					bCrouching = true;
+			}
+		}
+
+		if (!bPouncing && !bCrouching)
+			continue;
+
+		// Prioritize pouncing Hunters, then by distance
+		if (bPouncing && !bBestIsPouncing)
+		{
+			iBestHunter = i;
+			fBestHunterDist = fDistSqr;
+			bBestIsPouncing = true;
+		}
+		else if (bPouncing == bBestIsPouncing && fDistSqr < fBestHunterDist)
+		{
+			iBestHunter = i;
+			fBestHunterDist = fDistSqr;
+			bBestIsPouncing = bPouncing;
+		}
+	}
+
+	if (iBestHunter <= 0)
+		return false;
+
+	float fHunterPos[3];
+	GetClientAbsOrigin(iBestHunter, fHunterPos);
+
+	// Flying Hunter interception: predict landing and shoot
+	if (bBestIsPouncing)
+	{
+		float fHunterVel[3];
+		GetEntPropVector(iBestHunter, Prop_Data, "m_vecVelocity", fHunterVel);
+		float fSpeed = SquareRoot(fHunterVel[0] * fHunterVel[0] + fHunterVel[1] * fHunterVel[1] + fHunterVel[2] * fHunterVel[2]);
+
+		// If Hunter is airborne and fast, lead the target
+		if (fSpeed > 200.0 && !(GetEntityFlags(iBestHunter) & FL_ONGROUND))
+		{
+			float fLeadTime = 0.15; // predict 150ms ahead
+			float fLeadPos[3];
+			fLeadPos[0] = fHunterPos[0] + fHunterVel[0] * fLeadTime;
+			fLeadPos[1] = fHunterPos[1] + fHunterVel[1] * fLeadTime;
+			fLeadPos[2] = fHunterPos[2] + fHunterVel[2] * fLeadTime;
+
+			if (!Phase2_WouldCauseFriendlyFire(iClient, fLeadPos))
+			{
+				BotLookAtPosition(iClient, fLeadPos, 0.2);
+			}
+			return true;
+		}
+	}
+
+	// Crouching Hunter within 300 units — switch to shotgun and blast
+	if (fBestHunterDist < 90000.0) // 300 units
+	{
+		Phase3_SwitchToShotgun(iClient);
+	}
+
+	// Aim and shoot
+	if (!Phase2_WouldCauseFriendlyFire(iClient, fHunterPos))
+	{
+		BotLookAtPosition(iClient, fHunterPos, 0.3);
+	}
+
+	return true;
+}
+
+/**
+ * Check if an infected is facing any survivor (within 60 degree cone).
+ */
+bool Phase3_IsFacingSurvivor(int iInfected)
+{
+	float fInfPos[3], fInfAng[3], fInfFwd[3];
+	GetClientAbsOrigin(iInfected, fInfPos);
+	GetClientEyeAngles(iInfected, fInfAng);
+	GetAngleVectors(fInfAng, fInfFwd, NULL_VECTOR, NULL_VECTOR);
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+			continue;
+
+		float fSurvPos[3];
+		GetClientAbsOrigin(i, fSurvPos);
+
+		float fDir[3];
+		SubtractVectors(fSurvPos, fInfPos, fDir);
+		float fLen = SquareRoot(fDir[0] * fDir[0] + fDir[1] * fDir[1]);
+		if (fLen <= 0.0) continue;
+		fDir[0] /= fLen;
+		fDir[1] /= fLen;
+
+		// Dot product for angle check (cos(60) = 0.5)
+		float fDot = fInfFwd[0] * fDir[0] + fInfFwd[1] * fDir[1];
+		if (fDot > 0.5)
+			return true;
+	}
+
+	return false;
+}
+
+/**
+ * Switch to shotgun if available (prefer auto shotgun over pump).
+ */
+void Phase3_SwitchToShotgun(int iClient)
+{
+	int iActiveWeapon = L4D_GetPlayerCurrentWeapon(iClient);
+	if (!L4D_IsValidEnt(iActiveWeapon))
+		return;
+
+	char sClass[64];
+	GetEntityClassname(iActiveWeapon, sClass, sizeof(sClass));
+
+	// Already using a shotgun
+	if (StrContains(sClass, "shotgun") != -1)
+		return;
+
+	// Check if primary weapon is a shotgun
+	int iPrimary = GetPlayerWeaponSlot(iClient, 0);
+	if (iPrimary != -1 && L4D_IsValidEnt(iPrimary))
+	{
+		char sPrimClass[64];
+		GetEntityClassname(iPrimary, sPrimClass, sizeof(sPrimClass));
+		if (StrContains(sPrimClass, "shotgun") != -1)
+		{
+			SwitchWeaponSlot(iClient, 0);
+			return;
+		}
+	}
+
+	// Check secondary for pump shotgun
+	int iSecondary = GetPlayerWeaponSlot(iClient, 1);
+	if (iSecondary != -1 && L4D_IsValidEnt(iSecondary))
+	{
+		char sSecClass[64];
+		GetEntityClassname(iSecondary, sSecClass, sizeof(sSecClass));
+		if (StrContains(sSecClass, "shotgun") != -1)
+		{
+			SwitchWeaponSlot(iClient, 1);
+		}
+	}
+}
+
+// ==================== Phase3 Task9: Tank Rock Dodge & Kiting ====================
+
+/**
+ * Detect Tank rock projectile and dodge if it's heading toward bot.
+ * Also handles Tank kiting behavior.
+ */
+void Phase3_TankRockDodge(int iClient)
+{
+	float fCurTime = GetGameTime();
+
+	// Run kiting logic for any alive Tank
+	Phase3_TankKiting(iClient);
+
+	// Dodge cooldown: 1.5s between dodges
+	if (fCurTime - g_fRockDodgeTime[iClient] < 1.5)
+		return;
+
+	// Check if a rock entity is flying
+	int iRock = EntRefToEntIndex(g_iTankRockEntity);
+	if (iRock == INVALID_ENT_REFERENCE || !IsValidEntity(iRock))
+	{
+		g_iTankRockEntity = -1;
+		return;
+	}
+
+	// Verify it's still a tank_rock
+	char sClass[64];
+	GetEntityClassname(iRock, sClass, sizeof(sClass));
+	if (!StrEqual(sClass, "tank_rock"))
+	{
+		g_iTankRockEntity = -1;
+		return;
+	}
+
+	// Get rock position and velocity
+	float fRockPos[3], fRockVel[3];
+	GetEntPropVector(iRock, Prop_Data, "m_vecAbsOrigin", fRockPos);
+	GetEntPropVector(iRock, Prop_Data, "m_vecVelocity", fRockVel);
+
+	float fRockSpeed = SquareRoot(fRockVel[0] * fRockVel[0] + fRockVel[1] * fRockVel[1] + fRockVel[2] * fRockVel[2]);
+	if (fRockSpeed < 50.0)
+		return; // Rock not moving significantly
+
+	// Check if rock is heading toward this bot
+	float fBotPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+
+	float fToBot[3];
+	SubtractVectors(fBotPos, fRockPos, fToBot);
+	float fDistToBot = SquareRoot(fToBot[0] * fToBot[0] + fToBot[1] * fToBot[1] + fToBot[2] * fToBot[2]);
+
+	if (fDistToBot <= 0.0 || fDistToBot > 800.0)
+		return; // Too far or zero distance
+
+	// Normalize direction to bot
+	fToBot[0] /= fDistToBot;
+	fToBot[1] /= fDistToBot;
+	fToBot[2] /= fDistToBot;
+
+	// Normalize rock velocity
+	float fRockDir[3];
+	fRockDir[0] = fRockVel[0] / fRockSpeed;
+	fRockDir[1] = fRockVel[1] / fRockSpeed;
+	fRockDir[2] = fRockVel[2] / fRockSpeed;
+
+	// Dot product: is rock heading toward bot?
+	float fDot = fRockDir[0] * fToBot[0] + fRockDir[1] * fToBot[1] + fRockDir[2] * fToBot[2];
+
+	// Rock must be heading toward us (dot > 0.5 means within ~60 degree cone)
+	if (fDot < 0.5)
+		return;
+
+	// Need to dodge! Calculate perpendicular direction
+	float fDodgeDir[3];
+	// Perpendicular to rock direction in horizontal plane
+	fDodgeDir[0] = -fRockDir[1];
+	fDodgeDir[1] = fRockDir[0];
+	fDodgeDir[2] = 0.0;
+
+	// Choose left or right based on which side has more space
+	float fLeftPos[3], fRightPos[3];
+	fLeftPos[0] = fBotPos[0] + fDodgeDir[0] * 220.0;
+	fLeftPos[1] = fBotPos[1] + fDodgeDir[1] * 220.0;
+	fLeftPos[2] = fBotPos[2];
+
+	fRightPos[0] = fBotPos[0] - fDodgeDir[0] * 220.0;
+	fRightPos[1] = fBotPos[1] - fDodgeDir[1] * 220.0;
+	fRightPos[2] = fBotPos[2];
+
+	// Trace to check which side is clear
+	bool bLeftClear = Phase3_IsPositionClear(fBotPos, fLeftPos);
+	bool bRightClear = Phase3_IsPositionClear(fBotPos, fRightPos);
+
+	float fDodgePos[3];
+	if (bLeftClear && !bRightClear)
+	{
+		fDodgePos = fLeftPos;
+	}
+	else if (!bLeftClear && bRightClear)
+	{
+		fDodgePos = fRightPos;
+	}
+	else
+	{
+		// Both clear or both blocked — pick random
+		if (GetGameTickCount() % 2 == 0)
+			fDodgePos = fLeftPos;
+		else
+			fDodgePos = fRightPos;
+	}
+
+	// Execute dodge movement
+	SetMoveToPosition(iClient, fDodgePos, 5, "DodgeRock", 0.0, 5.0, true, true);
+	g_fRockDodgeTime[iClient] = fCurTime;
+}
+
+/**
+ * Check if a position is reachable (no wall in the way).
+ */
+bool Phase3_IsPositionClear(float fStart[3], float fEnd[3])
+{
+	Handle hTrace = TR_TraceRayFilterEx(fStart, fEnd, MASK_PLAYERSOLID, RayType_EndPoint, Phase3_TraceFilter_World);
+	bool bHit = TR_DidHit(hTrace);
+	delete hTrace;
+	return !bHit;
+}
+
+bool Phase3_TraceFilter_World(int iEntity, int iContentsMask, int iData)
+{
+	// Only hit world geometry
+	return (iEntity == 0);
+}
+
+/**
+ * Tank kiting: maintain optimal distance (400-600 units) and shoot while retreating.
+ * Only activates when bot is being chased by Tank.
+ */
+void Phase3_TankKiting(int iClient)
+{
+	// Don't override if focus fire kite runner is already handling this
+	if (g_bFocusFireActive && iClient == g_iKiteRunner)
+		return;
+
+	// Find alive Tank
+	int iTank = -1;
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i))
+			continue;
+		if (L4D_IsPlayerGhost(i))
+			continue;
+
+		if (!HasEntProp(i, Prop_Send, "m_zombieClass"))
+			continue;
+
+		int iZClass = GetEntProp(i, Prop_Send, "m_zombieClass");
+		if (iZClass == 8) // Tank
+		{
+			iTank = i;
+			break;
+		}
+	}
+
+	if (iTank <= 0)
+		return;
+
+	float fTankPos[3], fBotPos[3];
+	GetClientAbsOrigin(iTank, fTankPos);
+	GetClientAbsOrigin(iClient, fBotPos);
+
+	float fDistSqr = GetVectorDistance(fBotPos, fTankPos, true);
+
+	// Check if Tank is targeting this bot (Tank facing toward us and close)
+	float fTankAng[3], fTankFwd[3];
+	GetClientEyeAngles(iTank, fTankAng);
+	GetAngleVectors(fTankAng, fTankFwd, NULL_VECTOR, NULL_VECTOR);
+
+	float fToBot[3];
+	SubtractVectors(fBotPos, fTankPos, fToBot);
+	float fLen = SquareRoot(fToBot[0] * fToBot[0] + fToBot[1] * fToBot[1]);
+	if (fLen <= 0.0) return;
+	fToBot[0] /= fLen;
+	fToBot[1] /= fLen;
+
+	float fDot = fTankFwd[0] * fToBot[0] + fTankFwd[1] * fToBot[1];
+
+	// Tank must be roughly facing us (within ~70 degrees)
+	if (fDot < 0.34) // cos(70) ~ 0.34
+		return;
+
+	// Too close (< 400 units = 160000 sq) — back away
+	if (fDistSqr < 160000.0)
+	{
+		// Calculate retreat direction (away from Tank)
+		float fRetreatPos[3];
+		fRetreatPos[0] = fBotPos[0] + fToBot[0] * 250.0;
+		fRetreatPos[1] = fBotPos[1] + fToBot[1] * 250.0;
+		fRetreatPos[2] = fBotPos[2];
+
+		// Check if retreat path is clear
+		if (!Phase3_IsPositionClear(fBotPos, fRetreatPos))
+		{
+			// Obstacle behind — try side step
+			float fSideDir = (GetGameTickCount() % 2 == 0) ? 1.0 : -1.0;
+			fRetreatPos[0] = fBotPos[0] + (-fToBot[1] * fSideDir) * 200.0 + fToBot[0] * 100.0;
+			fRetreatPos[1] = fBotPos[1] + (fToBot[0] * fSideDir) * 200.0 + fToBot[1] * 100.0;
+			fRetreatPos[2] = fBotPos[2];
+		}
+
+		SetMoveToPosition(iClient, fRetreatPos, 4, "KiteTank", 0.0, 15.0, true, true);
+
+		// Face Tank while retreating
+		BotLookAtPosition(iClient, fTankPos, 0.3);
+	}
+	// In sweet spot (400-600 units) — hold and shoot
+	else if (fDistSqr < 360000.0) // < 600 units
+	{
+		BotLookAtPosition(iClient, fTankPos, 0.2);
+	}
+	// Too far (> 600) — let normal AI handle approach
+}
+
+// ==================== Phase3 Task10: Witch Control ====================
+
+/**
+ * Witch handling: cr0wn attempt, detour around sitting Witch, emergency focus fire.
+ */
+void Phase3_WitchControl(int iClient)
+{
+	float fCurTime = GetGameTime();
+	float fBotPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+
+	// If currently attempting cr0wn, continue the approach
+	if (g_bWitchCrownAttempt[iClient])
+	{
+		Phase3_ContinueCrown(iClient);
+		return;
+	}
+
+	// Check for angry Witches first (emergency)
+	if (Phase3_HandleAngryWitch(iClient, fBotPos))
+		return;
+
+	// Scan for sitting (calm) Witches
+	if (!g_hWitchList)
+		return;
+
+	int iClosestWitch = -1;
+	float fClosestDistSqr = 999999.0;
+	bool bClosestAngry = false;
+
+	for (int i = 0; i < g_hWitchList.Length; i++)
+	{
+		int iWitch = EntRefToEntIndex(g_hWitchList.Get(i));
+		if (iWitch == INVALID_ENT_REFERENCE || !IsValidEntity(iWitch))
+			continue;
+
+		float fWitchPos[3];
+		GetEntPropVector(iWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+		float fDistSqr = GetVectorDistance(fBotPos, fWitchPos, true);
+
+		if (fDistSqr < fClosestDistSqr)
+		{
+			fClosestDistSqr = fDistSqr;
+			iClosestWitch = iWitch;
+
+			// Check if angry via rage meter
+			if (HasEntProp(iWitch, Prop_Send, "m_rage"))
+				bClosestAngry = (GetEntPropFloat(iWitch, Prop_Send, "m_rage") > 0.5);
+			else
+				bClosestAngry = false;
+		}
+	}
+
+	if (iClosestWitch <= 0)
+		return;
+
+	// Witch within 800 units (640000 sq) — decide action
+	if (fClosestDistSqr > 640000.0)
+		return;
+
+	float fWitchPos[3];
+	GetEntPropVector(iClosestWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+
+	// If Witch is calm and close enough, consider cr0wn
+	if (!bClosestAngry && fClosestDistSqr < 250000.0) // < 500 units
+	{
+		// Safety check: no other major threats nearby
+		if (Phase3_IsSafeToCrown(iClient, fBotPos))
+		{
+			// Start cr0wn attempt
+			g_bWitchCrownAttempt[iClient] = true;
+			g_iWitchCrownTarget[iClient] = EntIndexToEntRef(iClosestWitch);
+			Phase3_SwitchToShotgun(iClient);
+			return;
+		}
+	}
+
+	// Detour around calm Witch (within 500 units, on path)
+	if (!bClosestAngry && fClosestDistSqr < 250000.0)
+	{
+		Phase3_DetourAroundWitch(iClient, fBotPos, fWitchPos);
+	}
+}
+
+/**
+ * Continue cr0wn approach: walk slowly toward Witch, shoot at point-blank.
+ */
+void Phase3_ContinueCrown(int iClient)
+{
+	int iWitch = EntRefToEntIndex(g_iWitchCrownTarget[iClient]);
+	if (iWitch == INVALID_ENT_REFERENCE || !IsValidEntity(iWitch))
+	{
+		// Target gone
+		g_bWitchCrownAttempt[iClient] = false;
+		g_iWitchCrownTarget[iClient] = -1;
+		return;
+	}
+
+	// Check if Witch became angry (cr0wn failed)
+	if (HasEntProp(iWitch, Prop_Send, "m_rage"))
+	{
+		float fRage = GetEntPropFloat(iWitch, Prop_Send, "m_rage");
+		if (fRage > 0.5)
+		{
+			// Cr0wn failed — abort and retreat
+			g_bWitchCrownAttempt[iClient] = false;
+			g_iWitchCrownTarget[iClient] = -1;
+
+			// Retreat away from Witch
+			float fBotPos[3], fWitchPos[3];
+			GetClientAbsOrigin(iClient, fBotPos);
+			GetEntPropVector(iWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+
+			float fAwayDir[3];
+			SubtractVectors(fBotPos, fWitchPos, fAwayDir);
+			float fLen = SquareRoot(fAwayDir[0] * fAwayDir[0] + fAwayDir[1] * fAwayDir[1]);
+			if (fLen > 0.0)
+			{
+				fAwayDir[0] /= fLen;
+				fAwayDir[1] /= fLen;
+
+				float fRetreatPos[3];
+				fRetreatPos[0] = fBotPos[0] + fAwayDir[0] * 300.0;
+				fRetreatPos[1] = fBotPos[1] + fAwayDir[1] * 300.0;
+				fRetreatPos[2] = fBotPos[2];
+
+				SetMoveToPosition(iClient, fRetreatPos, 5, "CrownFailed", 0.0, 10.0, true, true);
+			}
+			return;
+		}
+	}
+
+	float fBotPos[3], fWitchPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+	GetEntPropVector(iWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+
+	float fDistSqr = GetVectorDistance(fBotPos, fWitchPos, true);
+
+	// Point-blank range (< 70 units = 4900 sq) — aim at head and fire
+	if (fDistSqr < 4900.0)
+	{
+		// Aim at Witch head (slightly above origin)
+		float fHeadPos[3];
+		fHeadPos[0] = fWitchPos[0];
+		fHeadPos[1] = fWitchPos[1];
+		fHeadPos[2] = fWitchPos[2] + 50.0; // approximate head height
+
+		BotLookAtPosition(iClient, fHeadPos, 0.1);
+
+		// Done with cr0wn attempt (one shot)
+		g_bWitchCrownAttempt[iClient] = false;
+		g_iWitchCrownTarget[iClient] = -1;
+		return;
+	}
+
+	// Walk slowly toward Witch (use low priority to not sprint)
+	SetMoveToPosition(iClient, fWitchPos, 1, "CrownApproach", 0.0, 60.0, true, false);
+
+	// Look at Witch while approaching
+	BotLookAtPosition(iClient, fWitchPos, 0.5);
+}
+
+/**
+ * Check if it's safe to attempt cr0wn (no Tank, no horde, few SI).
+ */
+bool Phase3_IsSafeToCrown(int iClient, float fBotPos[3])
+{
+	int iSICount = 0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i))
+			continue;
+		if (L4D_IsPlayerGhost(i))
+			continue;
+
+		if (!HasEntProp(i, Prop_Send, "m_zombieClass"))
+			continue;
+
+		int iZClass = GetEntProp(i, Prop_Send, "m_zombieClass");
+
+		// Tank alive = not safe
+		if (iZClass == 8)
+			return false;
+
+		// Count nearby SI
+		float fSIPos[3];
+		GetClientAbsOrigin(i, fSIPos);
+		if (GetVectorDistance(fBotPos, fSIPos, true) < 640000.0) // 800 units
+			iSICount++;
+	}
+
+	// If too many SI nearby, not safe
+	if (iSICount >= 3)
+		return false;
+
+	return true;
+}
+
+/**
+ * Calculate and follow a detour path around a calm Witch.
+ */
+void Phase3_DetourAroundWitch(int iClient, float fBotPos[3], float fWitchPos[3])
+{
+	// Direction from bot to Witch
+	float fToWitch[3];
+	SubtractVectors(fWitchPos, fBotPos, fToWitch);
+	float fLen = SquareRoot(fToWitch[0] * fToWitch[0] + fToWitch[1] * fToWitch[1]);
+	if (fLen <= 0.0) return;
+	fToWitch[0] /= fLen;
+	fToWitch[1] /= fLen;
+
+	// Perpendicular direction for detour (500 units offset)
+	float fDetourPos[3];
+	float fSideDir = (GetGameTickCount() % 2 == 0) ? 1.0 : -1.0;
+
+	// Detour point: to the side of the Witch, 500 units offset
+	fDetourPos[0] = fWitchPos[0] + (-fToWitch[1] * fSideDir) * 500.0;
+	fDetourPos[1] = fWitchPos[1] + (fToWitch[0] * fSideDir) * 500.0;
+	fDetourPos[2] = fBotPos[2];
+
+	// Check if detour is walkable
+	if (!Phase3_IsPositionClear(fBotPos, fDetourPos))
+	{
+		// Try the other side
+		fDetourPos[0] = fWitchPos[0] + (-fToWitch[1] * -fSideDir) * 500.0;
+		fDetourPos[1] = fWitchPos[1] + (fToWitch[0] * -fSideDir) * 500.0;
+	}
+
+	SetMoveToPosition(iClient, fDetourPos, 2, "DetourWitch", 0.0, 80.0, true, false);
+}
+
+/**
+ * Handle angry (startled) Witch: emergency focus fire.
+ * Returns true if handling an angry Witch.
+ */
+bool Phase3_HandleAngryWitch(int iClient, float fBotPos[3])
+{
+	if (!g_hWitchList)
+		return false;
+
+	int iAngryWitch = -1;
+	float fAngryDistSqr = 999999.0;
+
+	for (int i = 0; i < g_hWitchList.Length; i++)
+	{
+		int iWitch = EntRefToEntIndex(g_hWitchList.Get(i));
+		if (iWitch == INVALID_ENT_REFERENCE || !IsValidEntity(iWitch))
+			continue;
+
+		// Check rage state
+		if (!HasEntProp(iWitch, Prop_Send, "m_rage"))
+			continue;
+
+		float fRage = GetEntPropFloat(iWitch, Prop_Send, "m_rage");
+		if (fRage < 0.5)
+			continue; // Not angry
+
+		float fWitchPos[3];
+		GetEntPropVector(iWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+		float fDistSqr = GetVectorDistance(fBotPos, fWitchPos, true);
+
+		if (fDistSqr < fAngryDistSqr)
+		{
+			fAngryDistSqr = fDistSqr;
+			iAngryWitch = iWitch;
+		}
+	}
+
+	if (iAngryWitch <= 0)
+		return false;
+
+	// Angry Witch within 1000 units (1000000 sq)
+	if (fAngryDistSqr > 1000000.0)
+		return false;
+
+	float fWitchPos[3];
+	GetEntPropVector(iAngryWitch, Prop_Data, "m_vecAbsOrigin", fWitchPos);
+
+	// Check if Witch is chasing THIS bot
+	bool bWitchChasingMe = false;
+	if (HasEntProp(iAngryWitch, Prop_Send, "m_hTarget"))
+	{
+		int iTarget = GetEntPropEnt(iAngryWitch, Prop_Send, "m_hTarget");
+		if (iTarget == iClient)
+			bWitchChasingMe = true;
+	}
+
+	if (bWitchChasingMe)
+	{
+		// Run away from Witch while shooting
+		float fAwayDir[3];
+		SubtractVectors(fBotPos, fWitchPos, fAwayDir);
+		float fLen = SquareRoot(fAwayDir[0] * fAwayDir[0] + fAwayDir[1] * fAwayDir[1]);
+		if (fLen > 0.0)
+		{
+			fAwayDir[0] /= fLen;
+			fAwayDir[1] /= fLen;
+
+			float fRetreatPos[3];
+			fRetreatPos[0] = fBotPos[0] + fAwayDir[0] * 200.0;
+			fRetreatPos[1] = fBotPos[1] + fAwayDir[1] * 200.0;
+			fRetreatPos[2] = fBotPos[2];
+
+			SetMoveToPosition(iClient, fRetreatPos, 5, "FleeWitch", 0.0, 8.0, true, true);
+		}
+	}
+
+	// All bots focus fire the angry Witch
+	if (!Phase2_WouldCauseFriendlyFire(iClient, fWitchPos))
+	{
+		BotLookAtPosition(iClient, fWitchPos, 0.2);
+	}
+
+	return true;
 }
