@@ -44,6 +44,8 @@ static int g_iLeaderBot = -1;                      // The elected leader bot cli
 static float g_fRescueClosetPos[3];                // Nearest rescue closet position
 static bool g_bHasRescueCloset = false;             // Whether a rescue closet was found
 static float g_fLastClosetCheckTime = 0.0;         // Last time we scanned for closets
+static float g_fLastDefibNearbyCheckTime = 0.0;    // Throttle for DefibExistsNearby scan
+static bool g_bDefibNearby = false;                 // Cached result of DefibExistsNearby
 
 // ============================================================
 // Aggressive Leader Mode
@@ -81,13 +83,22 @@ static bool TaskNavigate_AnyBotHasDefib() {
 
 /**
  * Check if a defibrillator exists on the ground or as a spawn within range.
+ * Results are cached for 5 seconds to avoid expensive entity scans every tick.
  */
 static bool TaskNavigation_DefibExistsNearby() {
+    float curTime = GetGameTime();
+    if (curTime - g_fLastDefibNearbyCheckTime < 5.0) {
+        return g_bDefibNearby;
+    }
+    g_fLastDefibNearbyCheckTime = curTime;
+
+    g_bDefibNearby = false;
     int ent = -1;
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator")) != -1) {
         if (!IsValidEntity(ent)) continue;
         int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
         if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) continue;
+        g_bDefibNearby = true;
         return true;  // Found an unowned defib
     }
     ent = -1;
@@ -97,6 +108,7 @@ static bool TaskNavigation_DefibExistsNearby() {
         if (offset > 0) {
             if (GetEntProp(ent, Prop_Data, "m_nCount") <= 0) continue;
         }
+        g_bDefibNearby = true;
         return true;  // Found a spawn with items
     }
     return false;
@@ -116,7 +128,9 @@ static void TaskNavigate_UpdateAggressiveMode() {
             g_bAggressiveLeaderMode = false;
             g_iLeaderBot = -1;
             g_bHasRescueCloset = false;
-            PrintToServer("[AI Bot] Aggressive leader mode OFF — human player is alive");
+            if (g_bDebugMode) {
+                PrintToServer("[AI Bot] Aggressive leader mode OFF — human player is alive");
+            }
         }
         return;
     }
@@ -158,7 +172,9 @@ static void TaskNavigate_UpdateAggressiveMode() {
             char name[64]; GetClientName(g_iLeaderBot, name, sizeof(name));
             AI_DebugDecision(g_iLeaderBot, "Aggressive leader elected (all humans dead, no defib)");
         } else {
-            PrintToServer("[AI Bot] Aggressive leader mode ON — but no valid leader found!");
+            if (g_bDebugMode) {
+                PrintToServer("[AI Bot] Aggressive leader mode ON — but no valid leader found!");
+            }
         }
     }
 }
@@ -486,6 +502,8 @@ void TaskNavigate_ResetGlobals() {
     g_iLeaderBot = -1;
     g_bHasRescueCloset = false;
     g_fLastClosetCheckTime = 0.0;
+    g_fLastDefibNearbyCheckTime = 0.0;
+    g_bDefibNearby = false;
 }
 
 // ============================================================
