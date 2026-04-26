@@ -28,6 +28,10 @@
 #define TRIGGER_SEARCH_RANGE      800.0   // Max search radius (units)
 #define TRIGGER_USE_RANGE         96.0    // Must be this close to activate
 #define TRIGGER_SCAN_INTERVAL     3.0     // Seconds between scans
+#define TRIGGER_ACID_RANGE        200.0   // Don't approach trigger if acid is this close
+#define TRIGGER_TANK_RANGE        400.0   // Don't approach trigger if Tank is this close
+#define TRIGGER_MAX_HOLD_ATTEMPTS 3       // After this many failed hold attempts, teleport skip
+#define TRIGGER_HOLD_TIMEOUT      15.0    // Max seconds to hold USE before considering it failed
 
 // Global used-trigger tracking (reset each map)
 #define MAX_ENTITIES 2048
@@ -38,6 +42,9 @@ static int g_iTriggerTarget[MAXPLAYERS + 1];           // Entity being pursued
 static float g_fTriggerScanTime[MAXPLAYERS + 1];       // Last scan timestamp
 static float g_fTriggerHoldStart[MAXPLAYERS + 1];      // When we started holding USE
 static bool g_bTriggerHolding[MAXPLAYERS + 1];          // Whether we're in hold-USE mode
+
+// Per-entity hold-USE failure tracking (for teleport skip)
+static int g_iTriggerHoldFailCount[MAX_ENTITIES];       // How many times hold-USE failed on this entity
 
 /**
  * Check if an entity requires HOLDING USE (progress bar) to activate.
@@ -84,6 +91,7 @@ void TriggerSearch_ResetGlobals() {
         g_bTriggerUsed[i] = false;
         g_fTriggerLastUsed[i] = 0.0;
         g_iTriggerAssignee[i] = -1;
+        g_iTriggerHoldFailCount[i] = 0;
     }
     for (int i = 0; i <= MaxClients; i++) {
         g_iTriggerTarget[i] = -1;
@@ -102,6 +110,11 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
     if (g_BotState[client].isInCombat) return false;
     if (g_BotState[client].isRescuing) return false;
     if (g_BotState[client].isHealing) return false;
+
+    // Don't approach triggers if standing in acid or near a Tank
+    if (AI_IsDangerNearPosition(g_BotState[client].absOrigin, TRIGGER_ACID_RANGE, TRIGGER_TANK_RANGE)) {
+        return false;
+    }
 
     // If already tracking a trigger, continue (even if holding USE)
     int current = g_iTriggerTarget[client];
@@ -173,8 +186,15 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
                 g_iTriggerAssignee[ent] = -1;
             }
 
+            // Skip entities that exceeded max hold-USE failure count (will be teleport-skipped)
+            if (g_iTriggerHoldFailCount[ent] >= TRIGGER_MAX_HOLD_ATTEMPTS) continue;
+
             float entPos[3];
             GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
+
+            // Skip if danger near the trigger entity
+            if (AI_IsDangerNearPosition(entPos, TRIGGER_ACID_RANGE, TRIGGER_TANK_RANGE)) continue;
+
             float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, entPos);
             if (dist > TRIGGER_SEARCH_RANGE) continue;
 
@@ -211,6 +231,13 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
         return false;
     }
 
+    // Check if this entity has exceeded max hold-USE failures — teleport skip instead
+    if (TriggerSearch_NeedsHoldUse(target) && g_iTriggerHoldFailCount[target] >= TRIGGER_MAX_HOLD_ATTEMPTS) {
+        AI_DebugDecision(client, "Trigger teleport-skip: hold-USE failed %d times", g_iTriggerHoldFailCount[target]);
+        TriggerSearch_TeleportSkip(client, target);
+        return false;
+    }
+
     // Already used this round? (with cooldown-based re-interaction)
     if (g_bTriggerUsed[target] && !g_bTriggerHolding[client]) {
         float curTime = GetGameTime();
@@ -223,8 +250,18 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
         g_bTriggerUsed[target] = false;
     }
 
+    // Abort if danger appeared near us or the trigger
     float entPos[3];
     GetEntPropVector(target, Prop_Data, "m_vecAbsOrigin", entPos);
+    if (AI_IsDangerNearPosition(g_BotState[client].absOrigin, TRIGGER_ACID_RANGE, TRIGGER_TANK_RANGE) ||
+        AI_IsDangerNearPosition(entPos, TRIGGER_ACID_RANGE, TRIGGER_TANK_RANGE)) {
+        if (g_bDebugMode) {
+            AI_DebugDecision(client, "Trigger abort: danger nearby (acid/tank)");
+        }
+        TaskTriggerSearch_Reset(client);
+        return false;
+    }
+
     float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, entPos);
 
     if (dist <= TRIGGER_USE_RANGE) {
@@ -234,12 +271,10 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
 
         if (TriggerSearch_NeedsHoldUse(target)) {
             // === Hold-USE mode: keep IN_USE pressed until progress completes ===
-            // CRITICAL: Freeze the bot at engine level (FL_FROZEN) like heal does.
-            // Just clearing vel/buttons is NOT enough — other tasks/engine AI override them.
-            int flags = GetEntityFlags(client);
-            if ((flags & FL_FROZEN) == 0) {
-                SetEntityFlags(client, flags | FL_FROZEN);
-            }
+            // Do NOT use FL_FROZEN — it prevents the engine from processing USE input,
+            // which means the progress bar never appears and the trigger never activates.
+            // Instead, zero vel and clear movement buttons. isHoldingUse flag protects
+            // from task preemption and dodge override.
 
             vel[0] = 0.0;
             vel[1] = 0.0;
@@ -260,18 +295,27 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
             float heldDuration = GetGameTime() - g_fTriggerHoldStart[client];
             float requiredDuration = TriggerSearch_GetHoldDuration(target);
             if (heldDuration >= requiredDuration + 0.5) {
-                // Held long enough — unfreeze, mark as used and release
-                int f = GetEntityFlags(client);
-                if ((f & FL_FROZEN) != 0) {
-                    SetEntityFlags(client, f & ~FL_FROZEN);
-                }
+                // Held long enough — mark as used and release
                 g_bTriggerUsed[target] = true;
                 g_fTriggerLastUsed[target] = GetGameTime();
                 g_iTriggerAssignee[target] = -1;  // Clear assignment
                 g_bTriggerHolding[client] = false;
                 g_BotState[client].isHoldingUse = false;
                 g_iTriggerTarget[client] = -1;
+                AI_DebugDecision(client, "Trigger hold-USE completed (%.1fs)", heldDuration);
                 return false;  // Release task
+            }
+
+            // Timeout: if we've been holding for way too long, the progress bar isn't working
+            if (heldDuration >= TRIGGER_HOLD_TIMEOUT) {
+                g_iTriggerHoldFailCount[target]++;
+                AI_DebugDecision(client, "Trigger hold-USE TIMEOUT (fail #%d)", g_iTriggerHoldFailCount[target]);
+                g_bTriggerHolding[client] = false;
+                g_BotState[client].isHoldingUse = false;
+                g_iTriggerTarget[client] = -1;
+                // Clear assignment so another bot can try
+                g_iTriggerAssignee[target] = -1;
+                return false;
             }
 
             return true;  // LOCK task while holding USE
@@ -307,13 +351,6 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
  * Reset trigger search state for a bot.
  */
 void TaskTriggerSearch_Reset(int client) {
-    // CRITICAL: Remove FL_FROZEN if we were holding USE, same as heal task
-    if (g_bTriggerHolding[client]) {
-        int flags = GetEntityFlags(client);
-        if ((flags & FL_FROZEN) != 0) {
-            SetEntityFlags(client, flags & ~FL_FROZEN);
-        }
-    }
     // Clear our assignment on the trigger entity
     int target = g_iTriggerTarget[client];
     if (target > 0 && target < MAX_ENTITIES && g_iTriggerAssignee[target] == client) {
@@ -340,4 +377,93 @@ static bool TriggerSearch_IsLocked(int entity) {
         return (GetEntProp(entity, Prop_Data, "m_bLocked") != 0);
     }
     return false;
+}
+
+/**
+ * Teleport all bots past a trigger/door that they can't open.
+ * Finds a position ahead using flow distance and teleports the team there.
+ * Only used as a last resort when hold-USE fails repeatedly.
+ */
+static void TriggerSearch_TeleportSkip(int client, int target) {
+    float triggerPos[3];
+    GetEntPropVector(target, Prop_Data, "m_vecAbsOrigin", triggerPos);
+
+    // Find a position ahead of the trigger using flow distance sampling
+    float skipTarget[3];
+    bool foundSkip = false;
+    float bestFlow = -1.0;
+
+    // Sample 8 directions from the trigger position to find forward
+    for (int dir = 0; dir < 8; dir++) {
+        float angle = float(dir) * 45.0;
+        float dirVec[3];
+        dirVec[0] = Cosine(DegToRad(angle));
+        dirVec[1] = Sine(DegToRad(angle));
+        dirVec[2] = 0.0;
+
+        // Sample at increasing distances (300, 500, 700 units)
+        for (int range = 300; range <= 700; range += 200) {
+            float samplePos[3];
+            samplePos[0] = triggerPos[0] + dirVec[0] * float(range);
+            samplePos[1] = triggerPos[1] + dirVec[1] * float(range);
+            samplePos[2] = triggerPos[2];
+
+            // Check not blocked by wall
+            Handle trace = TR_TraceRayFilterEx(triggerPos, samplePos,
+                                                MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint,
+                                                AI_TraceFilter_NoPlayers, 0);
+            if (TR_DidHit(trace)) {
+                delete trace;
+                continue;
+            }
+            delete trace;
+
+            // Check flow distance — must be higher than trigger position
+            Address navArea = L4D2Direct_GetTerrorNavArea(samplePos);
+            if (navArea != Address_Null) {
+                float sampleFlow = L4D2Direct_GetTerrorNavAreaFlow(navArea);
+                float triggerFlow = 0.0;
+                Address triggerArea = L4D2Direct_GetTerrorNavArea(triggerPos);
+                if (triggerArea != Address_Null) {
+                    triggerFlow = L4D2Direct_GetTerrorNavAreaFlow(triggerArea);
+                }
+                if (sampleFlow > triggerFlow && sampleFlow > bestFlow) {
+                    bestFlow = sampleFlow;
+                    skipTarget = samplePos;
+                    foundSkip = true;
+                }
+            }
+        }
+    }
+
+    if (!foundSkip) {
+        // Fallback: teleport 500 units in the direction of the bot's facing
+        float fwd[3];
+        GetAngleVectors(g_BotState[client].eyeAngles, fwd, NULL_VECTOR, NULL_VECTOR);
+        skipTarget[0] = triggerPos[0] + fwd[0] * 500.0;
+        skipTarget[1] = triggerPos[1] + fwd[1] * 500.0;
+        skipTarget[2] = triggerPos[2];
+    }
+
+    // Teleport ALL alive survivor bots past the trigger
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (!IsFakeClient(i)) continue;  // Don't teleport human players
+
+        float tpPos[3];
+        tpPos = skipTarget;
+        tpPos[0] += GetRandomFloat(-50.0, 50.0);
+        tpPos[1] += GetRandomFloat(-50.0, 50.0);
+        TeleportEntity(i, tpPos, NULL_VECTOR, NULL_VECTOR);
+        AI_DebugDecision(i, "Teleport-skip past trigger (fail=%d)", g_iTriggerHoldFailCount[target]);
+    }
+
+    // Mark trigger as used so bots don't try again
+    g_bTriggerUsed[target] = true;
+    g_fTriggerLastUsed[target] = GetGameTime();
+    g_iTriggerAssignee[target] = -1;
+    g_iTriggerTarget[client] = -1;
+    g_bTriggerHolding[client] = false;
+    g_BotState[client].isHoldingUse = false;
 }

@@ -36,6 +36,7 @@
 #define COMBAT_SHOVE_RANGE_PER_LEVEL 10.0
 #define COMBAT_MAX_RANGE        2000.0
 #define COMBAT_COMMON_RANGE     800.0
+#define COMBAT_TEAM_MAX_DIST    800.0   // Don't chase enemies farther than this from nearest teammate
 
 // Witch bonus damage multiplier for Lv3+ with shotgun
 #define WITCH_SHOTGUN_BONUS_LV3 1.5
@@ -267,6 +268,34 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             GetClientAbsOrigin(coverTarget, ctPos);
             bestDist = AI_GetVectorDistance(g_BotState[client].eyePos, ctPos);
             threatCount++;  // Count this as a visible threat
+        }
+    }
+
+    // === Team cohesion check: don't chase enemies too far from team ===
+    // If the target is far from all teammates, skip it to avoid getting picked off alone.
+    // Exception: Tanks are always worth engaging, and aggressive leader mode pushes through.
+    if (bestTarget != -1 && bestType != 3 && !TaskNavigate_IsAggressiveLeaderMode()) {
+        float targetPosCheck[3];
+        if (bestTarget <= MaxClients) {
+            GetClientAbsOrigin(bestTarget, targetPosCheck);
+        } else {
+            GetEntPropVector(bestTarget, Prop_Data, "m_vecAbsOrigin", targetPosCheck);
+        }
+        // Find distance from target to nearest alive teammate (excluding self)
+        float nearestTeamDist = 999999.0;
+        for (int ti = 1; ti <= MaxClients; ti++) {
+            if (ti == client) continue;
+            if (!IsClientInGame(ti) || !IsPlayerAlive(ti)) continue;
+            if (GetClientTeam(ti) != 2) continue;
+            float tPos[3];
+            GetClientAbsOrigin(ti, tPos);
+            float td = AI_GetVectorDistance(targetPosCheck, tPos);
+            if (td < nearestTeamDist) nearestTeamDist = td;
+        }
+        // If target is far from ALL teammates, don't chase
+        if (nearestTeamDist > COMBAT_TEAM_MAX_DIST) {
+            TaskCombat_Reset(client);
+            return false;
         }
     }
 
