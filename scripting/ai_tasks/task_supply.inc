@@ -54,9 +54,18 @@ bool TaskSupply_ShouldUpdate(int client) {
     if (!g_bSupplyEnabled) return false;
     if (g_BotState[client].controlledByType > 0) return false;
     if (g_BotState[client].isIncapacitated) return false;
-    if (g_BotState[client].isInCombat) return false;
     if (g_BotState[client].isRescuing) return false;
     if (g_BotState[client].isHealing) return false;
+
+    // In combat, only allow supply pickup for CRITICAL missing items:
+    // no primary weapon or no health item (medkit/pills) at all.
+    // Without this exception, bots in aggressive leader mode can never
+    // pick up items because they're always in combat.
+    if (g_BotState[client].isInCombat) {
+        bool noPrimary = (GetPlayerWeaponSlot(client, 0) == -1);
+        bool noHealthItem = (GetPlayerWeaponSlot(client, 3) == -1 && GetPlayerWeaponSlot(client, 4) == -1);
+        if (!noPrimary && !noHealthItem) return false;  // Non-critical, skip while in combat
+    }
 
     // If already tracking a supply target, continue
     if (g_iSupplyTarget[client] > 0 && IsValidEntity(g_iSupplyTarget[client])) {

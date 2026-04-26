@@ -82,7 +82,7 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
     if (!g_bDebugMode) return;
     float curTime = GetGameTime();
     if (curTime < g_fDebugDecisionNextPrint[client]) return;
-    g_fDebugDecisionNextPrint[client] = curTime + 0.5;
+    g_fDebugDecisionNextPrint[client] = curTime + 2.0;
 
     char botName[64];
     GetClientName(client, botName, sizeof(botName));
@@ -93,9 +93,11 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
     PrintToServer("[AI Bot] %s | %s", botName, msg);
 
     // Also show in game chat for human players (including dead/spectating)
+    // CRITICAL: Use "%s" format to prevent % characters in msg from being
+    // interpreted as format specifiers (causes "Bad format string" errors)
     char chatMsg[192];
     FormatEx(chatMsg, sizeof(chatMsg), "\x04[AI]\x01 %s: %s", botName, msg);
-    PrintToChatAll(chatMsg);
+    PrintToChatAll("%s", chatMsg);
 }
 
 /**

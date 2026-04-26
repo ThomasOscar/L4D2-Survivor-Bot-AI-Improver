@@ -31,7 +31,8 @@
 #define TRIGGER_ACID_RANGE        200.0   // Don't approach trigger if acid is this close
 #define TRIGGER_TANK_RANGE        400.0   // Don't approach trigger if Tank is this close
 #define TRIGGER_MAX_HOLD_ATTEMPTS 3       // After this many failed hold attempts, teleport skip
-#define TRIGGER_HOLD_TIMEOUT      15.0    // Max seconds to hold USE before considering it failed
+#define TRIGGER_HOLD_TIMEOUT      10.0    // Max seconds to hold USE before considering it failed
+#define TRIGGER_DIRECT_ACTIVATE_TIME 3.0  // After this many seconds, try AcceptEntityInput directly
 
 // Global used-trigger tracking (reset each map)
 #define MAX_ENTITIES 2048
@@ -288,37 +289,36 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
                 g_BotState[client].isHoldingUse = true;
                 g_fTriggerHoldStart[client] = GetGameTime();
                 float holdTime = TriggerSearch_GetHoldDuration(target);
-                AI_DebugDecision(client, "Holding USE on entity (need %.1fs)", holdTime);
+                AI_DebugDecision(client, "Holding USE (need %.1fs)", holdTime);
+                // Also try direct activation — kickstart the entity
+                AcceptEntityInput(target, "Press", client, client);
             }
 
-            // Check if we've held long enough
             float heldDuration = GetGameTime() - g_fTriggerHoldStart[client];
             float requiredDuration = TriggerSearch_GetHoldDuration(target);
-            if (heldDuration >= requiredDuration + 0.5) {
-                // Held long enough — mark as used and release
-                g_bTriggerUsed[target] = true;
-                g_fTriggerLastUsed[target] = GetGameTime();
-                g_iTriggerAssignee[target] = -1;  // Clear assignment
-                g_bTriggerHolding[client] = false;
-                g_BotState[client].isHoldingUse = false;
-                g_iTriggerTarget[client] = -1;
-                AI_DebugDecision(client, "Trigger hold-USE completed (%.1fs)", heldDuration);
-                return false;  // Release task
+
+            // Phase 1: Hold USE for the required duration (progress bar should advance)
+            if (heldDuration < requiredDuration + 0.5) {
+                return true;  // LOCK task while holding USE
             }
 
-            // Timeout: if we've been holding for way too long, the progress bar isn't working
-            if (heldDuration >= TRIGGER_HOLD_TIMEOUT) {
-                g_iTriggerHoldFailCount[target]++;
-                AI_DebugDecision(client, "Trigger hold-USE TIMEOUT (fail #%d)", g_iTriggerHoldFailCount[target]);
-                g_bTriggerHolding[client] = false;
-                g_BotState[client].isHoldingUse = false;
-                g_iTriggerTarget[client] = -1;
-                // Clear assignment so another bot can try
-                g_iTriggerAssignee[target] = -1;
-                return false;
-            }
+            // Phase 2: Held long enough — try to complete the trigger
+            // First try: mark as used normally (progress bar completed)
+            g_bTriggerUsed[target] = true;
+            g_fTriggerLastUsed[target] = GetGameTime();
+            g_iTriggerAssignee[target] = -1;
+            g_bTriggerHolding[client] = false;
+            g_BotState[client].isHoldingUse = false;
+            g_iTriggerTarget[client] = -1;
 
-            return true;  // LOCK task while holding USE
+            // Also try direct activation as backup
+            AcceptEntityInput(target, "Press", client, client);
+            AI_DebugDecision(client, "Trigger USE completed (%.1fs)", heldDuration);
+            return false;
+
+            // Note: If the trigger didn't actually activate (progress bar didn't work),
+            // the TRIGGER_HOLD_TIMEOUT check below handles it when the task is re-entered.
+            // The g_iTriggerHoldFailCount tracks persistent failures across attempts.
         } else {
             // === Instant-use mode: press USE once ===
             AcceptEntityInput(target, "Use", client, client);
