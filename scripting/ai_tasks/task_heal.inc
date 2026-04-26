@@ -21,7 +21,9 @@
 
 // Heal constants
 #define HEAL_SELF_THRESHOLD       40
+#define HEAL_SELF_SAFE_THRESHOLD  80    // When no threats, heal at higher HP
 #define HEAL_TEAMMATE_THRESHOLD   30
+#define HEAL_TEAMMATE_SAFE_THRESHOLD 80  // When no threats, heal teammates at higher HP
 #define HEAL_TEAMMATE_RANGE       200.0
 #define HEAL_USE_DURATION         5.0
 #define HEAL_APPROACH_RANGE       64.0
@@ -89,22 +91,23 @@ bool TaskHeal_ShouldUpdate(int client) {
 
     // === Safe room priority healing: lower threshold to HP < 100 ===
     bool inSafeRoom = Heal_IsInSafeRoom(client);
-    if (inSafeRoom && myHP < HEAL_SAFEROOM_THRESHOLD && g_BotState[client].visibleThreats == 0) {
+    bool noThreats = (g_BotState[client].visibleThreats == 0 && !g_BotState[client].isInCombat);
+
+    if (inSafeRoom && myHP < HEAL_SAFEROOM_THRESHOLD && noThreats) {
         return true;
     }
 
-    // Self-heal: HP <= 40 or on third strike, and no visible threats
-    if ((myHP <= HEAL_SELF_THRESHOLD || onThirdStrike) && g_BotState[client].visibleThreats == 0) {
-        // Additional safety: no active combat
-        if (!g_BotState[client].isInCombat) {
-            return true;
-        }
+    // Self-heal: HP <= 40 (always) or HP <= 80 (when safe) or on third strike
+    int selfHealThreshold = noThreats ? HEAL_SELF_SAFE_THRESHOLD : HEAL_SELF_THRESHOLD;
+    if ((myHP <= selfHealThreshold || onThirdStrike) && noThreats) {
+        return true;
     }
 
-    // Teammate heal: find a nearby teammate with HP <= 30 and no threats
-    // In safe room: heal any teammate with HP < 100
-    int tmHealThreshold = inSafeRoom ? HEAL_SAFEROOM_THRESHOLD : HEAL_TEAMMATE_THRESHOLD;
-    if (g_BotState[client].visibleThreats == 0 && !g_BotState[client].isInCombat) {
+    // Teammate heal: find a nearby teammate with low HP
+    // When safe: heal teammates at HP < 80. In combat: only HP < 30
+    int tmHealThreshold = inSafeRoom ? HEAL_SAFEROOM_THRESHOLD :
+                          (noThreats ? HEAL_TEAMMATE_SAFE_THRESHOLD : HEAL_TEAMMATE_THRESHOLD);
+    if (noThreats) {
         for (int i = 1; i <= MaxClients; i++) {
             if (i == client) continue;
             if (!AI_IsValidClient(i) || !IsPlayerAlive(i)) continue;

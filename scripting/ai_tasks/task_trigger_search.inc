@@ -200,7 +200,13 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
 
         if (TriggerSearch_NeedsHoldUse(target)) {
             // === Hold-USE mode: keep IN_USE pressed until progress completes ===
+            // CRITICAL: Must stop all movement — walking breaks the progress bar!
+            vel[0] = 0.0;
+            vel[1] = 0.0;
+            vel[2] = 0.0;
             buttons |= IN_USE;
+            // Clear movement buttons too
+            buttons &= ~(IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_JUMP | IN_DUCK);
 
             if (!g_bTriggerHolding[client]) {
                 // First frame of hold — start tracking
