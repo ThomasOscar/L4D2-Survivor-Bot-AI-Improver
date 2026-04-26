@@ -113,6 +113,9 @@ public void OnMapStart() {
     // Reset trigger search used-entity list
     TriggerSearch_ResetGlobals();
 
+    // Reset aggressive leader mode
+    TaskNavigate_ResetGlobals();
+
     // Initialize prop carry pour target detection
     PropCarry_OnMapStart();
 
