@@ -224,3 +224,132 @@ stock void AI_ComputeMoveForward(float vel[3], float moveSpeed = AI_MOVE_SPEED)
     vel[1] = 0.0;
     vel[2] = 0.0;
 }
+
+// ============================================================================
+// Safe Teleport Utilities
+// ============================================================================
+
+#define TELEPORT_MAX_ATTEMPTS    2       // Max teleport attempts before giving up
+#define TELEPORT_MIN_INTERVAL    8.0     // Min seconds between teleports
+#define TELEPORT_HEIGHT_BELOW    -4000.0 // Z below this = underground/out of map
+#define TELEPORT_HEIGHT_ABOVE    5000.0  // Z above this = out of map (skybox)
+#define TELEPORT_TRACE_HEIGHT    300.0   // Height to trace down for ground check
+#define TELEPORT_GROUND_CLEAR    2.0     // Min clearance above ground at destination
+
+/**
+ * Check if a position is likely valid (not underground, not in skybox, has ground beneath).
+ * Uses simple Z-bounds check + traceline to verify ground exists below the point.
+ *
+ * @param pos     Position to validate.
+ * @return        True if position appears valid and safe.
+ */
+stock bool AI_IsValidPosition(const float pos[3])
+{
+    // Out-of-bounds Z check
+    if (pos[2] < TELEPORT_HEIGHT_BELOW || pos[2] > TELEPORT_HEIGHT_ABOVE)
+        return false;
+
+    // Trace down from above the position to check for ground
+    float start[3], end[3];
+    start[0] = pos[0];
+    start[1] = pos[1];
+    start[2] = pos[2] + TELEPORT_TRACE_HEIGHT;
+    end[0] = pos[0];
+    end[1] = pos[1];
+    end[2] = pos[2] - 100.0;
+
+    Handle trace = TR_TraceRayFilterEx(start, end, MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint, AI_TraceFilter_NoPlayers, 0);
+    bool hitGround = TR_DidHit(trace);
+    delete trace;
+
+    return hitGround;
+}
+
+/**
+ * Trace filter that ignores all player entities.
+ */
+stock bool AI_TraceFilter_NoPlayers(int entity, int contentsMask, int client)
+{
+    return (entity > MaxClients || entity <= 0);
+}
+
+/**
+ * Try to safely teleport a bot near a target position.
+ * Checks: position validity, max attempts, cooldown.
+ * If the bot is still stuck after max attempts, returns false to signal abandon.
+ *
+ * @param client          Bot client index.
+ * @param targetPos       The target position to teleport near.
+ * @param dist            Current distance to target (must exceed threshold).
+ * @param elapsed         Seconds since navigation started.
+ * @param stuckThreshold  Min distance to target to consider teleport.
+ * @param timeThreshold   Min seconds elapsed to consider teleport.
+ * @return                true = teleported successfully, false = not teleported (or should abandon).
+ */
+stock bool AI_TryStuckTeleport(int client, const float targetPos[3], float dist, float elapsed,
+                                float stuckThreshold = 300.0, float timeThreshold = 8.0)
+{
+    // Not stuck enough yet
+    if (dist <= stuckThreshold || elapsed <= timeThreshold)
+        return false;
+
+    // Check cooldown
+    float curTime = GetGameTime();
+    if (g_BotState[client].lastTeleportTime > 0.0 &&
+        (curTime - g_BotState[client].lastTeleportTime) < TELEPORT_MIN_INTERVAL)
+        return false;
+
+    // Already tried too many times — abandon
+    if (g_BotState[client].teleportAttempts >= TELEPORT_MAX_ATTEMPTS)
+        return false;
+
+    // Generate candidate position near target with random offset
+    float telePos[3];
+    telePos[0] = targetPos[0] + GetRandomFloat(-80.0, 80.0);
+    telePos[1] = targetPos[1] + GetRandomFloat(-80.0, 80.0);
+    telePos[2] = targetPos[2] + 10.0;
+
+    // Validate destination
+    if (!AI_IsValidPosition(telePos)) {
+        // Try a few more candidates
+        bool found = false;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            telePos[0] = targetPos[0] + GetRandomFloat(-120.0, 120.0);
+            telePos[1] = targetPos[1] + GetRandomFloat(-120.0, 120.0);
+            telePos[2] = targetPos[2] + GetRandomFloat(0.0, 30.0);
+            if (AI_IsValidPosition(telePos)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            g_BotState[client].teleportAttempts++;
+            g_BotState[client].lastTeleportTime = curTime;
+            return false;
+        }
+    }
+
+    // Execute teleport
+    TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
+    g_BotState[client].teleportAttempts++;
+    g_BotState[client].lastTeleportTime = curTime;
+
+    return true;
+}
+
+/**
+ * Reset teleport tracking state. Call when a navigation task starts or resets.
+ */
+stock void AI_ResetTeleportState(int client)
+{
+    g_BotState[client].teleportAttempts = 0;
+    g_BotState[client].lastTeleportTime = 0.0;
+}
+
+/**
+ * Check if the bot has exhausted all teleport attempts and should abandon the task.
+ */
+stock bool AI_ShouldAbandonNavigation(int client)
+{
+    return g_BotState[client].teleportAttempts >= TELEPORT_MAX_ATTEMPTS;
+}
