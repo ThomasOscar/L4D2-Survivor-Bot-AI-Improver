@@ -25,7 +25,11 @@
 
 // Witch animation sequences for rage detection
 #define WITCH_ANIM_RAGE_START   30
-#define WITCH_ANIM_RAGE_LOOP    31
+
+// Witch crown constants
+#define WITCH_CROWN_RANGE_SHOTGUN   150.0   // Max range for shotgun crown
+#define WITCH_CROWN_RANGE_MELEE     80.0    // Max range for melee crown
+#define WITCH_CROWN_RANGE_APPROACH  500.0   // Start approaching witch for crown
 
 // Combat range constants
 #define COMBAT_SHOVE_RANGE_BASE 80.0
@@ -159,7 +163,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         }
     }
 
-    // === Pass 2: Scan angry witches (only if no Tank or SI found) ===
+    // === Pass 2: Scan witches ===
     // Targeting priority: tank(3) > SI(2) > witch(4) > common(1)
     if (bestType != 3 && bestType != 2) {
         int witch = -1;
@@ -172,7 +176,15 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             if (dist > COMBAT_MAX_RANGE) continue;
 
             int seq = GetEntProp(witch, Prop_Send, "m_nSequence");
-            if (seq < WITCH_ANIM_RAGE_START) continue;
+            bool isAngry = (seq >= WITCH_ANIM_RAGE_START);
+
+            // Angry witches: always target
+            // Calm witches: target only in aggressive leader mode if blocking path
+            if (!isAngry) {
+                if (!TaskNavigate_IsAggressiveLeaderMode()) continue;
+                // Check if witch is reasonably close (potential blocker)
+                if (dist > WITCH_CROWN_RANGE_APPROACH) continue;
+            }
 
             if (!AI_IsVisiblePosition(g_BotState[client].eyePos, witchPos, MASK_SHOT, client)) continue;
 
@@ -236,6 +248,114 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         targetPos[2] += 30.0;
     }
 
+    // === Witch Crown technique (high-skill maneuver) ===
+    // When targeting a witch at close range, use specialized attack patterns:
+    //   - Melee weapon: approach and slash rapidly (knife/melee crown)
+    //   - Shotgun: aim at head, fire point-blank (shotgun crown)
+    //   - Other: approach as close as possible, then fire
+    if (bestType == 4 && bestDist < WITCH_CROWN_RANGE_APPROACH) {
+        int level = g_iBotSkillLevel;
+        if (level < SKILL_LEVEL_MIN) level = SKILL_LEVEL_MIN;
+        if (level > SKILL_LEVEL_MAX) level = SKILL_LEVEL_MAX;
+
+        // Only attempt crown at skill level 2+
+        if (level >= 2) {
+            float witchPos[3];
+            GetEntPropVector(bestTarget, Prop_Data, "m_vecAbsOrigin", witchPos);
+
+            // Check if we have a melee weapon
+            bool hasMelee = false;
+            int secondary = GetPlayerWeaponSlot(client, 1);
+            if (secondary != -1 && IsValidEntity(secondary)) {
+                char secCls[64];
+                GetEntityClassname(secondary, secCls, sizeof(secCls));
+                if (StrEqual(secCls, "weapon_melee")) {
+                    hasMelee = true;
+                }
+            }
+
+            // Check if we have a shotgun
+            bool hasShotgun = false;
+            int primary = GetPlayerWeaponSlot(client, 0);
+            if (primary != -1 && IsValidEntity(primary)) {
+                char priCls[64];
+                GetEntityClassname(primary, priCls, sizeof(priCls));
+                if (StrContains(priCls, "shotgun") != -1) {
+                    hasShotgun = true;
+                }
+            }
+
+            if (hasMelee && bestDist <= WITCH_CROWN_RANGE_MELEE) {
+                // Melee crown: switch to melee, aim at witch head, slash
+                int activeWep = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+                if (activeWep != secondary) {
+                    ClientCommand(client, "slot2");
+                }
+                // Aim at witch head level
+                witchPos[2] += 50.0;
+                AI_SnapViewToPosition(client, witchPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
+                // Slash rapidly
+                AI_PressAttackButton(client, buttons);
+                AI_PressAttackButton(client, buttons);
+
+                g_BotState[client].targetEntity = bestTarget;
+                g_BotState[client].targetType = bestType;
+                g_BotState[client].isInCombat = true;
+                g_BotState[client].visibleThreats = threatCount;
+                g_BotState[client].visibleCommons = commonCount;
+                return true;  // Lock for witch crown
+            } else if (hasShotgun && bestDist <= WITCH_CROWN_RANGE_SHOTGUN) {
+                // Shotgun crown: switch to shotgun, aim at head, fire
+                int activeWep = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+                if (activeWep != primary) {
+                    ClientCommand(client, "slot1");
+                }
+                // Aim at witch head for max damage
+                witchPos[2] += 50.0;
+                AI_SnapViewToPosition(client, witchPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
+
+                if (reactionReady) {
+                    int weapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+                    if (IsValidEntity(weapon)) {
+                        int clip = GetEntProp(weapon, Prop_Send, "m_iClip1");
+                        if (clip > 0) {
+                            AI_PressAttackButton(client, buttons);
+                            // For pump shotguns: shove immediately after firing (cancel animation)
+                            char wepCls[64];
+                            GetEntityClassname(weapon, wepCls, sizeof(wepCls));
+                            if (StrEqual(wepCls, "weapon_pumpshotgun") || StrEqual(wepCls, "weapon_shotgun_chrome")) {
+                                AI_PressShoveButton(client, buttons);
+                            }
+                        } else {
+                            buttons |= IN_RELOAD;
+                        }
+                    }
+                }
+
+                g_BotState[client].targetEntity = bestTarget;
+                g_BotState[client].targetType = bestType;
+                g_BotState[client].isInCombat = true;
+                g_BotState[client].visibleThreats = threatCount;
+                g_BotState[client].visibleCommons = commonCount;
+                return true;  // Lock for witch crown
+            } else if (bestDist > WITCH_CROWN_RANGE_MELEE || bestDist > WITCH_CROWN_RANGE_SHOTGUN) {
+                // Not close enough for crown yet — approach the witch
+                AI_ComputeMoveToward(client, witchPos, g_BotState[client].absOrigin,
+                                      g_BotState[client].eyeAngles, vel);
+                // Look at witch while approaching
+                witchPos[2] += 40.0;
+                AI_SnapViewToPosition(client, witchPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
+
+                g_BotState[client].targetEntity = bestTarget;
+                g_BotState[client].targetType = bestType;
+                g_BotState[client].isInCombat = true;
+                g_BotState[client].visibleThreats = threatCount;
+                g_BotState[client].visibleCommons = commonCount;
+                return true;  // Lock while approaching witch
+            }
+        }
+    }
+
     // === Aim at target with skill-based deviation ===
     float aimDeviation = GetSkillFloat("aim");
     if (aimDeviation > 0.0) {
@@ -283,8 +403,9 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     g_BotState[client].visibleThreats = threatCount;
     g_BotState[client].visibleCommons = commonCount;
 
-    // Lock task for Tank or SI, not for commons
-    return (bestType == 2 || bestType == 3);
+    // Lock task for Tank, SI, or Witch in aggressive leader mode
+    bool lockForWitch = (bestType == 4 && TaskNavigate_IsAggressiveLeaderMode());
+    return (bestType == 2 || bestType == 3 || lockForWitch);
 }
 
 /**
