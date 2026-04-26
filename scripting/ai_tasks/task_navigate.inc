@@ -36,10 +36,18 @@
 #define NAV_TEAM_COHESION_RANGE         600.0   // Max distance non-leader bots can be from leader before teleport
 #define NAV_TEAM_COHESION_CHECK_TIME    3.0     // Seconds before teleporting a bot that's too far
 
+// Lv6 Cheat mode constants
+#define LV6_TELEPORT_DIST     800.0    // Bot farther than this from player triggers teleport timer
+#define LV6_FOLLOW_RANGE      200.0    // Lv6: tight follow range around player
+#define LV6_SPREAD_DIST       120.0    // Lv6: slightly larger spread to not block player
+
 // Per-bot navigation state
 static float g_fNavLastPos[MAXPLAYERS + 1][3];
 static float g_fNavLastCheckTime[MAXPLAYERS + 1];
 static int g_iNavStuckCount[MAXPLAYERS + 1];
+
+// Lv6 Cheat: per-bot teleport timer
+static float g_fLv6LastTeleport[MAXPLAYERS + 1];
 
 // Aggressive leader mode state
 static bool g_bAggressiveLeaderMode = false;      // Currently in aggressive leader mode
@@ -455,6 +463,80 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
     GetClientAbsOrigin(leader, leaderPos);
     float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, leaderPos);
 
+    // === Lv6 Cheat Mode: player-centric navigation ===
+    if (g_bCheatMode && !IsFakeClient(leader)) {
+        // Find nearest alive human player to orbit
+        int nearestHuman = -1;
+        float nearestHumanDist = 999999.0;
+        for (int i = 1; i <= MaxClients; i++) {
+            if (i == client) continue;
+            if (!IsClientInGame(i) || IsFakeClient(i)) continue;
+            if (GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+            float hPos[3];
+            GetClientAbsOrigin(i, hPos);
+            float hDist = AI_GetVectorDistance(g_BotState[client].absOrigin, hPos);
+            if (hDist < nearestHumanDist) {
+                nearestHumanDist = hDist;
+                nearestHuman = i;
+            }
+        }
+
+        if (nearestHuman > 0) {
+            float humanPos[3];
+            GetClientAbsOrigin(nearestHuman, humanPos);
+            float humanDist = AI_GetVectorDistance(g_BotState[client].absOrigin, humanPos);
+
+            // Periodic teleport: if too far from player, teleport after interval
+            if (humanDist > LV6_TELEPORT_DIST) {
+                if (g_fLv6LastTeleport[client] <= 0.0) {
+                    g_fLv6LastTeleport[client] = curTime;
+                }
+                float farDuration = curTime - g_fLv6LastTeleport[client];
+                if (farDuration >= g_fLv6TeleportInterval) {
+                    // Teleport directly to player with spread offset
+                    float teleportPos[3];
+                    teleportPos = humanPos;
+                    // Position bots in a spread pattern around the player
+                    int botIndex = 0;
+                    for (int bi = 1; bi < client; bi++) {
+                        if (IsClientInGame(bi) && IsFakeClient(bi) && GetClientTeam(bi) == 2 && IsPlayerAlive(bi)) {
+                            botIndex++;
+                        }
+                    }
+                    float angle = float(botIndex) * 90.0;  // Spread at 90° intervals
+                    teleportPos[0] += Cosine(DegToRad(angle)) * 80.0;
+                    teleportPos[1] += Sine(DegToRad(angle)) * 80.0;
+                    TeleportEntity(client, teleportPos, NULL_VECTOR, NULL_VECTOR);
+                    g_fLv6LastTeleport[client] = 0.0;
+                    g_fFarFromLeaderSince[client] = 0.0;
+                    g_iNavStuckCount[client] = 0;
+                    g_BotState[client].isStuck = false;
+                    AI_ResetTeleportState(client);
+                    AI_DebugDecision(client, "Lv6 teleport -> player (dist=%.0f, waited=%.1fs)", humanDist, farDuration);
+                    return false;
+                }
+            } else {
+                g_fLv6LastTeleport[client] = 0.0;  // Reset timer when close enough
+            }
+
+            // Tight follow around the player
+            if (humanDist > LV6_FOLLOW_RANGE) {
+                AI_ComputeMoveToward(client, humanPos, g_BotState[client].absOrigin,
+                                      g_BotState[client].eyeAngles, vel);
+            } else if (humanDist > LV6_FOLLOW_RANGE * 0.5) {
+                AI_ComputeMoveToward(client, humanPos, g_BotState[client].absOrigin,
+                                      g_BotState[client].eyeAngles, vel, NAV_SLOW_SPEED);
+            }
+
+            // Spread out from other bots (Lv6 uses wider spread)
+            TaskNavigate_SpreadLv6(client, vel);
+
+            // Skip normal navigation logic below
+            return false;
+        }
+        // No human alive — fall through to normal/aggressive logic
+    }
+
     // === Step 1.5: Aggressive leader mode — push forward ===
     if (g_bAggressiveLeaderMode) {
         bool isLeader = (client == g_iLeaderBot);
@@ -697,6 +779,7 @@ void TaskNavigate_Reset(int client) {
     g_iNavStuckCount[client] = 0;
     g_fNavLastCheckTime[client] = 0.0;
     g_fFarFromLeaderSince[client] = 0.0;
+    g_fLv6LastTeleport[client] = 0.0;
 }
 
 /**
@@ -711,6 +794,7 @@ void TaskNavigate_ResetGlobals() {
     g_bDefibNearby = false;
     for (int i = 0; i <= MaxClients; i++) {
         g_fFarFromLeaderSince[i] = 0.0;
+        g_fLv6LastTeleport[i] = 0.0;
     }
 }
 
@@ -835,6 +919,44 @@ static void TaskNavigate_Spread(int client, float vel[3]) {
             vel[0] += pushForward;
             vel[1] += pushRight;
             break;  // Only spread from one nearby bot per frame
+        }
+    }
+}
+
+/**
+ * Lv6 Cheat: wider spread to avoid blocking the rushing player.
+ */
+static void TaskNavigate_SpreadLv6(int client, float vel[3]) {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (i == client) continue;
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (!IsFakeClient(i)) continue;
+
+        float otherPos[3];
+        GetClientAbsOrigin(i, otherPos);
+        float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, otherPos);
+
+        if (dist < LV6_SPREAD_DIST && dist > 1.0) {
+            float pushDir[3];
+            pushDir[0] = g_BotState[client].absOrigin[0] - otherPos[0];
+            pushDir[1] = g_BotState[client].absOrigin[1] - otherPos[1];
+            pushDir[2] = 0.0;
+            NormalizeVector(pushDir, pushDir);
+
+            float fwd[3], rgt[3];
+            float angles[3];
+            angles[0] = 0.0;
+            angles[1] = g_BotState[client].eyeAngles[1];
+            angles[2] = 0.0;
+            GetAngleVectors(angles, fwd, rgt, NULL_VECTOR);
+
+            float pushForward = (pushDir[0] * fwd[0] + pushDir[1] * fwd[1]) * 150.0;
+            float pushRight = (pushDir[0] * rgt[0] + pushDir[1] * rgt[1]) * 150.0;
+
+            vel[0] += pushForward;
+            vel[1] += pushRight;
+            break;
         }
     }
 }

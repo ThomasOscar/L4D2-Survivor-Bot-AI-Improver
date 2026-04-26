@@ -1,7 +1,7 @@
 /**
  * L4D2 AI Bot - Skill System
  * 
- * 5-level skill configuration system (0-4).
+ * 6-level skill configuration system (0-5).
  * Controls bot behavior parameters like reaction delay, aim accuracy, etc.
  * 
  * Levels:
@@ -10,6 +10,7 @@
  *   2 = Standard      (default balanced)
  *   3 = Enhanced      (strong)
  *   4 = Expert        (top-tier player)
+ *   5 = Cheat         (godlike — for rushing players)
  */
 
 #if defined _ai_skill_system_included
@@ -18,8 +19,15 @@
 #define _ai_skill_system_included
 
 #define SKILL_LEVEL_MIN 0
-#define SKILL_LEVEL_MAX 4
-#define SKILL_LEVEL_COUNT 5
+#define SKILL_LEVEL_MAX 5
+#define SKILL_LEVEL_COUNT 6
+
+/**
+ * Check if cheat mode (Lv5) is active.
+ */
+stock bool IsCheatMode() {
+    return g_iBotSkillLevel >= SKILL_LEVEL_MAX;
+}
 
 /**
  * Skill configuration for each level.
@@ -87,6 +95,17 @@ void SkillSystem_Init() {
     g_SkillConfigs[4].damageMultiplier   = 0.2;
     g_SkillConfigs[4].healThreshold      = 20.0;
     g_SkillConfigs[4].throwableAccuracy  = 0.0;
+
+    // Level 5: Cheat — godlike, for rushing players
+    // Bots become a cheat-level escort team: perfect aim, instant reaction,
+    // massive damage, periodic teleport to player, accelerated rescue.
+    g_SkillConfigs[5].viewMultiplier     = 10.0;
+    g_SkillConfigs[5].reactionDelay      = 0.0;
+    g_SkillConfigs[5].shoveSuccessRate   = 1.0;
+    g_SkillConfigs[5].aimAccuracy        = 0.0;
+    g_SkillConfigs[5].damageMultiplier   = 0.5;
+    g_SkillConfigs[5].healThreshold      = 15.0;
+    g_SkillConfigs[5].throwableAccuracy  = 0.0;
 
     LogMessage("[AI Bot] Skill system initialized with %d levels", SKILL_LEVEL_COUNT);
 }
@@ -161,6 +180,7 @@ void GetSkillLevelName(int level, char[] buffer, int maxlen) {
         case 2: strcopy(buffer, maxlen, "Standard");
         case 3: strcopy(buffer, maxlen, "Enhanced");
         case 4: strcopy(buffer, maxlen, "Expert");
+        case 5: strcopy(buffer, maxlen, "Cheat");
         default: strcopy(buffer, maxlen, "Unknown");
     }
 }

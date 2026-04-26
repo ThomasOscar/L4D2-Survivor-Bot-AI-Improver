@@ -51,28 +51,28 @@
 #define SELF_HEAL_HP_ADRENALINE  30      // Use adrenaline below this HP (faster)
 #define SELF_HEAL_COOLDOWN       3.0     // Seconds between self-heal attempts
 
-// General SI damage reduction by skill level (index = level 0..4)
-// Lv0: 0%, Lv1: 10%, Lv2: 20%, Lv3: 30%, Lv4: 40%
+// General SI damage reduction by skill level (index = level 0..5)
+// Lv0: 0%, Lv1: 10%, Lv2: 20%, Lv3: 30%, Lv4: 40%, Lv5: 60%
 static float g_flSIDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.10, 0.20, 0.30, 0.40
+    0.0, 0.10, 0.20, 0.30, 0.40, 0.60
 };
 
-// Tank damage reduction by skill level (index = level 0..4)
-// Lv0: 0%, Lv1: 5%, Lv2: 10%, Lv3: 20%, Lv4: 30%
+// Tank damage reduction by skill level (index = level 0..5)
+// Lv0: 0%, Lv1: 5%, Lv2: 10%, Lv3: 20%, Lv4: 30%, Lv5: 50%
 static float g_flTankDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.05, 0.10, 0.20, 0.30
+    0.0, 0.05, 0.10, 0.20, 0.30, 0.50
 };
 
-// Fire damage reduction by skill level (index = level 0..4)
-// Lv0: 0%, Lv1: 0%, Lv2: 30%, Lv3: 45%, Lv4: 60%
+// Fire damage reduction by skill level (index = level 0..5)
+// Lv0: 0%, Lv1: 0%, Lv2: 30%, Lv3: 45%, Lv4: 60%, Lv5: 80%
 static float g_flFireDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.0, 0.30, 0.45, 0.60
+    0.0, 0.0, 0.30, 0.45, 0.60, 0.80
 };
 
-// Acid damage reduction by skill level (index = level 0..4)
-// Lv0: 0%, Lv1: 0%, Lv2: 20%, Lv3: 35%, Lv4: 50%
+// Acid damage reduction by skill level (index = level 0..5)
+// Lv0: 0%, Lv1: 0%, Lv2: 20%, Lv3: 35%, Lv4: 50%, Lv5: 75%
 static float g_flAcidDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.0, 0.20, 0.35, 0.50
+    0.0, 0.0, 0.20, 0.35, 0.50, 0.75
 };
 
 // ============================================================
@@ -229,7 +229,8 @@ Action DamageProtect_OnTakeDamage(int victim, int &attacker, int &inflictor,
 
     // === 0.5. Instant-kill protection (ConVar controlled) ===
     // When enabled, cap damage so the bot is never one-shot killed or incapped
-    if (g_bProtectEnabled) {
+    // Lv6 Cheat mode: always enable instant-kill protection
+    if (g_bProtectEnabled || g_bCheatMode) {
         int hp = GetClientHealth(victim);
         bool isIncap = (GetEntProp(victim, Prop_Send, "m_isIncapacitated") != 0);
 

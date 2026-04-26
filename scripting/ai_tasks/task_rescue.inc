@@ -17,6 +17,9 @@
 #define RESCUE_REVIVE_RANGE     64.0
 #define RESCUE_ACID_RANGE       200.0   // Don't rescue if acid within this range
 
+// Lv6 Cheat rescue constants
+#define LV6_RESCUE_TELEPORT_DIST  500.0   // Lv6: teleport to pinned teammate if farther than this
+
 // Global rescuer assignment table (exception: cross-bot coordination)
 // g_iAssignedRescuer[victim] = rescuer client index, or -1 if unassigned
 int g_iAssignedRescuer[MAXPLAYERS + 1];
@@ -122,7 +125,8 @@ bool TaskRescue_ShouldUpdate(int client) {
     if (assignedVictim != -1 && TaskRescue_NeedsHelp(assignedVictim)) {
         // Even if assigned, if a Tank is very close or acid is nearby, let combat take priority
         // UNLESS in aggressive leader mode — then we fight while advancing
-        if (!TaskNavigate_IsAggressiveLeaderMode()) {
+        // Lv6 Cheat mode: ignore Tank/acid, rescue immediately
+        if (!TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) {
             if (TaskRescue_IsTankNearby(client, 300.0) ||
                 AI_IsAcidNearPosition(g_BotState[client].absOrigin, RESCUE_ACID_RANGE)) {
                 // Release assignment — let combat handle threat first
@@ -149,9 +153,10 @@ bool TaskRescue_ShouldUpdate(int client) {
 
         // Check if a Tank or acid is near the victim — too dangerous to rescue right now
         // In aggressive leader mode, we push through threats
+        // Lv6 Cheat mode: ignore Tank/acid, rescue immediately
         float victimPos[3];
         GetClientAbsOrigin(i, victimPos);
-        if (!TaskNavigate_IsAggressiveLeaderMode()) {
+        if (!TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) {
             if (TaskRescue_IsTankNearPosition(victimPos, 400.0) ||
                 AI_IsAcidNearPosition(victimPos, RESCUE_ACID_RANGE)) {
                 // Tank/acid too close to victim — skip rescue, let combat handle it
@@ -173,8 +178,8 @@ bool TaskRescue_ShouldUpdate(int client) {
             // Already rescuing someone else?
             if (TaskRescue_GetAssignedVictim(b) != -1) continue;
 
-            // Skip bots that are close to a Tank or acid (unless aggressive leader mode)
-            if (!TaskNavigate_IsAggressiveLeaderMode()) {
+            // Skip bots that are close to a Tank or acid (unless aggressive leader mode or cheat mode)
+            if (!TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) {
                 if (TaskRescue_IsTankNearby(b, 300.0) ||
                     AI_IsAcidNearPosition(g_BotState[b].absOrigin, RESCUE_ACID_RANGE)) continue;
             }
@@ -224,7 +229,8 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
 
     // === Tank/acid awareness: if danger is very close, release rescue and let combat handle it ===
     // In aggressive leader mode, bots fight while advancing — don't abort rescue
-    if (!TaskNavigate_IsAggressiveLeaderMode()) {
+    // Lv6 Cheat mode: never abort rescue for Tank/acid — push through
+    if (!TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) {
         if (TaskRescue_IsTankNearby(client, 300.0) ||
             AI_IsAcidNearPosition(g_BotState[client].absOrigin, RESCUE_ACID_RANGE)) {
             if (g_bDebugMode) {
@@ -232,6 +238,21 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
             }
             TaskRescue_Reset(client);
             return false;  // Let combat task deal with the threat
+        }
+    }
+
+    // === Lv6 Cheat: instant teleport to pinned/incapped teammate ===
+    if (g_bCheatMode) {
+        float cheatDist = AI_GetVectorDistance(g_BotState[client].absOrigin, victimPos);
+        if (cheatDist > LV6_RESCUE_TELEPORT_DIST) {
+            // Teleport directly to the victim's side
+            float teleportPos[3];
+            teleportPos = victimPos;
+            teleportPos[0] += GetRandomFloat(-60.0, 60.0);
+            teleportPos[1] += GetRandomFloat(-60.0, 60.0);
+            TeleportEntity(client, teleportPos, NULL_VECTOR, NULL_VECTOR);
+            AI_ResetTeleportState(client);
+            AI_DebugDecision(client, "Lv6 rescue teleport -> victim (dist=%.0f)", cheatDist);
         }
     }
 

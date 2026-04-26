@@ -67,7 +67,8 @@ static char g_sSkillDesc[][] = {
     "Lv2 - 视野提升，注意侧面僵尸",
     "Lv3 - 视野大幅提升，可应对专家模式",
     "Lv4 - 作弊级，远超原版",
-    "Lv5 - 顶尖高手，单人≈3个玩家"
+    "Lv5 - 顶尖高手，单人≈3个玩家",
+    "Lv6 - 作弊护卫队，以玩家为中心，传送跟随"
 };
 
 void AIMenu_ShowSkill(int client) {
@@ -75,7 +76,7 @@ void AIMenu_ShowSkill(int client) {
     menu.SetTitle("=== Bot 战斗能力 ===\n当前: Lv%d\n ", g_iBotSkillLevel + 1);
 
     char info[8];
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         IntToString(i, info, sizeof(info));
         menu.AddItem(info, g_sSkillDesc[i]);
     }

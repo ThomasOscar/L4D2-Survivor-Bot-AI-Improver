@@ -38,6 +38,10 @@
 #define COMBAT_COMMON_RANGE     800.0
 #define COMBAT_TEAM_MAX_DIST    800.0   // Don't chase enemies farther than this from nearest teammate
 
+// Lv6 Cheat combat constants
+#define LV6_COMBAT_MAX_RANGE    3000.0  // Lv6: extended engagement range
+#define LV6_COMBAT_COMMON_RANGE 1200.0  // Lv6: extended common infected range
+
 // Witch bonus damage multiplier for Lv3+ with shotgun
 #define WITCH_SHOTGUN_BONUS_LV3 1.5
 #define WITCH_SHOTGUN_BONUS_LV4 2.0
@@ -62,6 +66,10 @@ bool TaskCombat_ShouldUpdate(int client) {
     if (g_BotState[client].controlledByType > 0) return false;
     if (g_BotState[client].isIncapacitated) return false;
 
+    // Lv6 Cheat: extended detection range
+    float maxRange = g_bCheatMode ? LV6_COMBAT_MAX_RANGE : COMBAT_MAX_RANGE;
+    float commonRange = g_bCheatMode ? LV6_COMBAT_COMMON_RANGE : COMBAT_COMMON_RANGE;
+
     // Quick scan: are there any visible threats?
     // We do the full scan in Update, but do a lightweight check here
     for (int i = 1; i <= MaxClients; i++) {
@@ -76,7 +84,7 @@ bool TaskCombat_ShouldUpdate(int client) {
         float targetPos[3];
         GetClientAbsOrigin(i, targetPos);
         float dist = AI_GetVectorDistance(g_BotState[client].eyePos, targetPos);
-        if (dist > COMBAT_MAX_RANGE) continue;
+        if (dist > maxRange) continue;
 
         if (AI_IsVisibleEntity(g_BotState[client].eyePos, i, MASK_SHOT, client)) {
             return true;
@@ -93,7 +101,7 @@ bool TaskCombat_ShouldUpdate(int client) {
         float witchPos[3];
         GetEntPropVector(witch, Prop_Data, "m_vecAbsOrigin", witchPos);
         float dist = AI_GetVectorDistance(g_BotState[client].eyePos, witchPos);
-        if (dist > COMBAT_MAX_RANGE) continue;
+        if (dist > maxRange) continue;
 
         // Check if witch is angry (rage animation)
         int seq = GetEntProp(witch, Prop_Send, "m_nSequence");
@@ -114,7 +122,7 @@ bool TaskCombat_ShouldUpdate(int client) {
         float commonPos[3];
         GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", commonPos);
         float dist = AI_GetVectorDistance(g_BotState[client].eyePos, commonPos);
-        if (dist > COMBAT_COMMON_RANGE) continue;
+        if (dist > commonRange) continue;
 
         if (AI_IsVisiblePosition(g_BotState[client].eyePos, commonPos, MASK_SHOT, client)) {
             return true;
@@ -137,9 +145,13 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     int bestTarget = -1;
     int bestType = 0;       // 0=none, 1=common, 2=SI, 3=tank, 4=witch
     int bestSIThreat = 0;   // SI threat score for same-type tiebreaking
-    float bestDist = COMBAT_MAX_RANGE + 1.0;
+    float bestDist = (g_bCheatMode ? LV6_COMBAT_MAX_RANGE : COMBAT_MAX_RANGE) + 1.0;
     int threatCount = 0;
     int commonCount = 0;
+
+    // Lv6 Cheat: extended detection range
+    float maxRange = g_bCheatMode ? LV6_COMBAT_MAX_RANGE : COMBAT_MAX_RANGE;
+    float commonRange = g_bCheatMode ? LV6_COMBAT_COMMON_RANGE : COMBAT_COMMON_RANGE;
 
     // === Pass 1: Scan special infected (team 3) ===
     for (int i = 1; i <= MaxClients; i++) {
@@ -152,7 +164,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         float targetPos[3];
         GetClientAbsOrigin(i, targetPos);
         float dist = AI_GetVectorDistance(g_BotState[client].eyePos, targetPos);
-        if (dist > COMBAT_MAX_RANGE) continue;
+        if (dist > maxRange) continue;
 
         if (!AI_IsVisibleEntity(g_BotState[client].eyePos, i, MASK_SHOT, client)) continue;
 
@@ -285,7 +297,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             float witchPos[3];
             GetEntPropVector(witch, Prop_Data, "m_vecAbsOrigin", witchPos);
             float dist = AI_GetVectorDistance(g_BotState[client].eyePos, witchPos);
-            if (dist > COMBAT_MAX_RANGE) continue;
+            if (dist > maxRange) continue;
 
             int seq = GetEntProp(witch, Prop_Send, "m_nSequence");
             bool isAngry = (seq >= WITCH_ANIM_RAGE_START);
@@ -319,7 +331,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             float commonPos[3];
             GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", commonPos);
             float dist = AI_GetVectorDistance(g_BotState[client].eyePos, commonPos);
-            if (dist > COMBAT_COMMON_RANGE) continue;
+            if (dist > commonRange) continue;
 
             if (!AI_IsVisiblePosition(g_BotState[client].eyePos, commonPos, MASK_SHOT, client)) continue;
 
@@ -397,8 +409,9 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
 
     // === Team cohesion check: don't chase enemies too far from team ===
     // If the target is far from all teammates, skip it to avoid getting picked off alone.
-    // Exception: Tanks are always worth engaging, and aggressive leader mode pushes through.
-    if (bestTarget != -1 && bestType != 3 && !TaskNavigate_IsAggressiveLeaderMode()) {
+    // Exception: Tanks are always worth engaging, aggressive leader mode pushes through,
+    // and Lv6 Cheat mode ignores cohesion (bots are teleporting anyway).
+    if (bestTarget != -1 && bestType != 3 && !TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) {
         float targetPosCheck[3];
         if (bestTarget <= MaxClients) {
             GetClientAbsOrigin(bestTarget, targetPosCheck);
@@ -672,8 +685,10 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     g_BotState[client].visibleCommons = commonCount;
 
     // Lock task for Tank, SI, or Witch in aggressive leader mode
+    // Lv6 Cheat: lock for ALL targets (including commons) — eliminate everything fast
     bool lockForWitch = (bestType == 4 && TaskNavigate_IsAggressiveLeaderMode());
-    return (bestType == 2 || bestType == 3 || lockForWitch);
+    bool lockForCheat = (g_bCheatMode && bestTarget != -1);
+    return (bestType == 2 || bestType == 3 || lockForWitch || lockForCheat);
 }
 
 /**
