@@ -329,3 +329,27 @@ void Event_DefibUsed(Event event, const char[] name, bool dontBroadcast) {
         g_bHasDeathPosition[subject] = false;
     }
 }
+
+// ============================================================
+// L4D2_OnRevived Forward
+// Fires for ALL revival types: rescue closet, defib, incap help-up.
+// Used to detect when a human player is rescued from a closet,
+// which should exit aggressive leader mode.
+// ============================================================
+public void L4D2_OnRevived(int client) {
+    if (client < 1 || client > MaxClients) return;
+    if (!IsClientInGame(client)) return;
+    if (IsFakeClient(client)) return;  // Only care about human players
+    if (GetClientTeam(client) != 2) return;
+
+    // A human player has been revived (closet, defib, or help-up).
+    // The aggressive leader mode check in TaskNavigate_UpdateAggressiveMode
+    // will detect that a human is alive and exit aggressive mode automatically.
+    // We just need to make sure death position is cleared.
+    g_bHasDeathPosition[client] = false;
+
+    if (g_bDebugMode) {
+        char name[64]; GetClientName(client, name, sizeof(name));
+        PrintToServer("[AI Bot] L4D2_OnRevived: human player %s revived", name);
+    }
+}
