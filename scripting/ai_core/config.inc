@@ -92,11 +92,11 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
 
     PrintToServer("[AI Bot] %s | %s", botName, msg);
 
-    // Also show in game chat for human players
+    // Also show in game chat for human players (including dead/spectating)
     char chatMsg[192];
     FormatEx(chatMsg, sizeof(chatMsg), "\x04[AI]\x01 %s: %s", botName, msg);
     for (int i = 1; i <= MaxClients; i++) {
-        if (IsClientInGame(i) && !IsFakeClient(i) && GetClientTeam(i) == 2) {
+        if (IsClientInGame(i) && !IsFakeClient(i)) {
             PrintToChat(i, chatMsg);
         }
     }
