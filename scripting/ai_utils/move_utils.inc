@@ -237,6 +237,7 @@ stock void AI_ComputeMoveForward(float vel[3], float moveSpeed = AI_MOVE_SPEED)
 #define TELEPORT_GROUND_CLEAR    2.0     // Min clearance above ground at destination
 #define TELEPORT_MIN_CLEARANCE   70.0    // Min vertical clearance (player height ~72 units)
 #define TELEPORT_MAX_OFFSET      60.0    // Max random offset from target (small to avoid walls)
+#define TELEPORT_STEP_DISTANCE   200.0   // Max distance to teleport forward (unstick step, NOT to target)
 #define TELEPORT_STUCK_CHECK_INTERVAL 2.0  // Seconds between stuck position checks
 #define TELEPORT_STUCK_THRESHOLD  50.0   // Squared distance threshold for "not moving"
 
@@ -404,18 +405,51 @@ stock bool AI_TryStuckTeleport(int client, const float targetPos[3], float dist,
     if (g_BotState[client].teleportAttempts >= TELEPORT_MAX_ATTEMPTS)
         return false;
 
-    // Generate candidate positions and validate each
+    // Generate candidate position: step forward toward target, NOT teleport to target
+    // This prevents cross-map teleports — we only move ~200 units in the target direction
+    float botPos[3];
+    botPos = g_BotState[client].absOrigin;
+
+    // Calculate direction from bot to target
+    float dir[3];
+    dir[0] = targetPos[0] - botPos[0];
+    dir[1] = targetPos[1] - botPos[1];
+    dir[2] = 0.0;  // Keep horizontal
+
+    float dirLen = SquareRoot(dir[0] * dir[0] + dir[1] * dir[1]);
+    if (dirLen < 1.0) {
+        g_BotState[client].teleportAttempts++;
+        g_BotState[client].lastTeleportTime = curTime;
+        return false;  // Can't determine direction
+    }
+
+    // Normalize and scale to step distance
+    dir[0] = (dir[0] / dirLen) * TELEPORT_STEP_DISTANCE;
+    dir[1] = (dir[1] / dirLen) * TELEPORT_STEP_DISTANCE;
+
+    // Try candidate positions along the direction with random offsets
     float telePos[3];
     bool found = false;
 
     for (int attempt = 0; attempt < 5; attempt++) {
         float candidate[3];
-        float offsetScale = (attempt == 0) ? TELEPORT_MAX_OFFSET : TELEPORT_MAX_OFFSET + attempt * 15.0;
-        candidate[0] = targetPos[0] + GetRandomFloat(-offsetScale, offsetScale);
-        candidate[1] = targetPos[1] + GetRandomFloat(-offsetScale, offsetScale);
-        candidate[2] = targetPos[2] + 50.0;  // Start search from above target
+        float randomOffset = (attempt == 0) ? 30.0 : 30.0 + attempt * 15.0;
+        candidate[0] = botPos[0] + dir[0] + GetRandomFloat(-randomOffset, randomOffset);
+        candidate[1] = botPos[1] + dir[1] + GetRandomFloat(-randomOffset, randomOffset);
+        candidate[2] = botPos[2] + 50.0;  // Start search from above current position
+
+        // Verify candidate is not too far from current position (safety check)
+        float candDist = AI_GetVectorDistance(botPos, candidate);
+        if (candDist > TELEPORT_STEP_DISTANCE + 100.0) {
+            continue;  // Too far from current position — skip
+        }
 
         if (AI_ValidateTeleportPosition(candidate, telePos)) {
+            // Final safety: verify teleported position is within reasonable range of bot
+            float teleDist = AI_GetVectorDistance(botPos, telePos);
+            if (teleDist > TELEPORT_STEP_DISTANCE + 100.0) {
+                continue;  // Ground snapping moved too far — skip
+            }
             found = true;
             break;
         }
