@@ -16,7 +16,6 @@ ConVar g_cvBotSkillLevel;
 ConVar g_cvRescueEnabled;
 ConVar g_cvHealEnabled;
 ConVar g_cvThrowableEnabled;
-ConVar g_cvLLMEnabled;
 ConVar g_cvDebugMode;
 ConVar g_cvFollowRange;
 ConVar g_cvTeleportRange;
@@ -43,7 +42,6 @@ int g_iBotSkillLevel;
 bool g_bRescueEnabled;
 bool g_bHealEnabled;
 bool g_bThrowableEnabled;
-bool g_bLLMEnabled;
 bool g_bDebugMode;
 float g_fFollowRange;
 float g_fTeleportRange;
@@ -113,7 +111,6 @@ void AIConfig_Init() {
     g_cvRescueEnabled   = CreateConVar("ai_rescue_enabled",    "1", "Enable rescue task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvHealEnabled     = CreateConVar("ai_heal_enabled",      "1", "Enable heal task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvThrowableEnabled = CreateConVar("ai_throwable_enabled","1", "Enable throwable task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvLLMEnabled      = CreateConVar("ai_llm_enabled",       "0", "Enable LLM strategic advisor", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvDebugMode       = CreateConVar("ai_debug",             "0", "Debug mode (1=log task switches)", FCVAR_NOTIFY, true, 0.0, true, 1.0);
 
     // Extended ConVars — ranges & floats
@@ -147,7 +144,6 @@ void AIConfig_Init() {
     g_cvRescueEnabled.AddChangeHook(AIConfig_OnChanged);
     g_cvHealEnabled.AddChangeHook(AIConfig_OnChanged);
     g_cvThrowableEnabled.AddChangeHook(AIConfig_OnChanged);
-    g_cvLLMEnabled.AddChangeHook(AIConfig_OnChanged);
     g_cvDebugMode.AddChangeHook(AIConfig_OnChanged);
     g_cvFollowRange.AddChangeHook(AIConfig_OnChanged);
     g_cvTeleportRange.AddChangeHook(AIConfig_OnChanged);
@@ -176,17 +172,7 @@ void AIConfig_Init() {
  * ConVar change hook — refresh all cached values.
  */
 void AIConfig_OnChanged(ConVar convar, const char[] oldValue, const char[] newValue) {
-    bool wasLLMEnabled = g_bLLMEnabled;
     AIConfig_UpdateCache();
-
-    // If LLM was just disabled, disconnect and stop reconnecting
-    if (wasLLMEnabled && !g_bLLMEnabled) {
-        LLMAdvisor_OnDisabled();
-    }
-    // If LLM was just enabled, try connecting
-    if (!wasLLMEnabled && g_bLLMEnabled) {
-        LLMAdvisor_OnMapStart();
-    }
 }
 
 /**
@@ -198,7 +184,6 @@ void AIConfig_UpdateCache() {
     g_bRescueEnabled    = g_cvRescueEnabled.BoolValue;
     g_bHealEnabled      = g_cvHealEnabled.BoolValue;
     g_bThrowableEnabled = g_cvThrowableEnabled.BoolValue;
-    g_bLLMEnabled       = g_cvLLMEnabled.BoolValue;
     g_bDebugMode        = g_cvDebugMode.BoolValue;
 
     // Extended cached values

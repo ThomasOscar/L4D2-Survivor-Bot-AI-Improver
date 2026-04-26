@@ -28,9 +28,6 @@ void AIMenu_ShowMain(int client) {
     menu.AddItem("protection", "保护设置");
     menu.AddItem("damage", "伤害配置");
 
-    Format(buf, sizeof(buf), "LLM 战术顾问 [%s]", g_bLLMEnabled ? "开" : "关");
-    menu.AddItem("llm", buf);
-
     Format(buf, sizeof(buf), "调试模式 [%s]", g_bDebugMode ? "开" : "关");
     menu.AddItem("debug", buf);
 
@@ -47,13 +44,6 @@ public int AIMenu_MainHandler(Menu menu, MenuAction action, int param1, int para
         else if (StrEqual(item, "behavior"))    AIMenu_ShowBehavior(param1);
         else if (StrEqual(item, "protection"))  AIMenu_ShowProtection(param1);
         else if (StrEqual(item, "damage"))      AIMenu_ShowDamage(param1);
-        else if (StrEqual(item, "llm")) {
-            bool newVal = !g_bLLMEnabled;
-            g_cvLLMEnabled.SetBool(newVal);
-            AIMenu_PersistBool("ai_llm_enabled", newVal);
-            PrintToChat(param1, "\x04[AI Bot]\x01 LLM 战术顾问: %s", newVal ? "开启" : "关闭");
-            AIMenu_ShowMain(param1);
-        }
         else if (StrEqual(item, "debug")) {
             bool newVal = !g_bDebugMode;
             g_cvDebugMode.SetBool(newVal);

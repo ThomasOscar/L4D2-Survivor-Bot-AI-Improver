@@ -225,6 +225,44 @@ stock void AI_ComputeMoveForward(float vel[3], float moveSpeed = AI_MOVE_SPEED)
     vel[2] = 0.0;
 }
 
+/**
+ * Compute vel to make a bot move away from a position.
+ * Calculates the direction from pos to client, converts to forward/side movement.
+ *
+ * @param client        Bot client index.
+ * @param fromPos       Position to move away from.
+ * @param clientOrigin  Bot's current absOrigin.
+ * @param clientAngles  Bot's current eye angles (modified to face away).
+ * @param vel           Output velocity array.
+ * @param moveSpeed     Speed magnitude.
+ */
+stock void AI_ComputeMoveAway(int client, const float fromPos[3], const float clientOrigin[3],
+                               float clientAngles[3], float vel[3], float moveSpeed = AI_MOVE_SPEED)
+{
+    float awayDir[3];
+    SubtractVectors(clientOrigin, fromPos, awayDir);
+    awayDir[2] = 0.0;
+    float len = GetVectorLength(awayDir);
+    if (len < 1.0) {
+        // We're right on top of the position, pick a direction
+        awayDir[0] = 1.0; awayDir[1] = 0.0; awayDir[2] = 0.0;
+    } else {
+        NormalizeVector(awayDir, awayDir);
+    }
+
+    // Face away from the position
+    float awayAngles[3];
+    GetVectorAngles(awayDir, awayAngles);
+    clientAngles[0] = 0.0;
+    clientAngles[1] = awayAngles[1];
+    clientAngles[2] = 0.0;
+
+    // Move forward (which is now away from the position)
+    vel[0] = moveSpeed;
+    vel[1] = 0.0;
+    vel[2] = 0.0;
+}
+
 // ============================================================================
 // Safe Teleport Utilities
 // ============================================================================

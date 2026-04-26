@@ -27,7 +27,6 @@
 #undef REQUIRE_EXTENSIONS
 #undef REQUIRE_PLUGIN
 #include <left4dhooks>
-#include <socket>
 #define REQUIRE_EXTENSIONS
 #define REQUIRE_PLUGIN
 
@@ -61,9 +60,6 @@
 #include "ai_tasks/task_upgrade.inc"
 #include "ai_tasks/task_supply.inc"
 
-// LLM strategic advisor (Task #109)
-#include "ai_llm/llm_advisor.inc"
-
 // AI UI
 #include "ai_ui/command_handler.inc"
 #include "ai_ui/menu_system.inc"
@@ -94,9 +90,6 @@ public void OnPluginStart() {
     // Register game events for state tracking
     AIEvents_Init();
 
-    // Initialize LLM advisor
-    LLMAdvisor_Init();
-
     // Initialize pinpoint command system
     Pinpoint_Init();
 
@@ -119,14 +112,10 @@ public void OnMapStart() {
     // Initialize prop carry pour target detection
     PropCarry_OnMapStart();
 
-    // Reconnect LLM on map change
-    LLMAdvisor_OnMapStart();
-
     LogMessage("[AI Bot] Map started, all bot states reset.");
 }
 
 public void OnPluginEnd() {
-    LLMAdvisor_Shutdown();
 }
 
 // ============================================================
@@ -188,9 +177,6 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse,
                               g_BotState[client].eyeAngles, vel);
         wasDodging = true;
     }
-
-    // Step 1.5: Expire stale LLM suggestions
-    LLMAdvisor_ExpireStale(client);
 
     // Step 1.6: Pinpoint command override (highest priority player command)
     if (Pinpoint_HandleCommand(client, buttons, vel, angles))

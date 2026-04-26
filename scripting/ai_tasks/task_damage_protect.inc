@@ -291,9 +291,32 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
         }
     }
 
+    // === Hunter pounce dodge ===
+    if (level >= 2) {  // Skill 2+ can dodge pouncing Hunters
+        int hunterEnt = DamageProtect_FindPouncingHunter(client);
+        if (hunterEnt != -1) {
+            float hunterPos[3];
+            GetClientAbsOrigin(hunterEnt, hunterPos);
+            // Dodge perpendicular to hunter's approach direction
+            DamageProtect_StartPerpendicularDodge(client, hunterPos, curTime, 200.0, 0.8);
+            return;
+        }
+    }
+
+    // === Smoker dodge (when tongue is incoming) ===
+    if (level >= 1) {  // Skill 1+ can sidestep Smoker tongues
+        int smokerEnt = DamageProtect_FindSmokerTargeting(client);
+        if (smokerEnt != -1) {
+            float smokerPos[3];
+            GetClientAbsOrigin(smokerEnt, smokerPos);
+            // Sidestep perpendicular to the Smoker's line
+            DamageProtect_StartPerpendicularDodge(client, smokerPos, curTime, 150.0, 0.6);
+            return;
+        }
+    }
+
     // === Tank rock dodge ===
-    int level2 = level;
-    if (level2 >= 2) {  // Skill 2+ can dodge rocks
+    if (level >= 2) {  // Skill 2+ can dodge rocks
         int rockEnt = DamageProtect_FindIncomingTankRock(client);
         if (rockEnt != -1) {
             float rockPos[3];
@@ -304,12 +327,13 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
     }
 
     // === Charger dodge ===
-    if (level2 >= 1) {  // Skill 1+ can dodge chargers
+    if (level >= 1) {  // Skill 1+ can dodge chargers
         int chargerEnt = DamageProtect_FindChargingCharger(client);
         if (chargerEnt != -1) {
             float chargerPos[3];
             GetClientAbsOrigin(chargerEnt, chargerPos);
-            DamageProtect_StartDodge(client, chargerPos, curTime, 250.0, 1.2);
+            // Dodge perpendicular to charge direction
+            DamageProtect_StartPerpendicularDodge(client, chargerPos, curTime, 250.0, 1.2);
             return;
         }
     }
@@ -465,6 +489,7 @@ static int DamageProtect_FindIncomingTankRock(int client) {
 
 /**
  * Find a Charger that is currently charging toward the bot.
+ * Uses m_isCharging netprop on the ability entity for reliable detection.
  */
 static int DamageProtect_FindChargingCharger(int client) {
     float pos[3];
@@ -475,9 +500,30 @@ static int DamageProtect_FindChargingCharger(int client) {
         if (GetClientTeam(i) != 3) continue;
         if (GetEntProp(i, Prop_Send, "m_zombieClass") != 6) continue;  // ZC_CHARGER = 6
 
-        // Check if Charger is in charging state
-        MoveType mt = GetEntityMoveType(i);
-        if (mt != MOVETYPE_ISOMETRIC) continue;  // Charger charges with isometric move type
+        // Primary detection: check m_isCharging on Charger's ability entity
+        bool isCharging = false;
+
+        // Method 1: Check ability entity directly
+        int abilityEnt = GetEntPropEnt(i, Prop_Send, "m_customAbility");
+        if (abilityEnt != -1 && IsValidEntity(abilityEnt)) {
+            if (HasEntProp(abilityEnt, Prop_Send, "m_isCharging")) {
+                isCharging = (GetEntProp(abilityEnt, Prop_Send, "m_isCharging") != 0);
+            }
+        }
+
+        // Fallback: MOVETYPE_ISOMETRIC + velocity check
+        if (!isCharging) {
+            MoveType mt = GetEntityMoveType(i);
+            if (mt == MOVETYPE_ISOMETRIC) {
+                float chargerVel[3];
+                GetEntPropVector(i, Prop_Data, "m_vecAbsVelocity", chargerVel);
+                if (GetVectorLength(chargerVel) > 200.0) {
+                    isCharging = true;
+                }
+            }
+        }
+
+        if (!isCharging) continue;
 
         float chargerPos[3];
         GetClientAbsOrigin(i, chargerPos);
@@ -488,7 +534,7 @@ static int DamageProtect_FindChargingCharger(int client) {
         float chargerVel[3];
         GetEntPropVector(i, Prop_Data, "m_vecAbsVelocity", chargerVel);
         float speed = GetVectorLength(chargerVel);
-        if (speed < 100.0) continue;  // Not really charging
+        if (speed < 100.0) continue;
 
         float toBot[3];
         SubtractVectors(pos, chargerPos, toBot);
@@ -514,4 +560,148 @@ static int DamageProtect_FindChargingCharger(int client) {
     }
 
     return -1;
+}
+
+/**
+ * Find a Hunter that is currently in the air pouncing toward the bot.
+ */
+#define HUNTER_DODGE_RANGE 400.0
+static int DamageProtect_FindPouncingHunter(int client) {
+    float pos[3];
+    pos = g_BotState[client].absOrigin;
+
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 3) continue;
+        if (GetEntProp(i, Prop_Send, "m_zombieClass") != 3) continue;  // ZC_HUNTER = 3
+
+        // Hunter in air = pouncing
+        int flags = GetEntityFlags(i);
+        if ((flags & FL_ONGROUND) != 0) continue;  // On ground, not pouncing
+
+        float hunterPos[3];
+        GetClientAbsOrigin(i, hunterPos);
+        float dist = AI_GetVectorDistance(pos, hunterPos);
+        if (dist > HUNTER_DODGE_RANGE) continue;
+
+        // Check if Hunter is heading toward this bot
+        float hunterVel[3];
+        GetEntPropVector(i, Prop_Data, "m_vecAbsVelocity", hunterVel);
+        float speed = GetVectorLength(hunterVel);
+        if (speed < 100.0) continue;
+
+        float toBot[3];
+        SubtractVectors(pos, hunterPos, toBot);
+        toBot[2] = 0.0;
+        float toBotLen = GetVectorLength(toBot);
+        if (toBotLen < 1.0) continue;
+        toBot[0] /= toBotLen;
+        toBot[1] /= toBotLen;
+
+        float normVel[3];
+        normVel[0] = hunterVel[0];
+        normVel[1] = hunterVel[1];
+        normVel[2] = 0.0;
+        float velLen = GetVectorLength(normVel);
+        if (velLen < 1.0) continue;
+        normVel[0] /= velLen;
+        normVel[1] /= velLen;
+
+        float dot = normVel[0] * toBot[0] + normVel[1] * toBot[1];
+        if (dot > 0.3) {
+            return i;  // Hunter is pouncing toward this bot
+        }
+    }
+
+    return -1;
+}
+
+/**
+ * Find a Smoker that is currently pulling this bot with its tongue.
+ * Also detects Smokers about to attack (within 500u, facing bot).
+ */
+#define SMOKER_DODGE_RANGE 600.0
+static int DamageProtect_FindSmokerTargeting(int client) {
+    float pos[3];
+    pos = g_BotState[client].absOrigin;
+
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 3) continue;
+        if (GetEntProp(i, Prop_Send, "m_zombieClass") != 1) continue;  // ZC_SMOKER = 1
+
+        float smokerPos[3];
+        GetClientAbsOrigin(i, smokerPos);
+        float dist = AI_GetVectorDistance(pos, smokerPos);
+        if (dist > SMOKER_DODGE_RANGE) continue;
+
+        // Check if this bot is the Smoker's tongue target
+        int tongueOwner = GetEntPropEnt(client, Prop_Send, "m_tongueOwner");
+        if (tongueOwner == i) {
+            return i;  // Smoker is actively pulling this bot
+        }
+
+        // Check if Smoker is winding up tongue attack (ability entity)
+        int abilityEnt = GetEntPropEnt(i, Prop_Send, "m_customAbility");
+        if (abilityEnt != -1 && IsValidEntity(abilityEnt)) {
+            if (HasEntProp(abilityEnt, Prop_Send, "m_tongueVictim")) {
+                int victim = GetEntPropEnt(abilityEnt, Prop_Send, "m_tongueVictim");
+                if (victim == client) {
+                    return i;  // Smoker is targeting this bot
+                }
+            }
+        }
+    }
+
+    return -1;
+}
+
+/**
+ * Start a perpendicular dodge maneuver — dodge sideways relative to the danger position.
+ * This is better than direct away-dodge for linear attacks (Charger, Hunter, Smoker tongue).
+ */
+static void DamageProtect_StartPerpendicularDodge(int client, const float dangerPos[3], float curTime,
+                                                    float dodgeDist, float dodgeDuration) {
+    float pos[3];
+    pos = g_BotState[client].absOrigin;
+
+    // Direction from danger to bot
+    float toBot[3];
+    SubtractVectors(pos, dangerPos, toBot);
+    toBot[2] = 0.0;
+    float len = GetVectorLength(toBot);
+    if (len < 1.0) {
+        toBot[0] = 1.0; toBot[1] = 0.0;
+    } else {
+        NormalizeVector(toBot, toBot);
+    }
+
+    // Perpendicular direction (rotate 90 degrees)
+    float perpDir[3];
+    if (GetRandomFloat(0.0, 1.0) < 0.5) {
+        perpDir[0] = -toBot[1];
+        perpDir[1] = toBot[0];
+    } else {
+        perpDir[0] = toBot[1];
+        perpDir[1] = -toBot[0];
+    }
+    perpDir[2] = 0.0;
+
+    // Combine perpendicular + slight backward movement
+    float escapeDir[3];
+    escapeDir[0] = perpDir[0] * 0.7 + toBot[0] * 0.3;
+    escapeDir[1] = perpDir[1] * 0.7 + toBot[1] * 0.3;
+    escapeDir[2] = 0.0;
+    NormalizeVector(escapeDir, escapeDir);
+    ScaleVector(escapeDir, dodgeDist);
+
+    float escapeTarget[3];
+    AddVectors(pos, escapeDir, escapeTarget);
+
+    g_BotState[client].moveTarget[0] = escapeTarget[0];
+    g_BotState[client].moveTarget[1] = escapeTarget[1];
+    g_BotState[client].moveTarget[2] = escapeTarget[2];
+    g_BotState[client].hasMoveTarget = true;
+    g_BotState[client].isDodging = true;
+    g_BotState[client].dodgeExpireTime = curTime + dodgeDuration;
 }

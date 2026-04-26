@@ -136,6 +136,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
 
     int bestTarget = -1;
     int bestType = 0;       // 0=none, 1=common, 2=SI, 3=tank, 4=witch
+    int bestSIThreat = 0;   // SI threat score for same-type tiebreaking
     float bestDist = COMBAT_MAX_RANGE + 1.0;
     int threatCount = 0;
     int commonCount = 0;
@@ -162,10 +163,112 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         bool isTank = (zombieClass == 8); // ZC_TANK = 8 in L4D2
         int thisType = isTank ? 3 : 2;
 
-        // Priority: Tank > SI. Within same priority, pick closest.
-        if (thisType > bestType || (thisType == bestType && dist < bestDist)) {
+        // === SI Threat Assessment ===
+        // Higher threat score = higher priority to kill
+        // 10: SI currently pinning a teammate (must kill NOW)
+        //  8: Hunter crouching to pounce (about to attack)
+        //  7: Smoker pulling a teammate
+        //  6: Charger charging toward team
+        //  5: Jockey near team (leap threat)
+        //  4: Spitter (area denial, less urgent)
+        //  2: Boomer (lowest threat, don't shoot at close range)
+        //  0: default
+        int siThreat = 0;
+        if (!isTank) {
+            switch (zombieClass) {
+                case 3: {  // Hunter
+                    // Check if pinning someone
+                    bool isPinning = false;
+                    for (int vi = 1; vi <= MaxClients; vi++) {
+                        if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
+                            if (GetEntPropEnt(vi, Prop_Send, "m_pounceAttacker") == i) {
+                                isPinning = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (isPinning) {
+                        siThreat = 10;
+                    } else {
+                        // Check if crouching (about to pounce)
+                        int seq = GetEntProp(i, Prop_Send, "m_nSequence");
+                        if (seq == 41 || seq == 42) {  // Hunter pounce prep sequences
+                            siThreat = 8;
+                        } else {
+                            siThreat = 5;
+                        }
+                    }
+                }
+                case 1: {  // Smoker
+                    // Check if pulling someone
+                    bool isPulling = false;
+                    for (int vi = 1; vi <= MaxClients; vi++) {
+                        if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
+                            if (GetEntPropEnt(vi, Prop_Send, "m_tongueOwner") == i) {
+                                isPulling = true;
+                                break;
+                            }
+                        }
+                    }
+                    siThreat = isPulling ? 7 : 4;
+                }
+                case 6: {  // Charger
+                    // Check if carrying/pummeling someone
+                    bool isCarrying = false;
+                    for (int vi = 1; vi <= MaxClients; vi++) {
+                        if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
+                            if (GetEntPropEnt(vi, Prop_Send, "m_carryAttacker") == i
+                                || GetEntPropEnt(vi, Prop_Send, "m_pummelAttacker") == i) {
+                                isCarrying = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (isCarrying) {
+                        siThreat = 10;
+                    } else {
+                        // Check if charging
+                        MoveType mt = GetEntityMoveType(i);
+                        siThreat = (mt == MOVETYPE_ISOMETRIC) ? 6 : 3;
+                    }
+                }
+                case 5: {  // Jockey
+                    // Check if riding someone
+                    bool isRiding = false;
+                    for (int vi = 1; vi <= MaxClients; vi++) {
+                        if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
+                            if (GetEntPropEnt(vi, Prop_Send, "m_jockeyAttacker") == i) {
+                                isRiding = true;
+                                break;
+                            }
+                        }
+                    }
+                    siThreat = isRiding ? 10 : 5;
+                }
+                case 4: {  // Spitter
+                    siThreat = 4;
+                }
+                case 2: {  // Boomer
+                    siThreat = 2;
+                }
+                default: siThreat = 3;
+            }
+        }
+
+        // Priority: Tank > SI. Within SI, higher threat score wins. Then closest.
+        bool betterTarget = false;
+        if (thisType > bestType) {
+            betterTarget = true;
+        } else if (thisType == bestType && siThreat > bestSIThreat) {
+            betterTarget = true;
+        } else if (thisType == bestType && siThreat == bestSIThreat && dist < bestDist) {
+            betterTarget = true;
+        }
+
+        if (betterTarget) {
             bestTarget = i;
             bestType = thisType;
+            bestSIThreat = siThreat;
             bestDist = dist;
         }
     }
@@ -230,12 +333,33 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         }
     }
 
-    // === Cover Priority: protect busy teammates ===
-    // If a teammate is doing a critical task (rescue/defib/hold-USE),
+    // === Cover Priority: protect busy or pinned teammates ===
+    // If a teammate is doing a critical task (rescue/defib/hold-USE)
+    // OR is pinned by SI (Hunter/Smoker/Jockey/Charger),
     // prefer targeting enemies near that teammate to provide cover fire.
     int busyClient = -1;
     float busyPos[3];
-    if (AI_IsTeammateBusyWithCriticalTask(busyClient, busyPos) && busyClient != client) {
+    bool teammateNeedsCover = false;
+
+    // Check for pinned teammates (higher priority than busy teammates)
+    for (int bi = 1; bi <= MaxClients; bi++) {
+        if (bi == client) continue;
+        if (!IsClientInGame(bi) || !IsPlayerAlive(bi)) continue;
+        if (GetClientTeam(bi) != 2) continue;
+        if (AI_IsPlayerPinned(bi)) {
+            busyClient = bi;
+            busyPos = g_BotState[bi].absOrigin;
+            teammateNeedsCover = true;
+            break;
+        }
+    }
+
+    // Also check for busy teammates (rescue/defib/hold-USE)
+    if (!teammateNeedsCover) {
+        teammateNeedsCover = AI_IsTeammateBusyWithCriticalTask(busyClient, busyPos);
+    }
+
+    if (teammateNeedsCover && busyClient != client) {
         int coverTarget = -1;
         int coverType = 0;
         float coverDistToTeammate = 600.0;
@@ -459,7 +583,25 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         int weapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
         if (IsValidEntity(weapon)) {
             int clip = GetEntProp(weapon, Prop_Send, "m_iClip1");
-            if (clip <= 0) {
+
+            // Boomer avoidance: don't shoot Boomers at close range (<200u)
+            // Shooting a nearby Boomer causes explosion + bile splash
+            bool skipShooting = false;
+            if (bestTarget > 0 && bestTarget <= MaxClients && GetClientTeam(bestTarget) == 3) {
+                int zClass = GetEntProp(bestTarget, Prop_Send, "m_zombieClass");
+                if (zClass == 2 && bestDist < 200.0) {
+                    skipShooting = true;
+                    // Instead of shooting, back away from the Boomer
+                    float boomerPos[3];
+                    GetClientAbsOrigin(bestTarget, boomerPos);
+                    AI_ComputeMoveAway(client, boomerPos, g_BotState[client].absOrigin,
+                                       g_BotState[client].eyeAngles, vel);
+                }
+            }
+
+            if (skipShooting) {
+                // Don't fire — just back away
+            } else if (clip <= 0) {
                 buttons |= IN_RELOAD;
             } else {
                 // Fire!
@@ -476,10 +618,19 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     if (g_bMeleeEnabled) {
         float shoveRange = Combat_GetShoveRange();
         if (bestDist < shoveRange && (bestType == 2 || bestType == 3 || bestType == 1)) {
-            // Roll for shove success based on skill level
-            float shoveRate = GetSkillFloat("shove");
-            if (SkillRollSuccess(shoveRate)) {
-                AI_PressShoveButton(client, buttons);
+            // Don't shove Chargers — they're immune to shoves
+            // Don't shove Boomers at close range — causes explosion that biles the bot
+            bool shouldShove = true;
+            if (bestTarget > 0 && bestTarget <= MaxClients && GetClientTeam(bestTarget) == 3) {
+                int zClass = GetEntProp(bestTarget, Prop_Send, "m_zombieClass");
+                if (zClass == 6) shouldShove = false;  // Charger — shove immune
+                if (zClass == 2) shouldShove = false;  // Boomer — explosion risk
+            }
+            if (shouldShove) {
+                float shoveRate = GetSkillFloat("shove");
+                if (SkillRollSuccess(shoveRate)) {
+                    AI_PressShoveButton(client, buttons);
+                }
             }
         }
     }
