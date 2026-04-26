@@ -88,6 +88,15 @@ bool TaskThrowable_Update(int client, int &buttons, float vel[3]) {
         // Move toward throwable
         AI_ComputeMoveToward(client, targetPos, g_BotState[client].absOrigin,
                               g_BotState[client].eyeAngles, vel);
+
+        // Stuck teleport for throwable pickup
+        float throwElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+        if (AI_ShouldAbandonNavigation(client)) {
+            TaskThrowable_Reset(client);
+            return false;
+        }
+        AI_TryStuckTeleport(client, targetPos, dist, throwElapsed, 300.0, 10.0);
+
         return true;  // Lock while approaching to prevent combat interruption
     }
 
@@ -121,6 +130,7 @@ bool TaskThrowable_Update(int client, int &buttons, float vel[3]) {
  */
 void TaskThrowable_Reset(int client) {
     g_iThrowSearchTarget[client] = -1;
+    AI_ResetTeleportState(client);
 }
 
 // ============================================================
