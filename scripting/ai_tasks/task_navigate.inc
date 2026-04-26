@@ -61,6 +61,7 @@ bool TaskNavigate_ShouldUpdate(int client) {
 
     // When keepalive is disabled, stop navigating if all human players are dead
     // UNLESS a dead teammate exists and defib is enabled (bot may need to reach a defib or body)
+    // OR keepalive is enabled (bots should always push forward)
     if (!g_bKeepaliveEnabled) {
         bool hasDeadHuman = false;
         bool hasAliveHuman = false;
@@ -72,9 +73,13 @@ bool TaskNavigate_ShouldUpdate(int client) {
             else
                 hasDeadHuman = true;
         }
-        if (!hasAliveHuman && hasDeadHuman && !g_bDefibEnabled)
+        if (!hasAliveHuman && hasDeadHuman && !g_bDefibEnabled && !g_bKeepaliveEnabled)
             return false;
     }
+
+    // If no humans are alive at all (all dead/spectating), bots must push forward
+    // The leader will be the bot with the highest flow distance
+    // This is handled by TaskNavigate_FindLeader which picks the most forward bot
 
     return true;
 }
@@ -240,6 +245,7 @@ static int TaskNavigate_FindLeader(int client) {
     float bestHumanDist = 999999.0;
 
     int bestBot = -1;
+    float bestBotFlow = -1.0;
 
     for (int i = 1; i <= MaxClients; i++) {
         if (i == client) continue;
@@ -265,13 +271,17 @@ static int TaskNavigate_FindLeader(int client) {
                 bestHuman = i;
             }
         } else {
-            // Bot — take first valid (lowest index)
-            if (bestBot == -1) {
+            // Bot — pick the one furthest along the map (highest flow distance)
+            // This ensures the most forward bot leads the group
+            float flow = L4D2Direct_GetFlowDistance(i);
+            if (flow > bestBotFlow) {
+                bestBotFlow = flow;
                 bestBot = i;
             }
         }
     }
 
+    // Prefer human players; when no humans alive, pick the most forward bot as leader
     return (bestHuman != -1) ? bestHuman : bestBot;
 }
 
