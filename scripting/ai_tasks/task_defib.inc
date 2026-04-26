@@ -394,15 +394,18 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         // Moving toward the ground defib - LOCK to prevent other tasks overriding movement
         // Check for stuck: if far from target and elapsed time exceeds threshold, teleport
         float elapsed = GetGameTime() - g_fDefibSearchStartTime[client];
-        if (dist > DEFIB_STUCK_TELEPORT_DIST && elapsed > DEFIB_STUCK_TELEPORT_TIME) {
-            // Bot is stuck trying to reach the defib — teleport near it
-            float telePos[3];
-            telePos[0] = defibPos[0] + GetRandomFloat(-50.0, 50.0);
-            telePos[1] = defibPos[1] + GetRandomFloat(-50.0, 50.0);
-            telePos[2] = defibPos[2] + 10.0;
-            TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
-            g_fDefibSearchStartTime[client] = GetGameTime();  // Reset to prevent repeated teleports
 
+        // Abandon if teleport failed too many times
+        if (AI_ShouldAbandonNavigation(client)) {
+            if (g_bDebugMode) {
+                char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
+                PrintToServer("[AI Bot DEBUG] %s ModeB: abandon defib search (teleport failed %d times)", dbgN, g_BotState[client].teleportAttempts);
+            }
+            TaskDefib_Reset(client);
+            return false;
+        }
+
+        if (AI_TryStuckTeleport(client, defibPos, dist, elapsed, DEFIB_STUCK_TELEPORT_DIST, DEFIB_STUCK_TELEPORT_TIME)) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
                 PrintToServer("[AI Bot DEBUG] %s ModeB: teleported near defib (was stuck %.0fs, dist=%.0f)", dbgN, elapsed, dist);
@@ -468,18 +471,23 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         // Track when Mode A navigation started
         if (g_fDefibReviveStartTime[client] <= 0.0) {
             g_fDefibReviveStartTime[client] = GetGameTime();
+            AI_ResetTeleportState(client);
         }
 
         // Check for stuck: if far from corpse and elapsed time exceeds threshold, teleport
         float reviveElapsed = GetGameTime() - g_fDefibReviveStartTime[client];
-        if (dist > DEFIB_STUCK_TELEPORT_DIST && reviveElapsed > DEFIB_STUCK_TELEPORT_TIME) {
-            float telePos[3];
-            telePos[0] = defibPos[0] + GetRandomFloat(-80.0, 80.0);
-            telePos[1] = defibPos[1] + GetRandomFloat(-80.0, 80.0);
-            telePos[2] = defibPos[2] + 10.0;
-            TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
-            g_fDefibReviveStartTime[client] = GetGameTime();  // Reset to prevent repeated teleports
 
+        // Abandon if teleport failed too many times
+        if (AI_ShouldAbandonNavigation(client)) {
+            if (g_bDebugMode) {
+                char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
+                PrintToServer("[AI Bot DEBUG] %s ModeA: abandon revive (teleport failed %d times)", dbgN, g_BotState[client].teleportAttempts);
+            }
+            TaskDefib_Reset(client);
+            return false;
+        }
+
+        if (AI_TryStuckTeleport(client, defibPos, dist, reviveElapsed, DEFIB_STUCK_TELEPORT_DIST, DEFIB_STUCK_TELEPORT_TIME)) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
                 PrintToServer("[AI Bot DEBUG] %s ModeA: teleported near corpse (was stuck %.0fs, dist=%.0f)", dbgN, reviveElapsed, dist);
@@ -576,6 +584,7 @@ void TaskDefib_Reset(int client) {
     g_bDefibSearchIsSpawn[client] = false;
     g_fDefibReviveStartTime[client] = 0.0;
     g_BotState[client].hasMoveTarget = false;
+    AI_ResetTeleportState(client);
 }
 
 // ============================================================
