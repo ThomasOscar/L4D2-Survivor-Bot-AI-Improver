@@ -171,13 +171,32 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                 // Try crouching + jumping
                 AI_PressCrouchButton(buttons);
                 AI_PressJumpButton(buttons);
-            } else {
+            } else if (g_iNavStuckCount[client] <= 6) {
                 // Random strafe to escape
                 bool strafeRight = ((GetGameTickCount() + client) % 2 == 0);
                 AI_ComputeStrafe(g_BotState[client].eyeAngles, vel, strafeRight);
                 AI_PressJumpButton(buttons);
-                // Reset counter after max attempts
-                if (g_iNavStuckCount[client] > 8) {
+            } else {
+                // All escape maneuvers failed — try teleport near leader
+                float stuckElapsed = curTime - g_BotState[client].stuckTime;
+                if (dist > g_fTeleportRange && stuckElapsed > g_fSaveTeleportTime) {
+                    if (AI_TryStuckTeleport(client, leaderPos, dist, stuckElapsed, g_fTeleportRange, g_fSaveTeleportTime)) {
+                        if (g_bDebugMode) {
+                            PrintToServer("[AI Bot] Navigate teleport: bot %d -> leader %d (dist=%.0f, attempt=%d)",
+                                client, leader, dist, g_BotState[client].teleportAttempts);
+                        }
+                        // Reset stuck counter after teleport
+                        g_iNavStuckCount[client] = 0;
+                        g_BotState[client].isStuck = false;
+                    } else if (AI_ShouldAbandonNavigation(client)) {
+                        // Teleport failed too many times — reset and keep trying normal movement
+                        AI_ResetTeleportState(client);
+                        g_iNavStuckCount[client] = 0;
+                        g_BotState[client].isStuck = false;
+                    }
+                }
+                // Reset counter after max escape attempts
+                if (g_iNavStuckCount[client] > 12) {
                     g_iNavStuckCount[client] = 0;
                 }
             }
@@ -185,6 +204,7 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
             // Not stuck
             g_iNavStuckCount[client] = 0;
             g_BotState[client].isStuck = false;
+            AI_ResetTeleportState(client);
         }
 
         // Store position for next check
