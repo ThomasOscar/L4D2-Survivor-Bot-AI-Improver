@@ -280,18 +280,39 @@ stock int AI_GetEntityMaxHealth(int entity)
 // Danger Zone Checks (Acid, Tank)
 // ============================================================================
 
+// Acid check cache — avoids FindEntityByClassname every frame
+static float g_fAcidCheckCacheTime = 0.0;
+static bool g_bAcidCheckCacheResult = false;
+static float g_fAcidCheckCachePos[3];
+static float g_fAcidCheckCacheRange = 0.0;
+#define ACID_CHECK_CACHE_INTERVAL 0.5
+
 /**
  * Check if Spitter acid (insect_swarm) is near a given position.
  * Spitter acid deals continuous damage — bots should avoid standing in it.
+ * Results are cached for 0.5s to avoid per-frame FindEntityByClassname overhead.
  *
  * @param pos      Reference position.
  * @param range    Search radius.
  * @return         True if an insect_swarm entity is within range.
  */
 stock bool AI_IsAcidNearPosition(const float pos[3], float range) {
+    // Use cached result if within expiry and query params match (position within 50u, same range)
+    float curTime = GetGameTime();
+    if ((curTime - g_fAcidCheckCacheTime) < ACID_CHECK_CACHE_INTERVAL
+        && g_fAcidCheckCacheRange == range) {
+        float dx = pos[0] - g_fAcidCheckCachePos[0];
+        float dy = pos[1] - g_fAcidCheckCachePos[1];
+        float dz = pos[2] - g_fAcidCheckCachePos[2];
+        if (dx * dx + dy * dy + dz * dz < 2500.0) {  // 50u tolerance
+            return g_bAcidCheckCacheResult;
+        }
+    }
+
     int ent = -1;
     int safetyCount = 0;
     float rangeSq = range * range;
+    bool result = false;
     while ((ent = FindEntityByClassname(ent, "insect_swarm")) != -1) {
         if (++safetyCount > 64) break;
         if (!IsValidEntity(ent)) { ent++; continue; }
@@ -300,9 +321,20 @@ stock bool AI_IsAcidNearPosition(const float pos[3], float range) {
         float dx = pos[0] - acidPos[0];
         float dy = pos[1] - acidPos[1];
         float dz = pos[2] - acidPos[2];
-        if (dx * dx + dy * dy + dz * dz <= rangeSq) return true;
+        if (dx * dx + dy * dy + dz * dz <= rangeSq) {
+            result = true;
+            break;
+        }
     }
-    return false;
+
+    // Cache result
+    g_fAcidCheckCacheTime = curTime;
+    g_bAcidCheckCacheResult = result;
+    g_fAcidCheckCachePos[0] = pos[0];
+    g_fAcidCheckCachePos[1] = pos[1];
+    g_fAcidCheckCachePos[2] = pos[2];
+    g_fAcidCheckCacheRange = range;
+    return result;
 }
 
 /**

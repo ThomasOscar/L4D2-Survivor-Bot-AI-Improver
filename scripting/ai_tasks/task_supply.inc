@@ -130,8 +130,14 @@ bool TaskSupply_Update(int client, int &buttons, float vel[3]) {
     if (g_iSupplySlotType[client] == SUPPLY_SLOT_AMMO) {
         int primaryWeapon = GetPlayerWeaponSlot(client, 0);
         if (primaryWeapon != -1) {
-            int clip = GetEntProp(primaryWeapon, Prop_Send, "m_iClip1");
-            int reserve = GetEntProp(primaryWeapon, Prop_Send, "m_iPrimaryAmmoCount");
+            int clip = 0;
+            int reserve = 0;
+            if (HasEntProp(primaryWeapon, Prop_Send, "m_iClip1")) {
+                clip = GetEntProp(primaryWeapon, Prop_Send, "m_iClip1");
+            }
+            if (HasEntProp(primaryWeapon, Prop_Send, "m_iPrimaryAmmoCount")) {
+                reserve = GetEntProp(primaryWeapon, Prop_Send, "m_iPrimaryAmmoCount");
+            }
             if (clip > 0 || reserve > 0) {
                 TaskSupply_Reset(client);
                 return false;
@@ -222,8 +228,14 @@ static int TaskSupply_GetMissingSlot(int client) {
     // Priority 6: Ammo (clip + reserve both empty)
     int primaryWeapon = GetPlayerWeaponSlot(client, 0);
     if (primaryWeapon != -1) {
-        int clip = GetEntProp(primaryWeapon, Prop_Send, "m_iClip1");
-        int reserve = GetEntProp(primaryWeapon, Prop_Send, "m_iPrimaryAmmoCount");
+        int clip = 0;
+        int reserve = 0;
+        if (HasEntProp(primaryWeapon, Prop_Send, "m_iClip1")) {
+            clip = GetEntProp(primaryWeapon, Prop_Send, "m_iClip1");
+        }
+        if (HasEntProp(primaryWeapon, Prop_Send, "m_iPrimaryAmmoCount")) {
+            reserve = GetEntProp(primaryWeapon, Prop_Send, "m_iPrimaryAmmoCount");
+        }
         if (clip <= 0 && reserve <= 0) {
             return SUPPLY_SLOT_AMMO;
         }

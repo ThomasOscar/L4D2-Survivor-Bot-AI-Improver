@@ -82,7 +82,7 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
     if (!g_bDebugMode) return;
     float curTime = GetGameTime();
     if (curTime < g_fDebugDecisionNextPrint[client]) return;
-    g_fDebugDecisionNextPrint[client] = curTime + 2.0;
+    g_fDebugDecisionNextPrint[client] = curTime + 0.8;
 
     char botName[64];
     GetClientName(client, botName, sizeof(botName));
@@ -90,14 +90,18 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
     char msg[192];
     VFormat(msg, sizeof(msg), fmt, 3);
 
+    // Console output (no network cost)
     PrintToServer("[AI Bot] %s | %s", botName, msg);
 
-    // Also show in game chat for human players (including dead/spectating)
-    // CRITICAL: Use "%s" format to prevent % characters in msg from being
-    // interpreted as format specifiers (causes "Bad format string" errors)
+    // Chat output: only send to human players, NOT all clients
+    // This avoids the massive network overhead of PrintToChatAll
     char chatMsg[192];
     FormatEx(chatMsg, sizeof(chatMsg), "\x04[AI]\x01 %s: %s", botName, msg);
-    PrintToChatAll("%s", chatMsg);
+    for (int i = 1; i <= MaxClients; i++) {
+        if (IsClientInGame(i) && !IsFakeClient(i) && GetClientTeam(i) > 0) {
+            PrintToChat(i, "%s", chatMsg);
+        }
+    }
 }
 
 /**

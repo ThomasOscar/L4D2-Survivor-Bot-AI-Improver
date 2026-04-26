@@ -31,12 +31,24 @@
 #define HEAL_SAFEROOM_DOOR_RANGE  600.0
 #define HEAL_SAFEROOM_CHANGELEVEL_RANGE 400.0
 
+// Safe room check cache (avoid FindEntityByClassname every frame)
+static float g_fSafeRoomCacheTime[MAXPLAYERS + 1] = {0.0, ...};
+static bool g_bSafeRoomCacheResult[MAXPLAYERS + 1] = {false, ...};
+#define SAFEROOM_CACHE_INTERVAL 5.0
+
 /**
  * Check if the bot is inside a safe room (near checkpoint door or changelevel trigger).
+ * Results are cached per-bot for 5 seconds.
  */
 static bool Heal_IsInSafeRoom(int client) {
+    float curTime = GetGameTime();
+    if ((curTime - g_fSafeRoomCacheTime[client]) < SAFEROOM_CACHE_INTERVAL) {
+        return g_bSafeRoomCacheResult[client];
+    }
+
     float pos[3];
     GetClientAbsOrigin(client, pos);
+    bool result = false;
 
     // Check for checkpoint doors
     int ent = -1;
@@ -46,21 +58,31 @@ static bool Heal_IsInSafeRoom(int client) {
         if (!IsValidEntity(ent)) { ent++; continue; }
         float doorPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", doorPos);
-        if (GetVectorDistance(pos, doorPos) < HEAL_SAFEROOM_DOOR_RANGE) return true;
+        if (GetVectorDistance(pos, doorPos) < HEAL_SAFEROOM_DOOR_RANGE) {
+            result = true;
+            break;
+        }
     }
 
     // Check for changelevel triggers
-    ent = -1;
-    safetyCount = 0;
-    while ((ent = FindEntityByClassname(ent, "info_changelevel")) != -1) {
-        if (++safetyCount > 256) break;
-        if (!IsValidEntity(ent)) { ent++; continue; }
-        float chgPos[3];
-        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", chgPos);
-        if (GetVectorDistance(pos, chgPos) < HEAL_SAFEROOM_CHANGELEVEL_RANGE) return true;
+    if (!result) {
+        ent = -1;
+        safetyCount = 0;
+        while ((ent = FindEntityByClassname(ent, "info_changelevel")) != -1) {
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
+            float chgPos[3];
+            GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", chgPos);
+            if (GetVectorDistance(pos, chgPos) < HEAL_SAFEROOM_CHANGELEVEL_RANGE) {
+                result = true;
+                break;
+            }
+        }
     }
 
-    return false;
+    g_fSafeRoomCacheTime[client] = curTime;
+    g_bSafeRoomCacheResult[client] = result;
+    return result;
 }
 
 /**

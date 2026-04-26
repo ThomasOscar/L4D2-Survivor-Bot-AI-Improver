@@ -364,7 +364,8 @@ bool TaskNavigate_ShouldUpdate(int client) {
     }
 
     // In aggressive leader mode, ALWAYS navigate — push forward!
-    if (g_bAggressiveLeaderMode) {
+    // But if pathfinding is disabled, don't enter aggressive push mode
+    if (g_bAggressiveLeaderMode && g_bPathfindingEnabled) {
         if (client == g_iLeaderBot) {
             FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
                 "Leader push%s", g_bHasRescueCloset ? " → closet" : "");
@@ -623,7 +624,7 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
     TaskNavigate_Spread(client, vel);
 
     // === Step 4: Stuck detection and escape ===
-    if ((curTime - g_fNavLastCheckTime[client]) >= NAV_STUCK_CHECK_TIME) {
+    if (g_bUnstickEnabled && (curTime - g_fNavLastCheckTime[client]) >= NAV_STUCK_CHECK_TIME) {
         bool isStuck = AI_IsPlayerStuck(client, g_BotState[client].absOrigin,
                                          g_fNavLastPos[client], NAV_STUCK_THRESHOLD);
 

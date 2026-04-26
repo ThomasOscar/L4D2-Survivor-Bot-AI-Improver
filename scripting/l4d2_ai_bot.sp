@@ -201,6 +201,17 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse,
     // Step 2: Execute task queue (modifies buttons and vel as needed)
     bool taskLocked = AITaskQueue_Execute(client, buttons, vel);
 
+    // Step 2.3: If bot is holding USE on a timed trigger, forcefully suppress ALL movement.
+    // Without FL_FROZEN (which blocks engine USE processing), the engine AI may try to
+    // move the bot. This safety net ensures the bot stays still while the progress bar fills.
+    if (g_BotState[client].isHoldingUse) {
+        vel[0] = 0.0;
+        vel[1] = 0.0;
+        vel[2] = 0.0;
+        buttons &= ~(IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_JUMP | IN_DUCK);
+        buttons |= IN_USE;
+    }
+
     // Step 2.5: Safety net — if Defib task is locked in revive mode (Mode A),
     // suppress IN_USE. The built-in L4D2 bot AI presses IN_USE to pick up items
     // near corpses, causing infinite medkit<->defib swap loops.

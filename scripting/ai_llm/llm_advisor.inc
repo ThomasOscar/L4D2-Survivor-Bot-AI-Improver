@@ -28,7 +28,8 @@
 #define LLM_DEFAULT_HOST        "127.0.0.1"
 #define LLM_DEFAULT_PORT        9876
 #define LLM_SEND_INTERVAL       15.0    // seconds between state sends
-#define LLM_RECONNECT_DELAY     5.0     // seconds before reconnect attempt
+#define LLM_RECONNECT_DELAY     5.0     // seconds before reconnect attempt (initial)
+#define LLM_RECONNECT_MAX_DELAY 120.0   // max reconnect delay after repeated failures
 #define LLM_CONNECT_TIMEOUT     10.0    // seconds before connect timeout
 #define LLM_HEARTBEAT_INTERVAL  30.0    // seconds between pings
 #define LLM_HEARTBEAT_TIMEOUT   60.0    // seconds without pong before reconnect
@@ -52,6 +53,7 @@ Handle g_hLLMConnectTimer = null;
 Handle g_hLLMSendTimer = null;
 Handle g_hLLMHeartbeatTimer = null;
 float  g_fLLMLastPong = 0.0;
+int    g_iLLMConsecutiveErrors = 0;     // Track consecutive errors for backoff
 
 // ============================================================
 // Public Interface
@@ -163,6 +165,7 @@ static void LLM_DisconnectCleanup() {
 public void LLMAdvisor_OnConnected(Socket socket, any arg) {
     g_bLLMConnected = true;
     g_fLLMLastPong = GetGameTime();
+    g_iLLMConsecutiveErrors = 0;     // Reset error counter on successful connect
     delete g_hLLMConnectTimer;
     g_hLLMConnectTimer = null;
 
@@ -226,8 +229,16 @@ public void LLMAdvisor_OnSocketError(Socket socket, const int errorType, const i
 
     // Only log and retry if LLM is still enabled
     if (g_bLLMEnabled) {
-        LogError("[LLM Advisor] Socket error: type=%d num=%d", errorType, errorNum);
-        CreateTimer(LLM_RECONNECT_DELAY, Timer_LLMAdvisor_Reconnect, _, TIMER_FLAG_NO_MAPCHANGE);
+        g_iLLMConsecutiveErrors++;
+        // Only log first 3 errors, then every 10th error to avoid log spam
+        if (g_iLLMConsecutiveErrors <= 3 || (g_iLLMConsecutiveErrors % 10) == 0) {
+            LogError("[LLM Advisor] Socket error: type=%d num=%d (attempt %d)",
+                     errorType, errorNum, g_iLLMConsecutiveErrors);
+        }
+        // Exponential backoff: 5s, 10s, 20s, 40s... up to 120s
+        float delay = float(1 << (g_iLLMConsecutiveErrors - 1)) * LLM_RECONNECT_DELAY;
+        if (delay > LLM_RECONNECT_MAX_DELAY) delay = LLM_RECONNECT_MAX_DELAY;
+        CreateTimer(delay, Timer_LLMAdvisor_Reconnect, _, TIMER_FLAG_NO_MAPCHANGE);
     }
 }
 

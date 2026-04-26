@@ -47,6 +47,7 @@
 // Self-heal thresholds
 #define SELF_HEAL_HP_PILLS       40      // Use pills/adrenaline below this HP
 #define SELF_HEAL_HP_ADRENALINE  30      // Use adrenaline below this HP (faster)
+#define SELF_HEAL_COOLDOWN       3.0     // Seconds between self-heal attempts
 
 // General SI damage reduction by skill level (index = level 0..4)
 // Lv0: 0%, Lv1: 10%, Lv2: 20%, Lv3: 30%, Lv4: 40%
@@ -85,6 +86,8 @@ static float g_flAcidDmgReduction[SKILL_LEVEL_COUNT] = {
  */
 // Per-bot last danger check time (throttle detection)
 static float g_flLastDangerCheck[MAXPLAYERS + 1];
+// Per-bot last self-heal attempt time (prevent spam)
+static float g_flLastSelfHeal[MAXPLAYERS + 1];
 
 void DamageProtect_CacheSafePos(int client) {
     float curTime = GetGameTime();
@@ -270,14 +273,14 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
     if (level < SKILL_LEVEL_MIN) level = SKILL_LEVEL_MIN;
     if (level > SKILL_LEVEL_MAX) level = SKILL_LEVEL_MAX;
     // Only self-heal at skill level 2+ (smarter bots know to use items)
-    if (level >= 2) {
+    if (level >= 2 && (curTime - g_flLastSelfHeal[client]) >= SELF_HEAL_COOLDOWN) {
         int hp = GetClientHealth(client);
         int slot4 = GetPlayerWeaponSlot(client, 4);  // Pills/Adrenaline slot
         if (slot4 != -1 && hp <= SELF_HEAL_HP_PILLS) {
             char cls[64];
             GetEntityClassname(slot4, cls, sizeof(cls));
             if (StrEqual(cls, "weapon_pain_pills") || StrEqual(cls, "weapon_adrenaline")) {
-                // Use the item
+                g_flLastSelfHeal[client] = curTime;
                 FakeClientCommand(client, "use %s", cls);
                 if (g_bDebugMode) {
                     char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));

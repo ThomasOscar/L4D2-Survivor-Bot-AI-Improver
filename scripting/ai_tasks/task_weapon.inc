@@ -53,6 +53,11 @@ bool TaskWeapon_ShouldUpdate(int client) {
     return false;
 }
 
+// Ammo pile proximity cache (avoid FindEntityByClassname every frame when clip==0)
+static float g_fAmmoNearCacheTime[MAXPLAYERS + 1] = {0.0, ...};
+static bool g_bAmmoNearCacheResult[MAXPLAYERS + 1] = {false, ...};
+#define AMMO_NEAR_CACHE_INTERVAL 2.0
+
 /**
  * Execute weapon management: switch weapons, reload.
  * @return false (never locks).
@@ -218,20 +223,27 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
         int clip = GetEntProp(activeWeapon, Prop_Send, "m_iClip1");
         if (clip == 0) {
             // Check for nearby ammo resupply before switching weapons
-            bool hasNearbyAmmo = false;
-            int ammoEnt = -1;
-            safetyCount = 0;
-            float clientPos[3];
-            GetClientAbsOrigin(client, clientPos);
-            while ((ammoEnt = FindEntityByClassname(ammoEnt, "weapon_ammo_spawn")) != -1) {
-                if (++safetyCount > 256) break;
-                if (!IsValidEntity(ammoEnt)) { ammoEnt++; continue; }
-                float ammoPos[3];
-                GetEntPropVector(ammoEnt, Prop_Data, "m_vecAbsOrigin", ammoPos);
-                if (GetVectorDistance(clientPos, ammoPos) < 500.0) {
-                    hasNearbyAmmo = true;
-                    break;
+            // Use cached result to avoid FindEntityByClassname every frame
+            float curTime2 = GetGameTime();
+            bool hasNearbyAmmo = g_bAmmoNearCacheResult[client];
+            if ((curTime2 - g_fAmmoNearCacheTime[client]) >= AMMO_NEAR_CACHE_INTERVAL) {
+                hasNearbyAmmo = false;
+                int ammoEnt = -1;
+                safetyCount = 0;
+                float clientPos[3];
+                GetClientAbsOrigin(client, clientPos);
+                while ((ammoEnt = FindEntityByClassname(ammoEnt, "weapon_ammo_spawn")) != -1) {
+                    if (++safetyCount > 256) break;
+                    if (!IsValidEntity(ammoEnt)) { ammoEnt++; continue; }
+                    float ammoPos[3];
+                    GetEntPropVector(ammoEnt, Prop_Data, "m_vecAbsOrigin", ammoPos);
+                    if (GetVectorDistance(clientPos, ammoPos) < 500.0) {
+                        hasNearbyAmmo = true;
+                        break;
+                    }
                 }
+                g_fAmmoNearCacheTime[client] = curTime2;
+                g_bAmmoNearCacheResult[client] = hasNearbyAmmo;
             }
             if (!hasNearbyAmmo) {
                 // No nearby ammo resupply, switch to secondary weapon

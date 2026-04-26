@@ -353,7 +353,19 @@ static int TaskPropCarry_FindNearestProp(int client) {
  * Find the center position of a nearby common infected horde.
  * @return Number of infected found in the group.
  */
+// Horde center scan throttle
+static float g_fHordeScanTime[MAXPLAYERS + 1] = {0.0, ...};
+static int g_iHordeScanCount[MAXPLAYERS + 1] = {0, ...};
+static float g_fHordeScanCenter[MAXPLAYERS + 1][3];
+#define HORDE_SCAN_INTERVAL 1.0
+
 static int TaskPropCarry_FindHordeCenter(int client, float result[3]) {
+    float curTime = GetGameTime();
+    if ((curTime - g_fHordeScanTime[client]) < HORDE_SCAN_INTERVAL) {
+        result = g_fHordeScanCenter[client];
+        return g_iHordeScanCount[client];
+    }
+
     float cx = 0.0, cy = 0.0, cz = 0.0;
     int count = 0;
 
@@ -381,5 +393,8 @@ static int TaskPropCarry_FindHordeCenter(int client, float result[3]) {
         result[2] = (cz / float(count)) + 20.0;
     }
 
+    g_fHordeScanTime[client] = curTime;
+    g_iHordeScanCount[client] = count;
+    g_fHordeScanCenter[client] = result;
     return count;
 }
