@@ -32,6 +32,8 @@
 // Aggressive leader mode constants
 #define NAV_RESCUE_CLOSET_SEARCH_RANGE  2000.0  // How far ahead to search for rescue closets
 #define NAV_RESCUE_CLOSET_CHECK_INTERVAL 10.0   // Re-scan for closets every N seconds
+#define NAV_TEAM_COHESION_RANGE         600.0   // Max distance non-leader bots can be from leader before teleport
+#define NAV_TEAM_COHESION_CHECK_TIME    3.0     // Seconds before teleporting a bot that's too far
 
 // Per-bot navigation state
 static float g_fNavLastPos[MAXPLAYERS + 1][3];
@@ -44,6 +46,7 @@ static int g_iLeaderBot = -1;                      // The elected leader bot cli
 static float g_fRescueClosetPos[3];                // Nearest rescue closet position
 static bool g_bHasRescueCloset = false;             // Whether a rescue closet was found
 static float g_fLastClosetCheckTime = 0.0;         // Last time we scanned for closets
+static float g_fFarFromLeaderSince[MAXPLAYERS + 1]; // When each bot first became too far from leader
 static float g_fLastDefibNearbyCheckTime = 0.0;    // Throttle for DefibExistsNearby scan
 static bool g_bDefibNearby = false;                 // Cached result of DefibExistsNearby
 
@@ -405,6 +408,30 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                 AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
                                       g_BotState[client].eyeAngles, vel);
             }
+
+            // === Team cohesion: teleport to leader if too far for too long ===
+            if (dist > NAV_TEAM_COHESION_RANGE) {
+                if (g_fFarFromLeaderSince[client] <= 0.0) {
+                    g_fFarFromLeaderSince[client] = curTime;
+                }
+                float farDuration = curTime - g_fFarFromLeaderSince[client];
+                if (farDuration >= NAV_TEAM_COHESION_CHECK_TIME) {
+                    // Teleport directly to leader's position with a small offset
+                    float teleportPos[3];
+                    teleportPos = leaderPos;
+                    // Add random offset so bots don't stack on the exact same spot
+                    teleportPos[0] += GetRandomFloat(-50.0, 50.0);
+                    teleportPos[1] += GetRandomFloat(-50.0, 50.0);
+                    TeleportEntity(client, teleportPos, NULL_VECTOR, NULL_VECTOR);
+                    g_fFarFromLeaderSince[client] = 0.0;
+                    g_iNavStuckCount[client] = 0;
+                    g_BotState[client].isStuck = false;
+                    AI_ResetTeleportState(client);
+                    AI_DebugDecision(client, "Team cohesion teleport -> leader (dist=%.0f, far=%.1fs)", dist, farDuration);
+                }
+            } else {
+                g_fFarFromLeaderSince[client] = 0.0;
+            }
         }
     } else {
         // === Step 2: Normal follow logic ===
@@ -418,6 +445,28 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                                   g_BotState[client].eyeAngles, vel, NAV_SLOW_SPEED);
         }
         // else: close enough, don't move toward leader
+
+        // Team cohesion in normal mode too: teleport if extremely far
+        if (dist > NAV_TEAM_COHESION_RANGE) {
+            if (g_fFarFromLeaderSince[client] <= 0.0) {
+                g_fFarFromLeaderSince[client] = curTime;
+            }
+            float farDuration = curTime - g_fFarFromLeaderSince[client];
+            if (farDuration >= NAV_TEAM_COHESION_CHECK_TIME) {
+                float teleportPos[3];
+                teleportPos = leaderPos;
+                teleportPos[0] += GetRandomFloat(-50.0, 50.0);
+                teleportPos[1] += GetRandomFloat(-50.0, 50.0);
+                TeleportEntity(client, teleportPos, NULL_VECTOR, NULL_VECTOR);
+                g_fFarFromLeaderSince[client] = 0.0;
+                g_iNavStuckCount[client] = 0;
+                g_BotState[client].isStuck = false;
+                AI_ResetTeleportState(client);
+                AI_DebugDecision(client, "Team cohesion teleport -> leader (dist=%.0f, far=%.1fs)", dist, farDuration);
+            }
+        } else {
+            g_fFarFromLeaderSince[client] = 0.0;
+        }
     }
 
     // === Step 3: Spread out if bunched with other bots ===
@@ -496,6 +545,7 @@ void TaskNavigate_Reset(int client) {
     g_BotState[client].stuckTime = 0.0;
     g_iNavStuckCount[client] = 0;
     g_fNavLastCheckTime[client] = 0.0;
+    g_fFarFromLeaderSince[client] = 0.0;
 }
 
 /**
@@ -508,6 +558,9 @@ void TaskNavigate_ResetGlobals() {
     g_fLastClosetCheckTime = 0.0;
     g_fLastDefibNearbyCheckTime = 0.0;
     g_bDefibNearby = false;
+    for (int i = 0; i <= MaxClients; i++) {
+        g_fFarFromLeaderSince[i] = 0.0;
+    }
 }
 
 // ============================================================
