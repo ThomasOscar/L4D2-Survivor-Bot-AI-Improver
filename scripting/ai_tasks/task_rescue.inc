@@ -119,6 +119,12 @@ bool TaskRescue_ShouldUpdate(int client) {
     // Already assigned as rescuer?
     int assignedVictim = TaskRescue_GetAssignedVictim(client);
     if (assignedVictim != -1 && TaskRescue_NeedsHelp(assignedVictim)) {
+        // Even if assigned, if a Tank is very close, let combat take priority
+        if (TaskRescue_IsTankNearby(client, 300.0)) {
+            // Release assignment — let combat handle Tank first
+            g_iAssignedRescuer[assignedVictim] = -1;
+            return false;
+        }
         return true;
     }
 
@@ -130,10 +136,15 @@ bool TaskRescue_ShouldUpdate(int client) {
         // Already has a rescuer assigned?
         if (g_iAssignedRescuer[i] != -1) continue;
 
-        // Find closest available bot for this victim
+        // Check if a Tank is near the victim — too dangerous to rescue right now
         float victimPos[3];
         GetClientAbsOrigin(i, victimPos);
+        if (TaskRescue_IsTankNearPosition(victimPos, 400.0)) {
+            // Tank is too close to victim — skip rescue, let combat handle it
+            continue;
+        }
 
+        // Find closest available bot for this victim
         int closestBot = -1;
         float closestDist = 999999.0;
 
@@ -146,6 +157,9 @@ bool TaskRescue_ShouldUpdate(int client) {
 
             // Already rescuing someone else?
             if (TaskRescue_GetAssignedVictim(b) != -1) continue;
+
+            // Skip bots that are close to a Tank
+            if (TaskRescue_IsTankNearby(b, 300.0)) continue;
 
             float botPos[3];
             GetClientAbsOrigin(b, botPos);
@@ -184,7 +198,16 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
     g_BotState[client].rescueTarget = victim;
     g_BotState[client].isRescuing = true;
 
-    // === Emergency teleport: if too far and stuck for too long ===
+    // === Tank awareness: if Tank is very close, release rescue and let combat handle it ===
+    if (TaskRescue_IsTankNearby(client, 300.0)) {
+        if (g_bDebugMode) {
+            PrintToServer("[AI Bot] Rescue abort: bot %d — Tank too close, releasing rescue", client);
+        }
+        TaskRescue_Reset(client);
+        return false;  // Let combat task deal with the Tank
+    }
+
+    // === Emergency teleport: if too far and actually stuck ===
     float rescueDist = AI_GetVectorDistance(g_BotState[client].absOrigin, victimPos);
     float rescueElapsed = GetGameTime() - g_BotState[client].taskStartTime;
 
@@ -285,4 +308,34 @@ void TaskRescue_Reset(int client) {
             g_iAssignedRescuer[v] = -1;
         }
     }
+}
+
+// ============================================================
+// Tank awareness helpers
+// ============================================================
+
+/**
+ * Check if a Tank is within range of a given position.
+ */
+static bool TaskRescue_IsTankNearPosition(const float pos[3], float range) {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 3) continue;
+        if (GetEntProp(i, Prop_Send, "m_zombieClass") != 8) continue;  // Not a Tank
+
+        float tankPos[3];
+        GetClientAbsOrigin(i, tankPos);
+        float dist = AI_GetVectorDistance(pos, tankPos);
+        if (dist <= range) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Check if a Tank is within range of a client.
+ */
+static bool TaskRescue_IsTankNearby(int client, float range) {
+    return TaskRescue_IsTankNearPosition(g_BotState[client].absOrigin, range);
 }
