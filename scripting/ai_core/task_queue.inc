@@ -263,7 +263,7 @@ void AITaskQueue_Init() {
     // Register tasks by priority (uncomment as modules are implemented)
     AITaskQueue_RegisterTask(TASK_RESCUE,     0, "Rescue");
     AITaskQueue_RegisterTask(TASK_DEFIB,      0, "Defib", 0.5);       // Defib = same as rescue (saving lives)
-    AITaskQueue_RegisterTask(TASK_COMBAT,     1, "Combat");
+    AITaskQueue_RegisterTask(TASK_COMBAT,     1, "Combat", 0.15);    // Throttle combat scan (6.7 Hz instead of 30 Hz)
     AITaskQueue_RegisterTask(TASK_THROWABLE,  2, "Throwable");
     AITaskQueue_RegisterTask(TASK_HEAL,       2, "Heal");
     AITaskQueue_RegisterTask(TASK_NAVIGATE,   3, "Navigate");

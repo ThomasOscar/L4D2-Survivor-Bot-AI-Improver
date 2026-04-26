@@ -49,6 +49,9 @@ static float g_fLastClosetCheckTime = 0.0;         // Last time we scanned for c
 static float g_fFarFromLeaderSince[MAXPLAYERS + 1]; // When each bot first became too far from leader
 static float g_fLastDefibNearbyCheckTime = 0.0;    // Throttle for DefibExistsNearby scan
 static bool g_bDefibNearby = false;                 // Cached result of DefibExistsNearby
+static float g_fLastFlowSampleTime = 0.0;           // Throttle for leader flow direction sampling
+static float g_fCachedFlowTarget[3];                // Cached best forward direction target
+static bool g_bCachedFlowFound = false;             // Whether cached target is valid
 
 // ============================================================
 // Aggressive Leader Mode
@@ -444,50 +447,54 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                 }
             } else {
                 // No rescue closet target — push forward along the map
-                // Use flow distance to find the best forward direction: sample points
-                // around the bot and move toward the one with the highest flow distance.
-                float bestTarget[3];
-                bool foundForward = false;
-                float myFlow = L4D2Direct_GetFlowDistance(client);
-                float bestFlow = myFlow;
+                // Use flow distance to find the best forward direction.
+                // Sample directions only every 0.5s to avoid expensive trace rays every tick.
+                float curTimeSample = GetGameTime();
+                if ((curTimeSample - g_fLastFlowSampleTime) >= 0.5) {
+                    g_fLastFlowSampleTime = curTimeSample;
+                    g_bCachedFlowFound = false;
 
-                // Sample 8 directions around the bot
-                for (int dir = 0; dir < 8; dir++) {
-                    float angle = float(dir) * 45.0;
-                    float dirVec[3];
-                    dirVec[0] = Cosine(DegToRad(angle));
-                    dirVec[1] = Sine(DegToRad(angle));
-                    dirVec[2] = 0.0;
+                    float myFlow = L4D2Direct_GetFlowDistance(client);
+                    float bestFlow = myFlow;
 
-                    float samplePos[3];
-                    samplePos[0] = g_BotState[client].absOrigin[0] + dirVec[0] * 300.0;
-                    samplePos[1] = g_BotState[client].absOrigin[1] + dirVec[1] * 300.0;
-                    samplePos[2] = g_BotState[client].absOrigin[2];
+                    // Sample 8 directions around the bot
+                    for (int dir = 0; dir < 8; dir++) {
+                        float angle = float(dir) * 45.0;
+                        float dirVec[3];
+                        dirVec[0] = Cosine(DegToRad(angle));
+                        dirVec[1] = Sine(DegToRad(angle));
+                        dirVec[2] = 0.0;
 
-                    // Check this direction isn't blocked by a wall
-                    Handle trace = TR_TraceRayFilterEx(g_BotState[client].absOrigin, samplePos,
-                                                        MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint,
-                                                        AI_TraceFilter_NoPlayers, 0);
-                    if (TR_DidHit(trace)) {
+                        float samplePos[3];
+                        samplePos[0] = g_BotState[client].absOrigin[0] + dirVec[0] * 300.0;
+                        samplePos[1] = g_BotState[client].absOrigin[1] + dirVec[1] * 300.0;
+                        samplePos[2] = g_BotState[client].absOrigin[2];
+
+                        // Check this direction isn't blocked by a wall
+                        Handle trace = TR_TraceRayFilterEx(g_BotState[client].absOrigin, samplePos,
+                                                            MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint,
+                                                            AI_TraceFilter_NoPlayers, 0);
+                        if (TR_DidHit(trace)) {
+                            delete trace;
+                            continue;  // Blocked by wall, skip this direction
+                        }
                         delete trace;
-                        continue;  // Blocked by wall, skip this direction
-                    }
-                    delete trace;
 
-                    // Check flow distance at this point
-                    Address navArea = L4D2Direct_GetTerrorNavArea(samplePos);
-                    if (navArea != Address_Null) {
-                        float sampleFlow = L4D2Direct_GetTerrorNavAreaFlow(navArea);
-                        if (sampleFlow > bestFlow) {
-                            bestFlow = sampleFlow;
-                            bestTarget = samplePos;
-                            foundForward = true;
+                        // Check flow distance at this point
+                        Address navArea = L4D2Direct_GetTerrorNavArea(samplePos);
+                        if (navArea != Address_Null) {
+                            float sampleFlow = L4D2Direct_GetTerrorNavAreaFlow(navArea);
+                            if (sampleFlow > bestFlow) {
+                                bestFlow = sampleFlow;
+                                g_fCachedFlowTarget = samplePos;
+                                g_bCachedFlowFound = true;
+                            }
                         }
                     }
                 }
 
-                if (foundForward) {
-                    AI_ComputeMoveToward(client, bestTarget, g_BotState[client].absOrigin,
+                if (g_bCachedFlowFound) {
+                    AI_ComputeMoveToward(client, g_fCachedFlowTarget, g_BotState[client].absOrigin,
                                           g_BotState[client].eyeAngles, vel);
                 }
             }

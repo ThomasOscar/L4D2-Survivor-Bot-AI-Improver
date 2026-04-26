@@ -31,8 +31,32 @@ static bool g_bTriggerUsed[MAX_ENTITIES];
 // Per-bot trigger search state
 static int g_iTriggerTarget[MAXPLAYERS + 1];           // Entity being pursued
 static float g_fTriggerScanTime[MAXPLAYERS + 1];       // Last scan timestamp
+static float g_fTriggerHoldStart[MAXPLAYERS + 1];      // When we started holding USE
+static bool g_bTriggerHolding[MAXPLAYERS + 1];          // Whether we're in hold-USE mode
 
-// Classnames to search for, checked in order
+/**
+ * Check if an entity requires HOLDING USE (progress bar) to activate.
+ * func_button_timed and prop_door_rotating_checkpoint need sustained USE.
+ */
+static bool TriggerSearch_NeedsHoldUse(int entity) {
+    char cls[64];
+    if (!GetEntityClassname(entity, cls, sizeof(cls))) return false;
+    // Timed buttons (panic events, finales) require holding USE
+    if (StrEqual(cls, "func_button_timed")) return true;
+    // Checkpoint/saferoom doors require holding USE
+    if (StrEqual(cls, "prop_door_rotating_checkpoint")) return true;
+    return false;
+}
+
+/**
+ * Get the hold duration for a timed button (in seconds).
+ */
+static float TriggerSearch_GetHoldDuration(int entity) {
+    if (HasEntProp(entity, Prop_Data, "m_flUseTime")) {
+        return GetEntPropFloat(entity, Prop_Data, "m_flUseTime");
+    }
+    return 5.0;  // Default hold time if we can't read it
+}
 static char g_sTriggerClassnames[][] = {
     "func_button",
     "func_button_timed",
@@ -140,7 +164,9 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
 
 /**
  * Execute trigger search logic: move to entity and activate it.
- * @return false (never locks — lowest priority, fully interruptible).
+ * For timed entities (func_button_timed, checkpoint doors), holds IN_USE
+ * until the progress bar completes.
+ * @return true if holding USE (locks task), false otherwise.
  */
 bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
     int target = g_iTriggerTarget[client];
@@ -152,7 +178,7 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
     }
 
     // Already used this round? (with cooldown-based re-interaction)
-    if (g_bTriggerUsed[target]) {
+    if (g_bTriggerUsed[target] && !g_bTriggerHolding[client]) {
         float curTime = GetGameTime();
         if (g_fTriggerLastUsed[target] > 0.0 &&
             (curTime - g_fTriggerLastUsed[target]) < TRIGGER_REINTERACT_COOLDOWN) {
@@ -168,25 +194,49 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
     float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, entPos);
 
     if (dist <= TRIGGER_USE_RANGE) {
-        // Close enough — look at entity and activate
+        // Close enough — look at entity
         entPos[2] += 20.0;
         AI_SnapViewToPosition(client, entPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
 
-        // Activate via AcceptEntityInput
-        AcceptEntityInput(target, "Use", client, client);
+        if (TriggerSearch_NeedsHoldUse(target)) {
+            // === Hold-USE mode: keep IN_USE pressed until progress completes ===
+            buttons |= IN_USE;
 
-        // Also press USE button as backup
-        AI_PressUseButton(client, buttons);
+            if (!g_bTriggerHolding[client]) {
+                // First frame of hold — start tracking
+                g_bTriggerHolding[client] = true;
+                g_fTriggerHoldStart[client] = GetGameTime();
+                float holdTime = TriggerSearch_GetHoldDuration(target);
+                AI_DebugDecision(client, "Holding USE on entity (need %.1fs)", holdTime);
+            }
 
-        // Mark as used (with timestamp for re-interaction cooldown)
-        g_bTriggerUsed[target] = true;
-        g_fTriggerLastUsed[target] = GetGameTime();
-        g_iTriggerTarget[client] = -1;
+            // Check if we've held long enough
+            float heldDuration = GetGameTime() - g_fTriggerHoldStart[client];
+            float requiredDuration = TriggerSearch_GetHoldDuration(target);
+            if (heldDuration >= requiredDuration + 0.5) {
+                // Held long enough — mark as used and release
+                g_bTriggerUsed[target] = true;
+                g_fTriggerLastUsed[target] = GetGameTime();
+                g_bTriggerHolding[client] = false;
+                g_iTriggerTarget[client] = -1;
+                return false;  // Release task
+            }
 
-        return false;
+            return true;  // LOCK task while holding USE
+        } else {
+            // === Instant-use mode: press USE once ===
+            AcceptEntityInput(target, "Use", client, client);
+            AI_PressUseButton(client, buttons);
+
+            g_bTriggerUsed[target] = true;
+            g_fTriggerLastUsed[target] = GetGameTime();
+            g_iTriggerTarget[client] = -1;
+
+            return false;
+        }
     }
 
-    // Move toward entity
+    // Not in range yet — move toward entity
     AI_ComputeMoveToward(client, entPos, g_BotState[client].absOrigin,
                           g_BotState[client].eyeAngles, vel);
 
@@ -206,6 +256,8 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
  */
 void TaskTriggerSearch_Reset(int client) {
     g_iTriggerTarget[client] = -1;
+    g_bTriggerHolding[client] = false;
+    g_fTriggerHoldStart[client] = 0.0;
     AI_ResetTeleportState(client);
 }
 

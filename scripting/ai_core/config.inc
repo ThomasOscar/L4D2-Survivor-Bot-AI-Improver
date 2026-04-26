@@ -79,7 +79,7 @@ static float g_fDebugDecisionNextPrint[MAXPLAYERS + 1];
  * @param fmt       Format string (decision description)
  */
 stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
-    if (!g_cvDebugMode.BoolValue) return;
+    if (!g_bDebugMode) return;
     float curTime = GetGameTime();
     if (curTime < g_fDebugDecisionNextPrint[client]) return;
     g_fDebugDecisionNextPrint[client] = curTime + 0.5;
@@ -95,11 +95,7 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
     // Also show in game chat for human players (including dead/spectating)
     char chatMsg[192];
     FormatEx(chatMsg, sizeof(chatMsg), "\x04[AI]\x01 %s: %s", botName, msg);
-    for (int i = 1; i <= MaxClients; i++) {
-        if (IsClientInGame(i) && !IsFakeClient(i)) {
-            PrintToChat(i, chatMsg);
-        }
-    }
+    PrintToChatAll(chatMsg);
 }
 
 /**
