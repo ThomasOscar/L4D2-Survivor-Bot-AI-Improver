@@ -154,6 +154,15 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
     // Move toward entity
     AI_ComputeMoveToward(client, entPos, g_BotState[client].absOrigin,
                           g_BotState[client].eyeAngles, vel);
+
+    // Stuck teleport for trigger approach
+    float triggerElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+    if (AI_ShouldAbandonNavigation(client)) {
+        TaskTriggerSearch_Reset(client);
+        return false;
+    }
+    AI_TryStuckTeleport(client, entPos, dist, triggerElapsed, 300.0, 10.0);
+
     return false; // Never lock — interruptible
 }
 
@@ -162,6 +171,7 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
  */
 void TaskTriggerSearch_Reset(int client) {
     g_iTriggerTarget[client] = -1;
+    AI_ResetTeleportState(client);
 }
 
 // ============================================================
