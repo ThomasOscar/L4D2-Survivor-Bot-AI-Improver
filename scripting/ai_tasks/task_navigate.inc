@@ -4,6 +4,15 @@
  * Priority Order: 3
  * Handles following the team leader, maintaining formation,
  * avoiding bunching, and detecting/resolving stuck situations.
+ *
+ * Aggressive Leader Mode:
+ *   When all human players are dead AND no defib is available (no bot
+ *   carries one, none on the ground nearby), a bot leader is elected
+ *   to aggressively push the map forward. Bots will NOT flee from
+ *   threats — they fight while advancing. If a rescue closet is found
+ *   ahead, the leader navigates the team toward it to rescue dead
+ *   teammates. When a human player is revived, the mode ends and
+ *   normal player-leader behavior resumes.
  */
 
 #if defined _task_navigate_included
@@ -20,10 +29,195 @@
 #define NAV_STUCK_MAX_TIME      6.0     // Max stuck time before random escape
 #define NAV_SLOW_SPEED          200.0   // Slow follow speed
 
+// Aggressive leader mode constants
+#define NAV_RESCUE_CLOSET_SEARCH_RANGE  2000.0  // How far ahead to search for rescue closets
+#define NAV_RESCUE_CLOSET_CHECK_INTERVAL 10.0   // Re-scan for closets every N seconds
+
 // Per-bot navigation state
 static float g_fNavLastPos[MAXPLAYERS + 1][3];
 static float g_fNavLastCheckTime[MAXPLAYERS + 1];
 static int g_iNavStuckCount[MAXPLAYERS + 1];
+
+// Aggressive leader mode state
+static bool g_bAggressiveLeaderMode = false;      // Currently in aggressive leader mode
+static int g_iLeaderBot = -1;                      // The elected leader bot client index
+static float g_fRescueClosetPos[3];                // Nearest rescue closet position
+static bool g_bHasRescueCloset = false;             // Whether a rescue closet was found
+static float g_fLastClosetCheckTime = 0.0;         // Last time we scanned for closets
+
+// ============================================================
+// Aggressive Leader Mode
+// ============================================================
+
+/**
+ * Check if any human survivor is alive.
+ */
+static bool TaskNavigate_AnyHumanAlive() {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || IsFakeClient(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (IsPlayerAlive(i)) return true;
+    }
+    return false;
+}
+
+/**
+ * Check if any bot has a defibrillator in slot 3.
+ */
+static bool TaskNavigate_AnyBotHasDefib() {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsFakeClient(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (!IsPlayerAlive(i)) continue;
+        int weapon = GetPlayerWeaponSlot(i, 3);
+        if (weapon != -1) {
+            char cls[64];
+            GetEntityClassname(weapon, cls, sizeof(cls));
+            if (StrEqual(cls, "weapon_defibrillator")) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Check if a defibrillator exists on the ground or as a spawn within range.
+ */
+static bool TaskNavigation_DefibExistsNearby() {
+    int ent = -1;
+    while ((ent = FindEntityByClassname(ent, "weapon_defibrillator")) != -1) {
+        if (!IsValidEntity(ent)) continue;
+        int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
+        if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) continue;
+        return true;  // Found an unowned defib
+    }
+    ent = -1;
+    while ((ent = FindEntityByClassname(ent, "weapon_defibrillator_spawn")) != -1) {
+        if (!IsValidEntity(ent)) continue;
+        int offset = FindDataMapInfo(ent, "m_nCount");
+        if (offset > 0) {
+            if (GetEntProp(ent, Prop_Data, "m_nCount") <= 0) continue;
+        }
+        return true;  // Found a spawn with items
+    }
+    return false;
+}
+
+/**
+ * Update aggressive leader mode state.
+ * Enters aggressive mode when: all humans dead AND no defib available.
+ * Exits when: any human is alive again (rescued from closet or defibbed).
+ */
+static void TaskNavigate_UpdateAggressiveMode() {
+    bool anyHumanAlive = TaskNavigate_AnyHumanAlive();
+
+    if (anyHumanAlive) {
+        // A human is alive — exit aggressive mode
+        if (g_bAggressiveLeaderMode) {
+            g_bAggressiveLeaderMode = false;
+            g_iLeaderBot = -1;
+            g_bHasRescueCloset = false;
+            if (g_bDebugMode) {
+                PrintToServer("[AI Bot] Aggressive leader mode OFF — human player is alive");
+            }
+        }
+        return;
+    }
+
+    // All humans dead — check if we can use defib
+    if (g_bDefibEnabled) {
+        if (TaskNavigate_AnyBotHasDefib() || TaskNavigation_DefibExistsNearby()) {
+            // Defib is available — let the defib task handle it, don't go aggressive yet
+            if (g_bAggressiveLeaderMode) {
+                g_bAggressiveLeaderMode = false;
+                g_iLeaderBot = -1;
+                g_bHasRescueCloset = false;
+            }
+            return;
+        }
+    }
+
+    // All humans dead + no defib available — enter aggressive leader mode
+    if (!g_bAggressiveLeaderMode) {
+        g_bAggressiveLeaderMode = true;
+        g_bHasRescueCloset = false;
+        g_fLastClosetCheckTime = 0.0;
+
+        // Elect leader: the bot with highest flow distance
+        g_iLeaderBot = -1;
+        float bestFlow = -1.0;
+        for (int i = 1; i <= MaxClients; i++) {
+            if (!IsClientInGame(i) || !IsFakeClient(i)) continue;
+            if (GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+            if (GetEntProp(i, Prop_Send, "m_isIncapacitated") != 0) continue;
+            float flow = L4D2Direct_GetFlowDistance(i);
+            if (flow > bestFlow) {
+                bestFlow = flow;
+                g_iLeaderBot = i;
+            }
+        }
+
+        if (g_bDebugMode) {
+            if (g_iLeaderBot > 0) {
+                char name[64]; GetClientName(g_iLeaderBot, name, sizeof(name));
+                PrintToServer("[AI Bot] Aggressive leader mode ON — leader: %s (flow=%.0f)", name, bestFlow);
+            } else {
+                PrintToServer("[AI Bot] Aggressive leader mode ON — but no valid leader found!");
+            }
+        }
+    }
+}
+
+/**
+ * Find the nearest rescue closet nav area and cache its position.
+ * Uses the NAV_SPAWN_RESCUE_CLOSET attribute on nav areas.
+ */
+static void TaskNavigate_FindRescueCloset() {
+    float curTime = GetGameTime();
+    if ((curTime - g_fLastClosetCheckTime) < NAV_RESCUE_CLOSET_CHECK_INTERVAL) return;
+    g_fLastClosetCheckTime = curTime;
+
+    // Get leader position as reference
+    if (g_iLeaderBot <= 0 || !IsClientInGame(g_iLeaderBot) || !IsPlayerAlive(g_iLeaderBot)) {
+        g_bHasRescueCloset = false;
+        return;
+    }
+    float leaderPos[3];
+    GetClientAbsOrigin(g_iLeaderBot, leaderPos);
+
+    float bestDist = NAV_RESCUE_CLOSET_SEARCH_RANGE;
+    g_bHasRescueCloset = false;
+
+    // Search nav areas with NAV_SPAWN_RESCUE_CLOSET flag
+    int nav = -1;
+    while ((nav = FindEntityByClassname(nav, "info_survivor_rescue")) != -1) {
+        if (!IsValidEntity(nav)) continue;
+
+        float closetPos[3];
+        GetEntPropVector(nav, Prop_Data, "m_vecAbsOrigin", closetPos);
+        float dist = AI_GetVectorDistance(leaderPos, closetPos);
+
+        if (dist < bestDist) {
+            // Check that closet is AHEAD of leader (higher flow), not behind
+            // Simple check: closet should be farther from map start than leader
+            bestDist = dist;
+            g_fRescueClosetPos = closetPos;
+            g_bHasRescueCloset = true;
+        }
+    }
+
+    if (g_bDebugMode && g_bHasRescueCloset) {
+        PrintToServer("[AI Bot] Rescue closet found at (%.0f, %.0f, %.0f), dist=%.0f from leader",
+            g_fRescueClosetPos[0], g_fRescueClosetPos[1], g_fRescueClosetPos[2], bestDist);
+    }
+}
+
+/**
+ * Query whether aggressive leader mode is active.
+ * Used by other tasks (e.g. Rescue) to suppress Tank-avoidance.
+ */
+bool TaskNavigate_IsAggressiveLeaderMode() {
+    return g_bAggressiveLeaderMode;
+}
 
 /**
  * Check if navigate task should activate for this bot.
@@ -31,6 +225,9 @@ static int g_iNavStuckCount[MAXPLAYERS + 1];
 bool TaskNavigate_ShouldUpdate(int client) {
     if (g_BotState[client].controlledByType > 0) return false;
     if (g_BotState[client].isIncapacitated) return false;
+
+    // Update aggressive leader mode at every check
+    TaskNavigate_UpdateAggressiveMode();
 
     // When bot has defib and a dead teammate exists, navigate toward the death position
     // instead of following the leader. This is critical for the Defib task to work.
@@ -59,6 +256,11 @@ bool TaskNavigate_ShouldUpdate(int client) {
         }
     }
 
+    // In aggressive leader mode, ALWAYS navigate — push forward!
+    if (g_bAggressiveLeaderMode) {
+        return true;
+    }
+
     // When keepalive is disabled, stop navigating if all human players are dead
     // UNLESS a dead teammate exists and defib is enabled (bot may need to reach a defib or body)
     // OR keepalive is enabled (bots should always push forward)
@@ -76,10 +278,6 @@ bool TaskNavigate_ShouldUpdate(int client) {
         if (!hasAliveHuman && hasDeadHuman && !g_bDefibEnabled && !g_bKeepaliveEnabled)
             return false;
     }
-
-    // If no humans are alive at all (all dead/spectating), bots must push forward
-    // The leader will be the bot with the highest flow distance
-    // This is handled by TaskNavigate_FindLeader which picks the most forward bot
 
     return true;
 }
@@ -142,17 +340,60 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
     GetClientAbsOrigin(leader, leaderPos);
     float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, leaderPos);
 
-    // === Step 2: Follow logic ===
-    if (dist > g_fFollowRange) {
-        // Far away — full speed toward leader
-        AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
-                              g_BotState[client].eyeAngles, vel);
-    } else if (dist > g_fFollowRange * 0.5) {
-        // Medium distance — slow follow
-        AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
-                              g_BotState[client].eyeAngles, vel, NAV_SLOW_SPEED);
+    // === Step 1.5: Aggressive leader mode — push forward ===
+    if (g_bAggressiveLeaderMode) {
+        bool isLeader = (client == g_iLeaderBot);
+
+        if (isLeader) {
+            // Leader bot: push forward aggressively
+            // If we have a rescue closet target, navigate toward it
+            TaskNavigate_FindRescueCloset();
+
+            if (g_bHasRescueCloset) {
+                // Navigate toward rescue closet
+                float closetDist = AI_GetVectorDistance(g_BotState[client].absOrigin, g_fRescueClosetPos);
+                if (closetDist > NAV_FOLLOW_CLOSE) {
+                    AI_ComputeMoveToward(client, g_fRescueClosetPos, g_BotState[client].absOrigin,
+                                          g_BotState[client].eyeAngles, vel);
+                }
+            } else {
+                // No rescue closet found — just push forward along the map
+                // Use the leader's own forward direction to advance
+                float fwd[3];
+                GetAngleVectors(g_BotState[client].eyeAngles, fwd, NULL_VECTOR, NULL_VECTOR);
+                fwd[2] = 0.0;
+                float fwdLen = GetVectorLength(fwd);
+                if (fwdLen > 0.1) {
+                    // Move in the direction the leader is facing
+                    AI_ComputeMoveToward(client, g_BotState[client].absOrigin, g_BotState[client].absOrigin,
+                                          g_BotState[client].eyeAngles, vel);
+                    // Ensure forward movement
+                    if (vel[0] == 0.0 && vel[1] == 0.0) {
+                        vel[0] = 400.0;  // Push forward
+                    }
+                }
+            }
+        } else {
+            // Non-leader bot: follow the leader closely
+            // In aggressive mode, use a tighter follow range
+            if (dist > NAV_FOLLOW_CLOSE) {
+                AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
+                                      g_BotState[client].eyeAngles, vel);
+            }
+        }
+    } else {
+        // === Step 2: Normal follow logic ===
+        if (dist > g_fFollowRange) {
+            // Far away — full speed toward leader
+            AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
+                                  g_BotState[client].eyeAngles, vel);
+        } else if (dist > g_fFollowRange * 0.5) {
+            // Medium distance — slow follow
+            AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
+                                  g_BotState[client].eyeAngles, vel, NAV_SLOW_SPEED);
+        }
+        // else: close enough, don't move toward leader
     }
-    // else: close enough, don't move toward leader
 
     // === Step 3: Spread out if bunched with other bots ===
     TaskNavigate_Spread(client, vel);
@@ -232,15 +473,40 @@ void TaskNavigate_Reset(int client) {
     g_fNavLastCheckTime[client] = 0.0;
 }
 
+/**
+ * Reset aggressive leader mode globals. Called on map start.
+ */
+void TaskNavigate_ResetGlobals() {
+    g_bAggressiveLeaderMode = false;
+    g_iLeaderBot = -1;
+    g_bHasRescueCloset = false;
+    g_fLastClosetCheckTime = 0.0;
+}
+
 // ============================================================
 // Internal helpers
 // ============================================================
 
 /**
  * Find the best leader for this bot to follow.
- * Prefers human players; falls back to lowest-index alive bot.
+ * In aggressive leader mode, the elected leader is always the leader.
+ * Otherwise, prefers human players; falls back to the most-forward bot.
  */
 static int TaskNavigate_FindLeader(int client) {
+    // In aggressive leader mode, use the elected leader
+    if (g_bAggressiveLeaderMode && g_iLeaderBot > 0) {
+        if (IsClientInGame(g_iLeaderBot) && IsPlayerAlive(g_iLeaderBot) &&
+            GetClientTeam(g_iLeaderBot) == 2 &&
+            GetEntProp(g_iLeaderBot, Prop_Send, "m_isIncapacitated") == 0) {
+            // If this bot IS the leader, return self (leader doesn't follow anyone)
+            if (client == g_iLeaderBot) return -1;
+            return g_iLeaderBot;
+        }
+        // Leader is dead/incapped — re-elect
+        g_iLeaderBot = -1;
+        g_bAggressiveLeaderMode = false;
+    }
+
     int bestHuman = -1;
     float bestHumanDist = 999999.0;
 
