@@ -404,34 +404,34 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
         if (!IsClientInGame(g_iSharedPouncingHunter) || !IsPlayerAlive(g_iSharedPouncingHunter)) {
             g_iSharedPouncingHunter = -1;  // Invalidate stale cache
         } else {
-        // Check if pouncing hunter is heading toward this bot
-        float hunterRange = g_bCheatMode ? LV6_HUNTER_RANGE : HUNTER_DODGE_RANGE;
-        float hunterPos[3], botPos[3];
-        GetClientAbsOrigin(g_iSharedPouncingHunter, hunterPos);
-        botPos = g_BotState[client].absOrigin;
-        float dist = AI_GetVectorDistance(botPos, hunterPos);
-        if (dist <= hunterRange) {
-            // Verify hunter is heading toward this bot
-            float hunterVel[3];
-            GetEntPropVector(g_iSharedPouncingHunter, Prop_Data, "m_vecAbsVelocity", hunterVel);
-            float toBot[3];
-            SubtractVectors(botPos, hunterPos, toBot);
-            toBot[2] = 0.0;
-            float toBotLen = GetVectorLength(toBot);
-            if (toBotLen > 1.0) {
-                NormalizeVector(toBot, toBot);
-                float normVel[3]; normVel[0] = hunterVel[0]; normVel[1] = hunterVel[1]; normVel[2] = 0.0;
-                float velLen = GetVectorLength(normVel);
-                if (velLen > 1.0) {
-                    normVel[0] /= velLen; normVel[1] /= velLen;
-                    if (normVel[0]*toBot[0] + normVel[1]*toBot[1] > 0.3) {
-                        DamageProtect_StartPerpendicularDodge(client, hunterPos, curTime, 200.0, 0.8);
-                        return;
+            // Check if pouncing hunter is heading toward this bot
+            float hunterRange = g_bCheatMode ? LV6_HUNTER_RANGE : HUNTER_DODGE_RANGE;
+            float hunterPos[3], botPos[3];
+            GetClientAbsOrigin(g_iSharedPouncingHunter, hunterPos);
+            botPos = g_BotState[client].absOrigin;
+            float dist = AI_GetVectorDistance(botPos, hunterPos);
+            if (dist <= hunterRange) {
+                // Verify hunter is heading toward this bot
+                float hunterVel[3];
+                GetEntPropVector(g_iSharedPouncingHunter, Prop_Data, "m_vecAbsVelocity", hunterVel);
+                float toBot[3];
+                SubtractVectors(botPos, hunterPos, toBot);
+                toBot[2] = 0.0;
+                float toBotLen = GetVectorLength(toBot);
+                if (toBotLen > 1.0) {
+                    NormalizeVector(toBot, toBot);
+                    float normVel[3]; normVel[0] = hunterVel[0]; normVel[1] = hunterVel[1]; normVel[2] = 0.0;
+                    float velLen = GetVectorLength(normVel);
+                    if (velLen > 1.0) {
+                        normVel[0] /= velLen; normVel[1] /= velLen;
+                        if (normVel[0]*toBot[0] + normVel[1]*toBot[1] > 0.3) {
+                            DamageProtect_StartPerpendicularDodge(client, hunterPos, curTime, 200.0, 0.8);
+                            return;
+                        }
                     }
                 }
             }
         }
-        }  // end else (hunter is valid)
     }
 
     // === Smoker dodge (using shared scan result) ===

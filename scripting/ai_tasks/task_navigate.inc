@@ -524,7 +524,8 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
 
             if (shouldTeleport) {
                 if (g_fLv6LastTeleport[client] <= 0.0) {
-                    g_fLv6LastTeleport[client] = curTime;
+                    // First teleport trigger: set to past time so first check passes immediately
+                    g_fLv6LastTeleport[client] = curTime - teleportCooldown - 0.1;
                 }
                 float waitTime = curTime - g_fLv6LastTeleport[client];
                 if (waitTime >= teleportCooldown) {

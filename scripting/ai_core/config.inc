@@ -110,7 +110,7 @@ stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
  */
 void AIConfig_Init() {
     g_cvBotEnabled      = CreateConVar("ai_bot_enabled",       "1", "Enable AI Bot system", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvBotSkillLevel   = CreateConVar("ai_bot_skill",         "3", "Bot skill level (0=noob, 4=expert, 5=cheat)", FCVAR_NOTIFY, true, 0.0, true, 5.0);
+    g_cvBotSkillLevel   = CreateConVar("ai_bot_skill",         "3", "Bot skill level (0=noob, 1=improved, 2=standard, 3=enhanced, 4=expert, 5=cheat)", FCVAR_NOTIFY, true, 0.0, true, 5.0);
     g_cvRescueEnabled   = CreateConVar("ai_rescue_enabled",    "1", "Enable rescue task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvHealEnabled     = CreateConVar("ai_heal_enabled",      "1", "Enable heal task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvThrowableEnabled = CreateConVar("ai_throwable_enabled","1", "Enable throwable task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
