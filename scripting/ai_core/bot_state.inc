@@ -83,6 +83,8 @@ enum struct BotState {
     float lastMoveTime;         // Last time movement occurred
     bool isStuck;               // Whether the bot is stuck
     float stuckTime;            // When the bot got stuck
+    int teleportAttempts;       // Number of teleport attempts for current navigation
+    float lastTeleportTime;     // When the last teleport occurred
 
     // === LLM Advisory State ===
     char llmAction[32];         // LLM suggested action
@@ -146,6 +148,8 @@ enum struct BotState {
         this.lastMoveTime = 0.0;
         this.isStuck = false;
         this.stuckTime = 0.0;
+        this.teleportAttempts = 0;
+        this.lastTeleportTime = 0.0;
         this.hasLLMSuggestion = false;
         this.llmSuggestionTime = 0.0;
         this.llmAction[0] = '\0';
