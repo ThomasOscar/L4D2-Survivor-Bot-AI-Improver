@@ -77,6 +77,11 @@ enum struct BotState {
     int itemPassTarget;             // Target client for item passing
     int itemPassPhase;              // 0=idle, 1=approaching, 2=dropping
 
+    // === Supply Management State ===
+    int supplyTarget;               // Target entity to pick up
+    int supplySlotType;             // 0=none, 1=primary, 2=secondary, 3=medkit, 4=pills, 5=throwable, 6=ammo
+    float supplyGiveCooldown[MAXPLAYERS + 1]; // Per-player cooldown for giving items
+
     // === Navigation State ===
     float moveTarget[3];        // Movement target position
     bool hasMoveTarget;         // Whether there is a move target
@@ -139,6 +144,11 @@ enum struct BotState {
         this.itemPassCooldown = 0.0;
         this.itemPassTarget = -1;
         this.itemPassPhase = 0;
+        this.supplyTarget = -1;
+        this.supplySlotType = 0;
+        for (int i = 0; i <= MAXPLAYERS; i++) {
+            this.supplyGiveCooldown[i] = 0.0;
+        }
         for (int i = 0; i < 3; i++) {
             this.moveTarget[i] = 0.0;
             this.lastSafePos[i] = 0.0;
