@@ -15,9 +15,13 @@
 #define WEAPON_FAR_RANGE        400.0
 #define WEAPON_RELOAD_THRESHOLD 0.3     // Reload at 30% clip
 #define WEAPON_SWITCH_COOLDOWN  2.0     // Don't switch too fast
+#define WEAPON_AMMO_EMERGENCY_TIME 20.0 // Seconds with no ammo before emergency refill
+#define WEAPON_AMMO_CHECK_INTERVAL 5.0  // How often to check ammo status
 
 // Per-bot weapon state
 static float g_fWeaponLastSwitchTime[MAXPLAYERS + 1];
+static float g_fWeaponAmmoEmptyTime[MAXPLAYERS + 1];   // When ammo first became empty
+static float g_fWeaponLastAmmoCheck[MAXPLAYERS + 1];    // Last ammo status check time
 
 /**
  * Check if weapon task should activate for this bot.
@@ -53,6 +57,85 @@ bool TaskWeapon_ShouldUpdate(int client) {
  */
 bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
     #pragma unused vel
+
+    float curTime = GetGameTime();
+
+    // === Emergency ammo refill ===
+    // If bot's primary weapon has been completely out of ammo for a long time
+    // and there's no ammo source nearby, refill one magazine worth of ammo.
+    if ((curTime - g_fWeaponLastAmmoCheck[client]) >= WEAPON_AMMO_CHECK_INTERVAL) {
+        g_fWeaponLastAmmoCheck[client] = curTime;
+
+        int primary = GetPlayerWeaponSlot(client, 0);
+        if (primary != -1 && IsValidEntity(primary) && HasEntProp(primary, Prop_Send, "m_iClip1")) {
+            int clip = GetEntProp(primary, Prop_Send, "m_iClip1");
+            int reserve = 0;
+            if (HasEntProp(primary, Prop_Send, "m_iPrimaryAmmoCount")) {
+                reserve = GetEntProp(primary, Prop_Send, "m_iPrimaryAmmoCount");
+            }
+
+            if (clip <= 0 && reserve <= 0) {
+                // Completely out of ammo — track when this started
+                if (g_fWeaponAmmoEmptyTime[client] <= 0.0) {
+                    g_fWeaponAmmoEmptyTime[client] = curTime;
+                }
+
+                float emptyDuration = curTime - g_fWeaponAmmoEmptyTime[client];
+                if (emptyDuration >= WEAPON_AMMO_EMERGENCY_TIME) {
+                    // Check: is there any ammo pile nearby?
+                    bool hasNearbyAmmo = false;
+                    int ammoEnt = -1;
+                    float clientPos[3];
+                    GetClientAbsOrigin(client, clientPos);
+                    while ((ammoEnt = FindEntityByClassname(ammoEnt, "weapon_ammo_spawn")) != -1) {
+                        if (!IsValidEntity(ammoEnt)) continue;
+                        float ammoPos[3];
+                        GetEntPropVector(ammoEnt, Prop_Data, "m_vecAbsOrigin", ammoPos);
+                        if (GetVectorDistance(clientPos, ammoPos) < 800.0) {
+                            hasNearbyAmmo = true;
+                            break;
+                        }
+                    }
+
+                    // Check: is there a weapon on the ground we could swap to?
+                    bool hasNearbyWeapon = false;
+                    int wepEnt = -1;
+                    while ((wepEnt = FindEntityByClassname(wepEnt, "weapon_rifle")) != -1 ||
+                           (wepEnt = FindEntityByClassname(wepEnt, "weapon_smg")) != -1 ||
+                           (wepEnt = FindEntityByClassname(wepEnt, "weapon_pumpshotgun")) != -1 ||
+                           (wepEnt = FindEntityByClassname(wepEnt, "weapon_autoshotgun")) != -1) {
+                        if (!IsValidEntity(wepEnt)) continue;
+                        int owner = GetEntPropEnt(wepEnt, Prop_Data, "m_hOwnerEntity");
+                        if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) continue;
+                        float wepPos[3];
+                        GetEntPropVector(wepEnt, Prop_Data, "m_vecAbsOrigin", wepPos);
+                        if (GetVectorDistance(clientPos, wepPos) < 500.0) {
+                            hasNearbyWeapon = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasNearbyAmmo && !hasNearbyWeapon) {
+                        // Emergency: refill one magazine of ammo
+                        int maxClip = TaskWeapon_GetMaxClip(primary);
+                        if (maxClip > 0) {
+                            SetEntProp(primary, Prop_Send, "m_iClip1", maxClip);
+                            g_fWeaponAmmoEmptyTime[client] = 0.0;  // Reset timer
+
+                            if (g_bDebugMode) {
+                                char name[64]; GetClientName(client, name, sizeof(name));
+                                char cls[64]; GetEntityClassname(primary, cls, sizeof(cls));
+                                PrintToServer("[AI Bot] %s emergency ammo refill: %s + %d rounds", name, cls, maxClip);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Has ammo — reset empty timer
+                g_fWeaponAmmoEmptyTime[client] = 0.0;
+            }
+        }
+    }
 
     // === Reload check ===
     int activeWeapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
@@ -155,6 +238,8 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
  */
 void TaskWeapon_Reset(int client) {
     g_fWeaponLastSwitchTime[client] = 0.0;
+    g_fWeaponAmmoEmptyTime[client] = 0.0;
+    g_fWeaponLastAmmoCheck[client] = 0.0;
 }
 
 // ============================================================
