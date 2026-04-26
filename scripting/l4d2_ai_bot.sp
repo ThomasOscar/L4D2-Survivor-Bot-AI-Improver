@@ -25,8 +25,11 @@
 #include <sdkhooks>
 
 #undef REQUIRE_EXTENSIONS
+#undef REQUIRE_PLUGIN
+#include <left4dhooks>
 #include <socket>
 #define REQUIRE_EXTENSIONS
+#define REQUIRE_PLUGIN
 
 // Include custom AI core modules
 #include "ai_core/bot_state.inc"
