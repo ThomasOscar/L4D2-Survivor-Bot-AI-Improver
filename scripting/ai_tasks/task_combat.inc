@@ -33,7 +33,7 @@
 
 // Shared combat scan cache — avoid duplicating SI/witch/common scans
 // between ShouldUpdate and Update for the same bot in the same frame
-#define COMBAT_SCAN_CACHE_TIME 0.2   // Cache valid for this long
+#define COMBAT_SCAN_CACHE_TIME 0.15   // Cache valid for this long (matches combat tickInterval)
 
 static int g_iCombatCachedTarget[MAXPLAYERS + 1] = {-1, ...};
 static int g_iCombatCachedType[MAXPLAYERS + 1] = {0, ...};
@@ -52,17 +52,20 @@ static float g_fCombatScanTime[MAXPLAYERS + 1] = {0.0, ...};
 
 // Lv6 Cheat combat constants
 #define LV6_COMBAT_MAX_RANGE    3000.0  // Lv6: extended engagement range
-#define LV6_COMBAT_COMMON_RANGE 1200.0  // Lv6: extended common infected range
+#define LV6_COMBAT_COMMON_RANGE 1500.0  // Lv6: extended common infected range (was 1200, more aggressive)
+#define LV6_SHOVE_RANGE         200.0   // Lv6: massive shove range (cheat-level)
 
 // Witch bonus damage multiplier for Lv3+ with shotgun
 #define WITCH_SHOTGUN_BONUS_LV3 1.5
 #define WITCH_SHOTGUN_BONUS_LV4 2.0
+#define WITCH_SHOTGUN_BONUS_LV6 4.0   // Lv6 Cheat: 4x damage vs angry witch
 
 /**
  * Calculate the dynamic shove range for the current skill level.
- * Lv0=80, Lv1=90, Lv2=100, Lv3=110, Lv4=120
+ * Lv0=80, Lv1=90, Lv2=100, Lv3=110, Lv4=120, Lv5=200 (cheat)
  */
 static float Combat_GetShoveRange() {
+    if (g_bCheatMode) return LV6_SHOVE_RANGE;
     int level = g_iBotSkillLevel;
     if (level < SKILL_LEVEL_MIN) level = SKILL_LEVEL_MIN;
     if (level > SKILL_LEVEL_MAX) level = SKILL_LEVEL_MAX;
@@ -195,7 +198,7 @@ bool TaskCombat_ShouldUpdate(int client) {
             int seq = GetEntProp(witch, Prop_Send, "m_nSequence");
             bool isAngry = (seq >= WITCH_ANIM_RAGE_START);
             if (!isAngry) {
-                if (!TaskNavigate_IsAggressiveLeaderMode()) continue;
+                if (!TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) continue;
                 if (dist > WITCH_CROWN_RANGE_APPROACH) continue;
             }
             if (!AI_IsVisiblePosition(g_BotState[client].eyePos, witchPos, MASK_SHOT, client)) continue;
@@ -673,7 +676,8 @@ Action Combat_OnTakeDamageAlive(int victim, int &attacker, int &inflictor, float
                         GetEntityClassname(weapon, weaponClass, sizeof(weaponClass));
 
                         if (StrContains(weaponClass, "shotgun") != -1) {
-                            float witchBonus = (level >= 4) ? WITCH_SHOTGUN_BONUS_LV4 : WITCH_SHOTGUN_BONUS_LV3;
+                            float witchBonus = (level >= 5) ? WITCH_SHOTGUN_BONUS_LV6 :
+                                               (level >= 4) ? WITCH_SHOTGUN_BONUS_LV4 : WITCH_SHOTGUN_BONUS_LV3;
                             damage *= witchBonus;
                             modified = true;
                         }

@@ -60,27 +60,27 @@
 #define SELF_HEAL_COOLDOWN       3.0     // Seconds between self-heal attempts
 
 // General SI damage reduction by skill level (index = level 0..5)
-// Lv0: 0%, Lv1: 10%, Lv2: 20%, Lv3: 30%, Lv4: 40%, Lv5: 60%
+// Lv0: 0%, Lv1: 10%, Lv2: 20%, Lv3: 30%, Lv4: 40%, Lv5: 80%
 static float g_flSIDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.10, 0.20, 0.30, 0.40, 0.60
+    0.0, 0.10, 0.20, 0.30, 0.40, 0.80
 };
 
 // Tank damage reduction by skill level (index = level 0..5)
-// Lv0: 0%, Lv1: 5%, Lv2: 10%, Lv3: 20%, Lv4: 30%, Lv5: 50%
+// Lv0: 0%, Lv1: 5%, Lv2: 10%, Lv3: 20%, Lv4: 30%, Lv5: 70%
 static float g_flTankDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.05, 0.10, 0.20, 0.30, 0.50
+    0.0, 0.05, 0.10, 0.20, 0.30, 0.70
 };
 
 // Fire damage reduction by skill level (index = level 0..5)
-// Lv0: 0%, Lv1: 0%, Lv2: 30%, Lv3: 45%, Lv4: 60%, Lv5: 80%
+// Lv0: 0%, Lv1: 0%, Lv2: 30%, Lv3: 45%, Lv4: 60%, Lv5: 95%
 static float g_flFireDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.0, 0.30, 0.45, 0.60, 0.80
+    0.0, 0.0, 0.30, 0.45, 0.60, 0.95
 };
 
 // Acid damage reduction by skill level (index = level 0..5)
-// Lv0: 0%, Lv1: 0%, Lv2: 20%, Lv3: 35%, Lv4: 50%, Lv5: 75%
+// Lv0: 0%, Lv1: 0%, Lv2: 20%, Lv3: 35%, Lv4: 50%, Lv5: 90%
 static float g_flAcidDmgReduction[SKILL_LEVEL_COUNT] = {
-    0.0, 0.0, 0.20, 0.35, 0.50, 0.75
+    0.0, 0.0, 0.20, 0.35, 0.50, 0.90
 };
 
 // ============================================================
@@ -114,7 +114,7 @@ static int g_iSharedDangerCount = 0;                       // How many dangers c
 static int g_iSharedRockEnt = -1;                          // Incoming tank rock entity
 static float g_fSharedRockPos[3];                          // Rock position
 static float g_fSharedDangerScanTime = 0.0;                // Last scan time
-#define DANGER_SCAN_SHARED_INTERVAL 0.5
+#define DANGER_SCAN_SHARED_INTERVAL 0.3
 
 /**
  * Shared SI scan — runs once per interval for ALL bots.
@@ -400,6 +400,10 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
 
     // === Hunter pounce dodge (using shared scan result) ===
     if (level >= 2 && g_iSharedPouncingHunter != -1) {
+        // Validate hunter is still valid (may have died/despawned between scans)
+        if (!IsClientInGame(g_iSharedPouncingHunter) || !IsPlayerAlive(g_iSharedPouncingHunter)) {
+            g_iSharedPouncingHunter = -1;  // Invalidate stale cache
+        } else {
         // Check if pouncing hunter is heading toward this bot
         float hunterRange = g_bCheatMode ? LV6_HUNTER_RANGE : HUNTER_DODGE_RANGE;
         float hunterPos[3], botPos[3];
@@ -427,15 +431,19 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
                 }
             }
         }
+        }  // end else (hunter is valid)
     }
 
     // === Smoker dodge (using shared scan result) ===
     if (level >= 1 && g_iSharedSmokerTarget[client] != 0) {
         int smokerEnt = g_iSharedSmokerTarget[client];
-        float smokerPos[3];
-        GetClientAbsOrigin(smokerEnt, smokerPos);
-        DamageProtect_StartPerpendicularDodge(client, smokerPos, curTime, 150.0, 0.6);
-        return;
+        // Validate smoker is still alive (may have died between scans)
+        if (smokerEnt > 0 && smokerEnt <= MaxClients && IsClientInGame(smokerEnt) && IsPlayerAlive(smokerEnt)) {
+            float smokerPos[3];
+            GetClientAbsOrigin(smokerEnt, smokerPos);
+            DamageProtect_StartPerpendicularDodge(client, smokerPos, curTime, 150.0, 0.6);
+            return;
+        }
     }
 
     // === Tank rock dodge ===
@@ -453,28 +461,32 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
 
     // === Charger dodge (using shared scan result) ===
     if (level >= 1 && g_iSharedChargingCharger != -1) {
-        float chargerRange = g_bCheatMode ? LV6_CHARGER_RANGE : CHARGER_DETECT_RANGE;
-        float chargerPos[3], botPos[3];
-        GetClientAbsOrigin(g_iSharedChargingCharger, chargerPos);
-        botPos = g_BotState[client].absOrigin;
-        float dist = AI_GetVectorDistance(botPos, chargerPos);
-        if (dist <= chargerRange) {
-            // Verify charger is heading toward this bot
-            float chargerVel[3];
-            GetEntPropVector(g_iSharedChargingCharger, Prop_Data, "m_vecAbsVelocity", chargerVel);
-            float toBot[3];
-            SubtractVectors(botPos, chargerPos, toBot);
-            toBot[2] = 0.0;
-            float toBotLen = GetVectorLength(toBot);
-            if (toBotLen > 1.0) {
-                NormalizeVector(toBot, toBot);
-                float normVel[3]; normVel[0] = chargerVel[0]; normVel[1] = chargerVel[1]; normVel[2] = 0.0;
-                float velLen = GetVectorLength(normVel);
-                if (velLen > 1.0) {
-                    normVel[0] /= velLen; normVel[1] /= velLen;
-                    if (normVel[0]*toBot[0] + normVel[1]*toBot[1] > 0.3) {
-                        DamageProtect_StartPerpendicularDodge(client, chargerPos, curTime, 250.0, 1.2);
-                        return;
+        if (!IsClientInGame(g_iSharedChargingCharger) || !IsPlayerAlive(g_iSharedChargingCharger)) {
+            g_iSharedChargingCharger = -1;  // Invalidate stale cache
+        } else {
+            float chargerRange = g_bCheatMode ? LV6_CHARGER_RANGE : CHARGER_DETECT_RANGE;
+            float chargerPos[3], botPos[3];
+            GetClientAbsOrigin(g_iSharedChargingCharger, chargerPos);
+            botPos = g_BotState[client].absOrigin;
+            float dist = AI_GetVectorDistance(botPos, chargerPos);
+            if (dist <= chargerRange) {
+                // Verify charger is heading toward this bot
+                float chargerVel[3];
+                GetEntPropVector(g_iSharedChargingCharger, Prop_Data, "m_vecAbsVelocity", chargerVel);
+                float toBot[3];
+                SubtractVectors(botPos, chargerPos, toBot);
+                toBot[2] = 0.0;
+                float toBotLen = GetVectorLength(toBot);
+                if (toBotLen > 1.0) {
+                    NormalizeVector(toBot, toBot);
+                    float normVel[3]; normVel[0] = chargerVel[0]; normVel[1] = chargerVel[1]; normVel[2] = 0.0;
+                    float velLen = GetVectorLength(normVel);
+                    if (velLen > 1.0) {
+                        normVel[0] /= velLen; normVel[1] /= velLen;
+                        if (normVel[0]*toBot[0] + normVel[1]*toBot[1] > 0.3) {
+                            DamageProtect_StartPerpendicularDodge(client, chargerPos, curTime, 250.0, 1.2);
+                            return;
+                        }
                     }
                 }
             }
@@ -552,6 +564,8 @@ static int DamageProtect_FindNearbyDanger(int client, float dangerPos[3]) {
     int found = -1;
 
     for (int i = 0; i < g_iSharedDangerCount; i++) {
+        // Validate entity still exists (acid/fire may have expired between scans)
+        if (g_iSharedDangerEnts[i] <= 0 || !IsValidEntity(g_iSharedDangerEnts[i])) continue;
         float dist = GetVectorDistance(pos, g_fSharedDangerPos[i]);
         if (dist < closest) {
             closest = dist;

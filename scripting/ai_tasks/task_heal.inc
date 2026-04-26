@@ -120,16 +120,20 @@ bool TaskHeal_ShouldUpdate(int client) {
     }
 
     // Self-heal: HP <= 40 (always) or HP <= 80 (when safe) or on third strike
+    // Lv6 Cheat: always use aggressive threshold, even in combat
     int selfHealThreshold = noThreats ? HEAL_SELF_SAFE_THRESHOLD : HEAL_SELF_THRESHOLD;
-    if ((myHP <= selfHealThreshold || onThirdStrike) && noThreats) {
+    if (g_bCheatMode) selfHealThreshold = HEAL_SELF_SAFE_THRESHOLD;  // Lv6: heal at 80 HP even in combat
+    if ((myHP <= selfHealThreshold || onThirdStrike) && (noThreats || g_bCheatMode)) {
         return true;
     }
 
     // Teammate heal: find a nearby teammate with low HP
     // When safe: heal teammates at HP < 80. In combat: only HP < 30
+    // Lv6 Cheat: heal teammates at 80 HP even in combat
     int tmHealThreshold = inSafeRoom ? HEAL_SAFEROOM_THRESHOLD :
                           (noThreats ? HEAL_TEAMMATE_SAFE_THRESHOLD : HEAL_TEAMMATE_THRESHOLD);
-    if (noThreats) {
+    if (g_bCheatMode) tmHealThreshold = HEAL_TEAMMATE_SAFE_THRESHOLD;
+    if (noThreats || g_bCheatMode) {
         for (int i = 1; i <= MaxClients; i++) {
             if (i == client) continue;
             if (!AI_IsValidClient(i) || !IsPlayerAlive(i)) continue;

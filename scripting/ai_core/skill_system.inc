@@ -99,13 +99,14 @@ void SkillSystem_Init() {
     // Level 5: Cheat — godlike, for rushing players
     // Bots become a cheat-level escort team: perfect aim, instant reaction,
     // massive damage, periodic teleport to player, accelerated rescue.
-    g_SkillConfigs[5].viewMultiplier     = 10.0;
-    g_SkillConfigs[5].reactionDelay      = 0.0;
-    g_SkillConfigs[5].shoveSuccessRate   = 1.0;
-    g_SkillConfigs[5].aimAccuracy        = 0.0;
-    g_SkillConfigs[5].damageMultiplier   = 0.5;
-    g_SkillConfigs[5].healThreshold      = 15.0;
-    g_SkillConfigs[5].throwableAccuracy  = 0.0;
+    // RADICAL: not conservative — this is cheat mode for Expert 8-SI
+    g_SkillConfigs[5].viewMultiplier     = 15.0;  // See everything on the map
+    g_SkillConfigs[5].reactionDelay      = 0.0;    // Zero reaction time
+    g_SkillConfigs[5].shoveSuccessRate   = 1.0;    // Always succeed
+    g_SkillConfigs[5].aimAccuracy        = 0.0;    // Perfect aim (head-level)
+    g_SkillConfigs[5].damageMultiplier   = 1.0;    // +100% damage (double damage)
+    g_SkillConfigs[5].healThreshold      = 80.0;   // Heal very early (80 HP)
+    g_SkillConfigs[5].throwableAccuracy  = 0.0;    // Perfect throwable aim
 
     LogMessage("[AI Bot] Skill system initialized with %d levels", SKILL_LEVEL_COUNT);
 }
