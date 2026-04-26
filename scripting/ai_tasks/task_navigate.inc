@@ -409,11 +409,16 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
             TaskNavigate_FindRescueCloset();
 
             if (g_bHasRescueCloset) {
-                // Navigate toward rescue closet
+                // Navigate toward rescue closet and open it
                 float closetDist = AI_GetVectorDistance(g_BotState[client].absOrigin, g_fRescueClosetPos);
-                if (closetDist > NAV_FOLLOW_CLOSE) {
+                if (closetDist > 80.0) {
+                    AI_SnapViewToPosition(client, g_fRescueClosetPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
                     AI_ComputeMoveToward(client, g_fRescueClosetPos, g_BotState[client].absOrigin,
                                           g_BotState[client].eyeAngles, vel);
+                } else {
+                    // Close enough — open the closet door
+                    buttons |= IN_USE;
+                    AI_SnapViewToPosition(client, g_fRescueClosetPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
                 }
             } else {
                 // No rescue closet found — just push forward along the map
@@ -507,9 +512,15 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
         TaskNavigate_FindRescueCloset();
         if (g_bHasRescueCloset) {
             float closetDist = AI_GetVectorDistance(g_BotState[client].absOrigin, g_fRescueClosetPos);
-            if (closetDist > NAV_FOLLOW_CLOSE) {
+            if (closetDist > 80.0) {
+                // Move toward the rescue closet
+                AI_SnapViewToPosition(client, g_fRescueClosetPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
                 AI_ComputeMoveToward(client, g_fRescueClosetPos, g_BotState[client].absOrigin,
                                       g_BotState[client].eyeAngles, vel);
+            } else {
+                // Close enough — press USE to open the rescue closet door
+                buttons |= IN_USE;
+                AI_SnapViewToPosition(client, g_fRescueClosetPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
             }
         }
     }
