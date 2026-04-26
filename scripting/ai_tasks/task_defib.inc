@@ -40,6 +40,10 @@ static bool g_bDefibNeedDropMedkit[MAXPLAYERS + 1];    // true = need to drop me
 static bool g_bDefibSearchIsSpawn[MAXPLAYERS + 1];     // true = search target is a weapon_spawn entity
 static float g_fDefibReviveStartTime[MAXPLAYERS + 1];  // Time when Mode A (navigate to corpse) started
 
+// Throttle: cache FindNearest results to avoid scanning entities every tick per bot
+static float g_fLastFindNearestTime[MAXPLAYERS + 1];
+static int g_iCachedFindNearest[MAXPLAYERS + 1];
+
 /**
  * Check if bot is in search mode (Mode B - looking for defib on ground).
  * Used by the main plugin to avoid clearing IN_USE during pickup.
@@ -176,7 +180,13 @@ bool TaskDefib_ShouldUpdate(int client) {
             }
         } else if (!bestBotHasDefib) {
             // No bot has defib yet — check who's closest to a reachable defib
-            int nearDefib = TaskDefib_FindNearest(b);
+            // Use cached FindNearest result to avoid entity scans every tick
+            float curTime2 = GetGameTime();
+            if (curTime2 - g_fLastFindNearestTime[b] > 2.0) {
+                g_iCachedFindNearest[b] = TaskDefib_FindNearest(b);
+                g_fLastFindNearestTime[b] = curTime2;
+            }
+            int nearDefib = g_iCachedFindNearest[b];
             if (nearDefib != -1) {
                 float defibPos[3];
                 GetEntPropVector(nearDefib, Prop_Data, "m_vecAbsOrigin", defibPos);
@@ -244,7 +254,13 @@ bool TaskDefib_ShouldUpdate(int client) {
     }
 
     // Find nearest REACHABLE defib on ground or spawn
-    int defibEnt = TaskDefib_FindNearest(client);
+    // Use cached result if available
+    float curTime3 = GetGameTime();
+    if (curTime3 - g_fLastFindNearestTime[client] > 2.0) {
+        g_iCachedFindNearest[client] = TaskDefib_FindNearest(client);
+        g_fLastFindNearestTime[client] = curTime3;
+    }
+    int defibEnt = g_iCachedFindNearest[client];
     if (defibEnt != -1) {
         g_iDefibSearchTarget[client] = defibEnt;
         g_bDefibSearchMode[client] = true;
@@ -608,36 +624,26 @@ static int TaskDefib_FindNearest(int client) {
 
     // 1) Search for dropped weapon_defibrillator entities on the ground
     int ent = -1;
-    int totalFound = 0;
-    int skippedOwner = 0;
-    int skippedDist = 0;
-    int skippedReach = 0;
+    int safetyCount = 0;
 
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator")) != -1) {
-        if (!IsValidEntity(ent)) continue;
-        totalFound++;
+        if (++safetyCount > 256) break;  // Prevent infinite loop
+        if (!IsValidEntity(ent)) { ent++; continue; }  // Skip invalid, advance entity
 
         // Skip defibs held by LIVING players (in their inventory)
         int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
         if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) {
-            skippedOwner++;
             continue;
         }
 
         float entPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
         float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, entPos);
-        if (dist > DEFIB_SEARCH_RANGE) {
-            skippedDist++;
-            continue;
-        }
+        if (dist > DEFIB_SEARCH_RANGE) continue;
         if (dist >= bestDist) continue;
 
         // Skip unreachable defibs (underground / inside geometry)
-        if (!TaskDefib_IsReachable(client, ent)) {
-            skippedReach++;
-            continue;
-        }
+        if (!TaskDefib_IsReachable(client, ent)) continue;
 
         bestDist = dist;
         best = ent;
@@ -645,40 +651,26 @@ static int TaskDefib_FindNearest(int client) {
     }
 
     // 2) Search for weapon_defibrillator_spawn entities (defibs on tables/shelves)
-    int spawnSkip = 0;
-    int spawnFound = 0;
     ent = -1;
+    safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator_spawn")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;  // Prevent infinite loop
+        if (!IsValidEntity(ent)) { ent++; continue; }  // Skip invalid, advance entity
 
         // Check if spawn is still active (not picked clean)
-        // m_nCount may not exist on all entity types, so check safely
-        bool hasItems = true;
         int offset = FindDataMapInfo(ent, "m_nCount");
         if (offset > 0) {
-            int count = GetEntProp(ent, Prop_Data, "m_nCount");
-            if (count <= 0) {
-                hasItems = false;
-                spawnSkip++;
-                continue;
-            }
+            if (GetEntProp(ent, Prop_Data, "m_nCount") <= 0) continue;
         }
 
-        spawnFound++;
         float entPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
         float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, entPos);
-        if (dist > DEFIB_SEARCH_RANGE) {
-            skippedDist++;
-            continue;
-        }
+        if (dist > DEFIB_SEARCH_RANGE) continue;
         if (dist >= bestDist) continue;
 
         // Skip unreachable spawns
-        if (!TaskDefib_IsReachable(client, ent)) {
-            skippedReach++;
-            continue;
-        }
+        if (!TaskDefib_IsReachable(client, ent)) continue;
 
         bestDist = dist;
         best = ent;
