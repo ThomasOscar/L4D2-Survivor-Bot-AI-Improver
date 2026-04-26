@@ -37,9 +37,13 @@
 #define NAV_TEAM_COHESION_CHECK_TIME    3.0     // Seconds before teleporting a bot that's too far
 
 // Lv6 Cheat mode constants
-#define LV6_TELEPORT_DIST     800.0    // Bot farther than this from player triggers teleport timer
+#define LV6_TELEPORT_DIST     600.0    // Bot farther than this from player triggers teleport timer
 #define LV6_FOLLOW_RANGE      200.0    // Lv6: tight follow range around player
 #define LV6_SPREAD_DIST       120.0    // Lv6: slightly larger spread to not block player
+#define LV6_COHESION_RANGE    400.0    // Lv6: tighter cohesion — teleport sooner
+#define LV6_COHESION_TIME     1.0      // Lv6: only 1s before teleporting to leader
+#define LV6_FLOW_SAMPLE_DIST  500.0    // Lv6: sample 500u ahead for forward direction
+#define LV6_FLOW_SAMPLE_INTERVAL 0.2   // Lv6: faster flow sampling (0.2s vs 0.5s)
 
 // Per-bot navigation state
 static float g_fNavLastPos[MAXPLAYERS + 1][3];
@@ -564,10 +568,11 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                 }
             } else {
                 // No rescue closet target — push forward along the map
-                // Use flow distance to find the best forward direction.
-                // Sample directions only every 0.5s to avoid expensive trace rays every tick.
+                // Lv6 Cheat: sample faster (0.2s) and farther (500u) for bolder pushing
+                float sampleInterval = g_bCheatMode ? LV6_FLOW_SAMPLE_INTERVAL : 0.5;
+                float sampleDist = g_bCheatMode ? LV6_FLOW_SAMPLE_DIST : 300.0;
                 float curTimeSample = GetGameTime();
-                if ((curTimeSample - g_fLastFlowSampleTime) >= 0.5) {
+                if ((curTimeSample - g_fLastFlowSampleTime) >= sampleInterval) {
                     g_fLastFlowSampleTime = curTimeSample;
                     g_bCachedFlowFound = false;
 
@@ -583,8 +588,8 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                         dirVec[2] = 0.0;
 
                         float samplePos[3];
-                        samplePos[0] = g_BotState[client].absOrigin[0] + dirVec[0] * 300.0;
-                        samplePos[1] = g_BotState[client].absOrigin[1] + dirVec[1] * 300.0;
+                        samplePos[0] = g_BotState[client].absOrigin[0] + dirVec[0] * sampleDist;
+                        samplePos[1] = g_BotState[client].absOrigin[1] + dirVec[1] * sampleDist;
                         samplePos[2] = g_BotState[client].absOrigin[2];
 
                         // Check this direction isn't blocked by a wall
@@ -618,18 +623,22 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
         } else {
             // Non-leader bot: follow the leader closely
             // In aggressive mode, use a tighter follow range
+            // Lv6 Cheat: even tighter cohesion
+            float cohesionRange = g_bCheatMode ? LV6_COHESION_RANGE : NAV_TEAM_COHESION_RANGE;
+            float cohesionTime = g_bCheatMode ? LV6_COHESION_TIME : NAV_TEAM_COHESION_CHECK_TIME;
+
             if (dist > NAV_FOLLOW_CLOSE) {
                 AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
                                       g_BotState[client].eyeAngles, vel);
             }
 
             // === Team cohesion: teleport to leader if too far for too long ===
-            if (dist > NAV_TEAM_COHESION_RANGE) {
+            if (dist > cohesionRange) {
                 if (g_fFarFromLeaderSince[client] <= 0.0) {
                     g_fFarFromLeaderSince[client] = curTime;
                 }
                 float farDuration = curTime - g_fFarFromLeaderSince[client];
-                if (farDuration >= NAV_TEAM_COHESION_CHECK_TIME) {
+                if (farDuration >= cohesionTime) {
                     // Teleport directly to leader's position with a small offset
                     float teleportPos[3];
                     teleportPos = leaderPos;
@@ -649,11 +658,16 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
         }
     } else {
         // === Step 2: Normal follow logic ===
-        if (dist > g_fFollowRange) {
+        // Lv6 Cheat: tighter follow and faster cohesion teleport
+        float followRange = g_bCheatMode ? LV6_FOLLOW_RANGE : g_fFollowRange;
+        float cohesionRange = g_bCheatMode ? LV6_COHESION_RANGE : NAV_TEAM_COHESION_RANGE;
+        float cohesionTime = g_bCheatMode ? LV6_COHESION_TIME : NAV_TEAM_COHESION_CHECK_TIME;
+
+        if (dist > followRange) {
             // Far away — full speed toward leader
             AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
                                   g_BotState[client].eyeAngles, vel);
-        } else if (dist > g_fFollowRange * 0.5) {
+        } else if (dist > followRange * 0.5) {
             // Medium distance — slow follow
             AI_ComputeMoveToward(client, leaderPos, g_BotState[client].absOrigin,
                                   g_BotState[client].eyeAngles, vel, NAV_SLOW_SPEED);
@@ -661,12 +675,12 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
         // else: close enough, don't move toward leader
 
         // Team cohesion in normal mode too: teleport if extremely far
-        if (dist > NAV_TEAM_COHESION_RANGE) {
+        if (dist > cohesionRange) {
             if (g_fFarFromLeaderSince[client] <= 0.0) {
                 g_fFarFromLeaderSince[client] = curTime;
             }
             float farDuration = curTime - g_fFarFromLeaderSince[client];
-            if (farDuration >= NAV_TEAM_COHESION_CHECK_TIME) {
+            if (farDuration >= cohesionTime) {
                 float teleportPos[3];
                 teleportPos = leaderPos;
                 teleportPos[0] += GetRandomFloat(-50.0, 50.0);

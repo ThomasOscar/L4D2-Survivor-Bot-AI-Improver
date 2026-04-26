@@ -137,7 +137,7 @@ void AIConfig_Init() {
     g_cvProtectEnabled     = CreateConVar("ai_protect_enabled",     "0", "Enable instant-kill protection", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvSupplyEnabled      = CreateConVar("ai_supply_enabled",      "1", "Enable supply management for bots", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvSupplyGiveCooldown = CreateConVar("ai_supply_give_cooldown","2.0", "Cooldown between giving items to players (seconds)", FCVAR_NOTIFY, true, 0.5, true, 30.0);
-    g_cvLv6TeleportInterval = CreateConVar("ai_lv6_teleport_interval", "8.0", "Lv6 Cheat: teleport bots to player every N seconds if too far", FCVAR_NOTIFY, true, 2.0, true, 60.0);
+    g_cvLv6TeleportInterval = CreateConVar("ai_lv6_teleport_interval", "5.0", "Lv6 Cheat: teleport bots to player every N seconds if too far", FCVAR_NOTIFY, true, 2.0, true, 60.0);
 
     // Auto-generate and load config file
     AutoExecConfig(true, "l4d2_ai_bot");
