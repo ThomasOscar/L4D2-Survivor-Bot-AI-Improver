@@ -36,8 +36,13 @@ static float g_fTriggerScanTime[MAXPLAYERS + 1];       // Last scan timestamp
 static char g_sTriggerClassnames[][] = {
     "func_button",
     "func_button_timed",
-    "prop_door_rotating"
+    "prop_door_rotating",
+    "prop_door_rotating_checkpoint"
 };
+
+// Re-interaction cooldown: allow re-pressing after this many seconds
+#define TRIGGER_REINTERACT_COOLDOWN 10.0
+static float g_fTriggerLastUsed[MAX_ENTITIES];   // Time when entity was last used
 
 /**
  * Reset all used-trigger flags. Called from OnMapStart.
@@ -45,6 +50,7 @@ static char g_sTriggerClassnames[][] = {
 void TriggerSearch_ResetGlobals() {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         g_bTriggerUsed[i] = false;
+        g_fTriggerLastUsed[i] = 0.0;
     }
     for (int i = 0; i <= MaxClients; i++) {
         g_iTriggerTarget[i] = -1;
@@ -75,7 +81,8 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
     }
     g_fTriggerScanTime[client] = curTime;
 
-    // Search for an unused interactive entity
+    // Search for an interactive entity
+    // Allow re-interaction with entities after cooldown (doors can close, buttons may need re-pressing)
     int best = -1;
     float bestDist = TRIGGER_SEARCH_RANGE + 1.0;
 
@@ -84,10 +91,29 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
         while ((ent = FindEntityByClassname(ent, g_sTriggerClassnames[c])) != -1) {
             if (!IsValidEntity(ent)) continue;
             if (ent <= 0 || ent >= MAX_ENTITIES) continue;
-            if (g_bTriggerUsed[ent]) continue;
 
-            // Check if the entity is locked / disabled (m_bLocked for buttons)
+            // Skip recently used entities (cooldown)
+            if (g_bTriggerUsed[ent]) {
+                if (g_fTriggerLastUsed[ent] > 0.0 &&
+                    (curTime - g_fTriggerLastUsed[ent]) < TRIGGER_REINTERACT_COOLDOWN) {
+                    continue;  // Too soon to re-interact
+                }
+                // Cooldown expired — allow re-interaction
+                g_bTriggerUsed[ent] = false;
+            }
+
+            // Check if the entity is locked / disabled
             if (TriggerSearch_IsLocked(ent)) continue;
+
+            // For doors: skip if already open (rotation > 0 means it's been opened)
+            char cls[64];
+            GetEntityClassname(ent, cls, sizeof(cls));
+            if (StrContains(cls, "prop_door_rotating") != -1) {
+                if (HasEntProp(ent, Prop_Send, "m_eDoorState")) {
+                    int doorState = GetEntProp(ent, Prop_Send, "m_eDoorState");
+                    if (doorState == 2 || doorState == 3) continue;  // Door is opening/open, skip
+                }
+            }
 
             float entPos[3];
             GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
@@ -123,10 +149,16 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
         return false;
     }
 
-    // Already used this round?
+    // Already used this round? (with cooldown-based re-interaction)
     if (g_bTriggerUsed[target]) {
-        TaskTriggerSearch_Reset(client);
-        return false;
+        float curTime = GetGameTime();
+        if (g_fTriggerLastUsed[target] > 0.0 &&
+            (curTime - g_fTriggerLastUsed[target]) < TRIGGER_REINTERACT_COOLDOWN) {
+            TaskTriggerSearch_Reset(client);
+            return false;
+        }
+        // Cooldown expired — allow re-interaction
+        g_bTriggerUsed[target] = false;
     }
 
     float entPos[3];
@@ -144,8 +176,9 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
         // Also press USE button as backup
         AI_PressUseButton(client, buttons);
 
-        // Mark as used
+        // Mark as used (with timestamp for re-interaction cooldown)
         g_bTriggerUsed[target] = true;
+        g_fTriggerLastUsed[target] = GetGameTime();
         g_iTriggerTarget[client] = -1;
 
         return false;
