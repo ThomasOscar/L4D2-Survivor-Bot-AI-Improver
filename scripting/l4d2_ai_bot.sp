@@ -56,6 +56,7 @@
 #include "ai_tasks/task_trigger_search.inc"
 #include "ai_tasks/task_defib.inc"
 #include "ai_tasks/task_upgrade.inc"
+#include "ai_tasks/task_supply.inc"
 
 // LLM strategic advisor (Task #109)
 #include "ai_llm/llm_advisor.inc"
