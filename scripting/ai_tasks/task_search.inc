@@ -190,6 +190,15 @@ bool TaskSearch_Update(int client, int &buttons, float vel[3]) {
     // Move toward item
     AI_ComputeMoveToward(client, targetPos, g_BotState[client].absOrigin,
                           g_BotState[client].eyeAngles, vel);
+
+    // Stuck teleport: if can't reach item, try teleport near it; abandon if failed
+    float searchElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+    if (AI_ShouldAbandonNavigation(client)) {
+        TaskSearch_Reset(client);
+        return false;
+    }
+    AI_TryStuckTeleport(client, targetPos, dist, searchElapsed, 300.0, 10.0);
+
     return false;  // Never lock
 }
 
@@ -199,6 +208,7 @@ bool TaskSearch_Update(int client, int &buttons, float vel[3]) {
 void TaskSearch_Reset(int client) {
     g_iSearchTarget[client] = -1;
     g_iSearchType[client] = 0;
+    AI_ResetTeleportState(client);
 }
 
 // ============================================================
