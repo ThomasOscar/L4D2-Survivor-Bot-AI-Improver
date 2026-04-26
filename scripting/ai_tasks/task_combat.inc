@@ -31,6 +31,18 @@
 #define WITCH_CROWN_RANGE_MELEE     80.0    // Max range for melee crown
 #define WITCH_CROWN_RANGE_APPROACH  500.0   // Start approaching witch for crown
 
+// Shared combat scan cache — avoid duplicating SI/witch/common scans
+// between ShouldUpdate and Update for the same bot in the same frame
+#define COMBAT_SCAN_CACHE_TIME 0.2   // Cache valid for this long
+
+static int g_iCombatCachedTarget[MAXPLAYERS + 1] = {-1, ...};
+static int g_iCombatCachedType[MAXPLAYERS + 1] = {0, ...};
+static int g_iCombatCachedSIThreat[MAXPLAYERS + 1] = {0, ...};
+static float g_fCombatCachedDist[MAXPLAYERS + 1] = {0.0, ...};
+static int g_iCombatCachedThreatCount[MAXPLAYERS + 1] = {0, ...};
+static int g_iCombatCachedCommonCount[MAXPLAYERS + 1] = {0, ...};
+static float g_fCombatScanTime[MAXPLAYERS + 1] = {0.0, ...};
+
 // Combat range constants
 #define COMBAT_SHOVE_RANGE_BASE 80.0
 #define COMBAT_SHOVE_RANGE_PER_LEVEL 10.0
@@ -59,6 +71,7 @@ static float Combat_GetShoveRange() {
 
 /**
  * Check if combat task should activate for this bot.
+ * Performs full target scan and caches results for Update to use.
  */
 bool TaskCombat_ShouldUpdate(int client) {
     int safetyCount;
@@ -66,94 +79,24 @@ bool TaskCombat_ShouldUpdate(int client) {
     if (g_BotState[client].controlledByType > 0) return false;
     if (g_BotState[client].isIncapacitated) return false;
 
-    // Lv6 Cheat: extended detection range
+    // Check if we have a valid cache from this frame
+    float curTime = GetGameTime();
+    if ((curTime - g_fCombatScanTime[client]) < COMBAT_SCAN_CACHE_TIME &&
+        g_iCombatCachedTarget[client] != -1) {
+        return true;  // Cached target is still valid
+    }
+
+    // === Full target scan (same logic as Update, but results are cached) ===
+    int bestTarget = -1;
+    int bestType = 0;
+    int bestSIThreat = 0;
     float maxRange = g_bCheatMode ? LV6_COMBAT_MAX_RANGE : COMBAT_MAX_RANGE;
     float commonRange = g_bCheatMode ? LV6_COMBAT_COMMON_RANGE : COMBAT_COMMON_RANGE;
-
-    // Quick scan: are there any visible threats?
-    // We do the full scan in Update, but do a lightweight check here
-    for (int i = 1; i <= MaxClients; i++) {
-        if (i == client) continue;
-        if (!IsClientInGame(i)) continue;
-        if (!IsPlayerAlive(i)) continue;
-        if (GetClientTeam(i) != 3) continue;
-
-        // Skip ghosts
-        if (GetEntProp(i, Prop_Send, "m_isGhost") != 0) continue;
-
-        float targetPos[3];
-        GetClientAbsOrigin(i, targetPos);
-        float dist = AI_GetVectorDistance(g_BotState[client].eyePos, targetPos);
-        if (dist > maxRange) continue;
-
-        if (AI_IsVisibleEntity(g_BotState[client].eyePos, i, MASK_SHOT, client)) {
-            return true;
-        }
-    }
-
-    // Check for angry witches
-    int witch = -1;
-    safetyCount = 0;
-    while ((witch = FindEntityByClassname(witch, "witch")) != -1) {
-        if (++safetyCount > 256) break;
-        if (!IsValidEntity(witch)) { witch++; continue; }
-
-        float witchPos[3];
-        GetEntPropVector(witch, Prop_Data, "m_vecAbsOrigin", witchPos);
-        float dist = AI_GetVectorDistance(g_BotState[client].eyePos, witchPos);
-        if (dist > maxRange) continue;
-
-        // Check if witch is angry (rage animation)
-        int seq = GetEntProp(witch, Prop_Send, "m_nSequence");
-        if (seq >= WITCH_ANIM_RAGE_START) {
-            if (AI_IsVisiblePosition(g_BotState[client].eyePos, witchPos, MASK_SHOT, client)) {
-                return true;
-            }
-        }
-    }
-
-    // Check for common infected
-    int common = -1;
-    safetyCount = 0;
-    while ((common = FindEntityByClassname(common, "infected")) != -1) {
-        if (++safetyCount > 256) break;
-        if (!IsValidEntity(common)) { common++; continue; }
-
-        float commonPos[3];
-        GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", commonPos);
-        float dist = AI_GetVectorDistance(g_BotState[client].eyePos, commonPos);
-        if (dist > commonRange) continue;
-
-        if (AI_IsVisiblePosition(g_BotState[client].eyePos, commonPos, MASK_SHOT, client)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/**
- * Execute combat logic: target selection, aiming, firing.
- * Incorporates skill-based: reaction delay, aim deviation, shove roll, dynamic shove range.
- * @return true if engaging Tank or SI (lock task), false for commons.
- */
-bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
-    // vel is available for future use (e.g., strafing while shooting)
-    #pragma unused vel
-    int safetyCount;
-
-    int bestTarget = -1;
-    int bestType = 0;       // 0=none, 1=common, 2=SI, 3=tank, 4=witch
-    int bestSIThreat = 0;   // SI threat score for same-type tiebreaking
-    float bestDist = (g_bCheatMode ? LV6_COMBAT_MAX_RANGE : COMBAT_MAX_RANGE) + 1.0;
+    float bestDist = maxRange + 1.0;
     int threatCount = 0;
     int commonCount = 0;
 
-    // Lv6 Cheat: extended detection range
-    float maxRange = g_bCheatMode ? LV6_COMBAT_MAX_RANGE : COMBAT_MAX_RANGE;
-    float commonRange = g_bCheatMode ? LV6_COMBAT_COMMON_RANGE : COMBAT_COMMON_RANGE;
-
-    // === Pass 1: Scan special infected (team 3) ===
+    // Scan special infected
     for (int i = 1; i <= MaxClients; i++) {
         if (i == client) continue;
         if (!IsClientInGame(i)) continue;
@@ -169,186 +112,148 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         if (!AI_IsVisibleEntity(g_BotState[client].eyePos, i, MASK_SHOT, client)) continue;
 
         threatCount++;
-
-        // Determine if this is a Tank (zombie type 8)
         int zombieClass = GetEntProp(i, Prop_Send, "m_zombieClass");
-        bool isTank = (zombieClass == 8); // ZC_TANK = 8 in L4D2
+        bool isTank = (zombieClass == 8);
         int thisType = isTank ? 3 : 2;
 
-        // === SI Threat Assessment ===
-        // Higher threat score = higher priority to kill
-        // 10: SI currently pinning a teammate (must kill NOW)
-        //  8: Hunter crouching to pounce (about to attack)
-        //  7: Smoker pulling a teammate
-        //  6: Charger charging toward team
-        //  5: Jockey near team (leap threat)
-        //  4: Spitter (area denial, less urgent)
-        //  2: Boomer (lowest threat, don't shoot at close range)
-        //  0: default
+        // SI Threat assessment
         int siThreat = 0;
         if (!isTank) {
             switch (zombieClass) {
                 case 3: {  // Hunter
-                    // Check if pinning someone
                     bool isPinning = false;
                     for (int vi = 1; vi <= MaxClients; vi++) {
                         if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
-                            if (GetEntPropEnt(vi, Prop_Send, "m_pounceAttacker") == i) {
-                                isPinning = true;
-                                break;
-                            }
+                            if (GetEntPropEnt(vi, Prop_Send, "m_pounceAttacker") == i) { isPinning = true; break; }
                         }
                     }
-                    if (isPinning) {
-                        siThreat = 10;
-                    } else {
-                        // Check if crouching (about to pounce)
+                    if (isPinning) siThreat = 10;
+                    else {
                         int seq = GetEntProp(i, Prop_Send, "m_nSequence");
-                        if (seq == 41 || seq == 42) {  // Hunter pounce prep sequences
-                            siThreat = 8;
-                        } else {
-                            siThreat = 5;
-                        }
+                        siThreat = (seq == 41 || seq == 42) ? 8 : 5;
                     }
                 }
                 case 1: {  // Smoker
-                    // Check if pulling someone
                     bool isPulling = false;
                     for (int vi = 1; vi <= MaxClients; vi++) {
                         if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
-                            if (GetEntPropEnt(vi, Prop_Send, "m_tongueOwner") == i) {
-                                isPulling = true;
-                                break;
-                            }
+                            if (GetEntPropEnt(vi, Prop_Send, "m_tongueOwner") == i) { isPulling = true; break; }
                         }
                     }
                     siThreat = isPulling ? 7 : 4;
                 }
                 case 6: {  // Charger
-                    // Check if carrying/pummeling someone
                     bool isCarrying = false;
                     for (int vi = 1; vi <= MaxClients; vi++) {
                         if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
                             if (GetEntPropEnt(vi, Prop_Send, "m_carryAttacker") == i
-                                || GetEntPropEnt(vi, Prop_Send, "m_pummelAttacker") == i) {
-                                isCarrying = true;
-                                break;
-                            }
+                                || GetEntPropEnt(vi, Prop_Send, "m_pummelAttacker") == i) { isCarrying = true; break; }
                         }
                     }
-                    if (isCarrying) {
-                        siThreat = 10;
-                    } else {
-                        // Check if charging
+                    if (isCarrying) siThreat = 10;
+                    else {
                         MoveType mt = GetEntityMoveType(i);
                         siThreat = (mt == MOVETYPE_ISOMETRIC) ? 6 : 3;
                     }
                 }
                 case 5: {  // Jockey
-                    // Check if riding someone
                     bool isRiding = false;
                     for (int vi = 1; vi <= MaxClients; vi++) {
                         if (IsClientInGame(vi) && IsPlayerAlive(vi) && GetClientTeam(vi) == 2) {
-                            if (GetEntPropEnt(vi, Prop_Send, "m_jockeyAttacker") == i) {
-                                isRiding = true;
-                                break;
-                            }
+                            if (GetEntPropEnt(vi, Prop_Send, "m_jockeyAttacker") == i) { isRiding = true; break; }
                         }
                     }
                     siThreat = isRiding ? 10 : 5;
                 }
-                case 4: {  // Spitter
-                    siThreat = 4;
-                }
-                case 2: {  // Boomer
-                    siThreat = 2;
-                }
+                case 4: { siThreat = 4; }   // Spitter
+                case 2: { siThreat = 2; }   // Boomer
                 default: siThreat = 3;
             }
         }
 
-        // Priority: Tank > SI. Within SI, higher threat score wins. Then closest.
         bool betterTarget = false;
-        if (thisType > bestType) {
-            betterTarget = true;
-        } else if (thisType == bestType && siThreat > bestSIThreat) {
-            betterTarget = true;
-        } else if (thisType == bestType && siThreat == bestSIThreat && dist < bestDist) {
-            betterTarget = true;
-        }
+        if (thisType > bestType) betterTarget = true;
+        else if (thisType == bestType && siThreat > bestSIThreat) betterTarget = true;
+        else if (thisType == bestType && siThreat == bestSIThreat && dist < bestDist) betterTarget = true;
 
         if (betterTarget) {
-            bestTarget = i;
-            bestType = thisType;
-            bestSIThreat = siThreat;
-            bestDist = dist;
+            bestTarget = i; bestType = thisType; bestSIThreat = siThreat; bestDist = dist;
         }
     }
 
-    // === Pass 2: Scan witches ===
-    // Targeting priority: tank(3) > SI(2) > witch(4) > common(1)
+    // Scan witches
     if (bestType != 3 && bestType != 2) {
         int witch = -1;
         safetyCount = 0;
         while ((witch = FindEntityByClassname(witch, "witch")) != -1) {
             if (++safetyCount > 256) break;
             if (!IsValidEntity(witch)) { witch++; continue; }
-
             float witchPos[3];
             GetEntPropVector(witch, Prop_Data, "m_vecAbsOrigin", witchPos);
             float dist = AI_GetVectorDistance(g_BotState[client].eyePos, witchPos);
             if (dist > maxRange) continue;
-
             int seq = GetEntProp(witch, Prop_Send, "m_nSequence");
             bool isAngry = (seq >= WITCH_ANIM_RAGE_START);
-
-            // Angry witches: always target
-            // Calm witches: target only in aggressive leader mode if blocking path
             if (!isAngry) {
                 if (!TaskNavigate_IsAggressiveLeaderMode()) continue;
-                // Check if witch is reasonably close (potential blocker)
                 if (dist > WITCH_CROWN_RANGE_APPROACH) continue;
             }
-
             if (!AI_IsVisiblePosition(g_BotState[client].eyePos, witchPos, MASK_SHOT, client)) continue;
-
             if (dist < bestDist || bestTarget == -1) {
-                bestTarget = witch;
-                bestType = 4; // witch
-                bestDist = dist;
+                bestTarget = witch; bestType = 4; bestDist = dist;
             }
         }
     }
 
-    // === Pass 3: Scan common infected (only if nothing better found) ===
+    // Scan common infected
     if (bestTarget == -1) {
         int common = -1;
         safetyCount = 0;
         while ((common = FindEntityByClassname(common, "infected")) != -1) {
             if (++safetyCount > 256) break;
             if (!IsValidEntity(common)) { common++; continue; }
-
             float commonPos[3];
             GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", commonPos);
             float dist = AI_GetVectorDistance(g_BotState[client].eyePos, commonPos);
             if (dist > commonRange) continue;
-
             if (!AI_IsVisiblePosition(g_BotState[client].eyePos, commonPos, MASK_SHOT, client)) continue;
-
             commonCount++;
-
             if (dist < bestDist) {
-                bestTarget = common;
-                bestType = 1; // common
-                bestDist = dist;
+                bestTarget = common; bestType = 1; bestDist = dist;
             }
         }
     }
 
-    // === Cover Priority: protect busy or pinned teammates ===
-    // If a teammate is doing a critical task (rescue/defib/hold-USE)
-    // OR is pinned by SI (Hunter/Smoker/Jockey/Charger),
-    // prefer targeting enemies near that teammate to provide cover fire.
+    // Cache results
+    g_iCombatCachedTarget[client] = bestTarget;
+    g_iCombatCachedType[client] = bestType;
+    g_iCombatCachedSIThreat[client] = bestSIThreat;
+    g_fCombatCachedDist[client] = bestDist;
+    g_iCombatCachedThreatCount[client] = threatCount;
+    g_iCombatCachedCommonCount[client] = commonCount;
+    g_fCombatScanTime[client] = curTime;
+
+    return (bestTarget != -1);
+}
+
+/**
+ * Execute combat logic: target engagement, aiming, firing.
+ * Uses cached target from ShouldUpdate scan (no duplicate scan).
+ * @return true if engaging Tank or SI (lock task), false for commons.
+ */
+bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
+    // vel is available for future use (e.g., strafing while shooting)
+    #pragma unused vel
+
+    // Use cached scan results from ShouldUpdate
+    int bestTarget = g_iCombatCachedTarget[client];
+    int bestType = g_iCombatCachedType[client];
+    int bestSIThreat = g_iCombatCachedSIThreat[client];
+    float bestDist = g_fCombatCachedDist[client];
+    int threatCount = g_iCombatCachedThreatCount[client];
+    int commonCount = g_iCombatCachedCommonCount[client];
+
+    // Cover Priority: protect busy or pinned teammates
     int busyClient = -1;
     float busyPos[3];
     bool teammateNeedsCover = false;
@@ -366,7 +271,6 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         }
     }
 
-    // Also check for busy teammates (rescue/defib/hold-USE)
     if (!teammateNeedsCover) {
         teammateNeedsCover = AI_IsTeammateBusyWithCriticalTask(busyClient, busyPos);
     }
@@ -396,21 +300,17 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             }
         }
 
-        // Use cover target if same priority tier or higher than normal best
         if (coverTarget != -1 && coverType >= bestType) {
             bestTarget = coverTarget;
             bestType = coverType;
             float ctPos[3];
             GetClientAbsOrigin(coverTarget, ctPos);
             bestDist = AI_GetVectorDistance(g_BotState[client].eyePos, ctPos);
-            threatCount++;  // Count this as a visible threat
+            threatCount++;
         }
     }
 
-    // === Team cohesion check: don't chase enemies too far from team ===
-    // If the target is far from all teammates, skip it to avoid getting picked off alone.
-    // Exception: Tanks are always worth engaging, aggressive leader mode pushes through,
-    // and Lv6 Cheat mode ignores cohesion (bots are teleporting anyway).
+    // Team cohesion check
     if (bestTarget != -1 && bestType != 3 && !TaskNavigate_IsAggressiveLeaderMode() && !g_bCheatMode) {
         float targetPosCheck[3];
         if (bestTarget <= MaxClients) {
@@ -418,7 +318,6 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         } else {
             GetEntPropVector(bestTarget, Prop_Data, "m_vecAbsOrigin", targetPosCheck);
         }
-        // Find distance from target to nearest alive teammate (excluding self)
         float nearestTeamDist = 999999.0;
         for (int ti = 1; ti <= MaxClients; ti++) {
             if (ti == client) continue;
@@ -429,7 +328,6 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             float td = AI_GetVectorDistance(targetPosCheck, tPos);
             if (td < nearestTeamDist) nearestTeamDist = td;
         }
-        // If target is far from ALL teammates, don't chase
         if (nearestTeamDist > COMBAT_TEAM_MAX_DIST) {
             TaskCombat_Reset(client);
             return false;
@@ -440,6 +338,19 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     if (bestTarget == -1) {
         TaskCombat_Reset(client);
         return false;
+    }
+
+    // Validate cached target is still valid
+    if (bestTarget > 0 && bestTarget <= MaxClients) {
+        if (!IsClientInGame(bestTarget) || !IsPlayerAlive(bestTarget)) {
+            TaskCombat_Reset(client);
+            return false;
+        }
+    } else if (bestTarget > MaxClients) {
+        if (!IsValidEntity(bestTarget)) {
+            TaskCombat_Reset(client);
+            return false;
+        }
     }
 
     // === Reaction Delay: track first sight time ===
@@ -702,6 +613,10 @@ void TaskCombat_Reset(int client) {
     g_BotState[client].visibleCommons = 0;
     g_BotState[client].combatFirstSightTime = 0.0;
     g_BotState[client].lastCombatTarget = -1;
+    // Clear combat scan cache
+    g_iCombatCachedTarget[client] = -1;
+    g_iCombatCachedType[client] = 0;
+    g_fCombatScanTime[client] = 0.0;
 }
 
 // ============================================================

@@ -38,6 +38,9 @@
 
 // Lv6 Cheat mode constants
 #define LV6_TELEPORT_DIST     600.0    // Bot farther than this from player triggers teleport timer
+#define LV6_TELEPORT_INSTANT  1200.0   // Bot farther than this: instant teleport (no timer wait)
+#define LV6_TELEPORT_COOLDOWN 2.0      // Min seconds between Lv6 teleports (anti-spam)
+#define LV6_LEADER_FOV        90.0     // Leader's FOV half-angle — bot outside this = "not visible"
 #define LV6_FOLLOW_RANGE      200.0    // Lv6: tight follow range around player
 #define LV6_SPREAD_DIST       120.0    // Lv6: slightly larger spread to not block player
 #define LV6_COHESION_RANGE    400.0    // Lv6: tighter cohesion — teleport sooner
@@ -489,34 +492,84 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
             float humanPos[3];
             GetClientAbsOrigin(nearestHuman, humanPos);
             float humanDist = AI_GetVectorDistance(g_BotState[client].absOrigin, humanPos);
+            float humanEye[3], humanAngles[3];
+            GetClientEyePosition(nearestHuman, humanEye);
+            GetClientEyeAngles(nearestHuman, humanAngles);
 
-            // Periodic teleport: if too far from player, teleport after interval
-            if (humanDist > LV6_TELEPORT_DIST) {
+            // === Lv6 Teleport Logic: FOV-based + distance-based ===
+            // 1. Very far (>1200u): instant teleport regardless of FOV
+            // 2. Far (>600u) AND outside leader's FOV: instant teleport
+            // 3. Far (>600u) AND within FOV: wait for teleport interval then teleport
+            // 4. Close (<600u): no teleport needed
+            bool shouldTeleport = false;
+            float teleportCooldown = g_fLv6TeleportInterval;  // Default: wait for interval
+
+            if (humanDist > LV6_TELEPORT_INSTANT) {
+                // Extremely far — instant teleport
+                shouldTeleport = true;
+                teleportCooldown = LV6_TELEPORT_COOLDOWN;  // Only 2s cooldown
+            } else if (humanDist > LV6_TELEPORT_DIST) {
+                // Far — check if outside leader's FOV
+                bool inFOV = AI_IsInFieldOfView(humanPos, humanAngles, g_BotState[client].absOrigin, LV6_LEADER_FOV);
+                if (!inFOV) {
+                    // Outside leader's view — instant teleport
+                    shouldTeleport = true;
+                    teleportCooldown = LV6_TELEPORT_COOLDOWN;
+                } else {
+                    // Within FOV but far — wait for interval
+                    shouldTeleport = true;
+                    teleportCooldown = g_fLv6TeleportInterval;
+                }
+            }
+
+            if (shouldTeleport) {
                 if (g_fLv6LastTeleport[client] <= 0.0) {
                     g_fLv6LastTeleport[client] = curTime;
                 }
-                float farDuration = curTime - g_fLv6LastTeleport[client];
-                if (farDuration >= g_fLv6TeleportInterval) {
-                    // Teleport directly to player with spread offset
+                float waitTime = curTime - g_fLv6LastTeleport[client];
+                if (waitTime >= teleportCooldown) {
+                    // Teleport to player — position BEHIND or to the SIDES, never in front
                     float teleportPos[3];
                     teleportPos = humanPos;
-                    // Position bots in a spread pattern around the player
+
+                    // Calculate leader's facing direction
+                    float fwd[3], right[3];
+                    float flatAngles[3];
+                    flatAngles[0] = 0.0;
+                    flatAngles[1] = humanAngles[1];
+                    flatAngles[2] = 0.0;
+                    GetAngleVectors(flatAngles, fwd, right, NULL_VECTOR);
+
+                    // Position bots in an arc BEHIND the leader (120° to 240° = behind semicircle)
+                    // Each bot gets a different angle to avoid stacking
                     int botIndex = 0;
                     for (int bi = 1; bi < client; bi++) {
                         if (IsClientInGame(bi) && IsFakeClient(bi) && GetClientTeam(bi) == 2 && IsPlayerAlive(bi)) {
                             botIndex++;
                         }
                     }
-                    float angle = float(botIndex) * 90.0;  // Spread at 90° intervals
-                    teleportPos[0] += Cosine(DegToRad(angle)) * 80.0;
-                    teleportPos[1] += Sine(DegToRad(angle)) * 80.0;
+                    // Spread bots at 60° intervals behind the leader
+                    // 0 = directly behind, 1 = 60° left-behind, 2 = 60° right-behind, 3 = 120° left-behind
+                    float behindAngle;
+                    switch (botIndex % 4) {
+                        case 0: behindAngle = 180.0;
+                        case 1: behindAngle = 135.0;
+                        case 2: behindAngle = 225.0;
+                        case 3: behindAngle = 150.0;
+                    }
+                    float radAngle = DegToRad(humanAngles[1] + behindAngle);
+                    float teleportOffset = 80.0 + float(botIndex / 4) * 30.0;  // Stagger distance
+                    teleportPos[0] += Cosine(radAngle) * teleportOffset;
+                    teleportPos[1] += Sine(radAngle) * teleportOffset;
+
                     TeleportEntity(client, teleportPos, NULL_VECTOR, NULL_VECTOR);
                     g_fLv6LastTeleport[client] = 0.0;
                     g_fFarFromLeaderSince[client] = 0.0;
                     g_iNavStuckCount[client] = 0;
                     g_BotState[client].isStuck = false;
                     AI_ResetTeleportState(client);
-                    AI_DebugDecision(client, "Lv6 teleport -> player (dist=%.0f, waited=%.1fs)", humanDist, farDuration);
+                    AI_DebugDecision(client, "Lv6 teleport -> player (dist=%.0f, inFOV=%b)", humanDist,
+                        AI_IsInFieldOfView(humanPos, humanAngles, g_BotState[client].absOrigin, LV6_LEADER_FOV));
                     return false;
                 }
             } else {

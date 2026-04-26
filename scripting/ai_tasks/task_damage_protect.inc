@@ -46,6 +46,14 @@
 #define HUNTER_DODGE_RANGE       400.0   // Detection range for pouncing Hunter
 #define SMOKER_DODGE_RANGE       600.0   // Detection range for Smoker targeting
 
+// Lv6 Cheat: enhanced detection ranges and self-heal
+#define LV6_TANK_ROCK_RANGE      800.0   // Lv6: detect rocks much earlier
+#define LV6_CHARGER_RANGE        600.0   // Lv6: detect Chargers earlier
+#define LV6_HUNTER_RANGE         600.0   // Lv6: detect Hunters earlier
+#define LV6_SMOKER_RANGE         900.0   // Lv6: detect Smokers much earlier
+#define LV6_SELF_HEAL_COOLDOWN   1.5     // Lv6: faster self-heal (1.5s vs 3.0s)
+#define LV6_SELF_HEAL_HP_PILLS   60      // Lv6: use pills earlier (60 vs 40 HP)
+
 // Self-heal thresholds
 #define SELF_HEAL_HP_PILLS       40      // Use pills/adrenaline below this HP
 #define SELF_HEAL_HP_ADRENALINE  30      // Use adrenaline below this HP (faster)
@@ -97,6 +105,16 @@ static int g_iSharedSmokerTarget[MAXPLAYERS + 1] = {0, ...};  // 0=none, client=
 static int g_iSharedChargingCharger = -1;
 static float g_fSharedSIScanTime = 0.0;
 #define SI_SCAN_SHARED_INTERVAL 0.3
+
+// Shared danger scan cache — avoid 12 FindEntityByClassname loops per 0.3s (3 per bot x 4 bots)
+#define MAX_SHARED_DANGERS 16
+static int g_iSharedDangerEnts[MAX_SHARED_DANGERS];       // Entity indices
+static float g_fSharedDangerPos[MAX_SHARED_DANGERS][3];   // Danger positions
+static int g_iSharedDangerCount = 0;                       // How many dangers cached
+static int g_iSharedRockEnt = -1;                          // Incoming tank rock entity
+static float g_fSharedRockPos[3];                          // Rock position
+static float g_fSharedDangerScanTime = 0.0;                // Last scan time
+#define DANGER_SCAN_SHARED_INTERVAL 0.5
 
 /**
  * Shared SI scan — runs once per interval for ALL bots.
@@ -351,16 +369,21 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
 
     // Run shared SI scan (once per 0.3s for all bots)
     DamageProtect_SharedSIScan(curTime);
+    // Run shared danger scan (once per 0.5s for all bots)
+    DamageProtect_SharedDangerScan(curTime);
 
     // === Self-heal: use pills/adrenaline when low HP ===
     int level = g_iBotSkillLevel;
     if (level < SKILL_LEVEL_MIN) level = SKILL_LEVEL_MIN;
     if (level > SKILL_LEVEL_MAX) level = SKILL_LEVEL_MAX;
+    // Lv6 Cheat: faster cooldown, use pills at higher HP
+    float healCooldown = g_bCheatMode ? LV6_SELF_HEAL_COOLDOWN : SELF_HEAL_COOLDOWN;
+    int healThreshold = g_bCheatMode ? LV6_SELF_HEAL_HP_PILLS : SELF_HEAL_HP_PILLS;
     // Only self-heal at skill level 2+ (smarter bots know to use items)
-    if (level >= 2 && (curTime - g_flLastSelfHeal[client]) >= SELF_HEAL_COOLDOWN) {
+    if (level >= 2 && (curTime - g_flLastSelfHeal[client]) >= healCooldown) {
         int hp = GetClientHealth(client);
         int slot4 = GetPlayerWeaponSlot(client, 4);  // Pills/Adrenaline slot
-        if (slot4 != -1 && hp <= SELF_HEAL_HP_PILLS) {
+        if (slot4 != -1 && hp <= healThreshold) {
             char cls[64];
             GetEntityClassname(slot4, cls, sizeof(cls));
             if (StrEqual(cls, "weapon_pain_pills") || StrEqual(cls, "weapon_adrenaline")) {
@@ -378,11 +401,12 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
     // === Hunter pounce dodge (using shared scan result) ===
     if (level >= 2 && g_iSharedPouncingHunter != -1) {
         // Check if pouncing hunter is heading toward this bot
+        float hunterRange = g_bCheatMode ? LV6_HUNTER_RANGE : HUNTER_DODGE_RANGE;
         float hunterPos[3], botPos[3];
         GetClientAbsOrigin(g_iSharedPouncingHunter, hunterPos);
         botPos = g_BotState[client].absOrigin;
         float dist = AI_GetVectorDistance(botPos, hunterPos);
-        if (dist <= HUNTER_DODGE_RANGE) {
+        if (dist <= hunterRange) {
             // Verify hunter is heading toward this bot
             float hunterVel[3];
             GetEntPropVector(g_iSharedPouncingHunter, Prop_Data, "m_vecAbsVelocity", hunterVel);
@@ -416,7 +440,9 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
 
     // === Tank rock dodge ===
     if (level >= 2) {  // Skill 2+ can dodge rocks
-        int rockEnt = DamageProtect_FindIncomingTankRock(client);
+        // Lv6 Cheat: larger rock detection range
+        float rockDetectRange = g_bCheatMode ? LV6_TANK_ROCK_RANGE : TANK_ROCK_DETECT_RANGE;
+        int rockEnt = DamageProtect_FindIncomingTankRock(client, rockDetectRange);
         if (rockEnt != -1) {
             float rockPos[3];
             GetEntPropVector(rockEnt, Prop_Data, "m_vecAbsOrigin", rockPos);
@@ -427,11 +453,12 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
 
     // === Charger dodge (using shared scan result) ===
     if (level >= 1 && g_iSharedChargingCharger != -1) {
+        float chargerRange = g_bCheatMode ? LV6_CHARGER_RANGE : CHARGER_DETECT_RANGE;
         float chargerPos[3], botPos[3];
         GetClientAbsOrigin(g_iSharedChargingCharger, chargerPos);
         botPos = g_BotState[client].absOrigin;
         float dist = AI_GetVectorDistance(botPos, chargerPos);
-        if (dist <= CHARGER_DETECT_RANGE) {
+        if (dist <= chargerRange) {
             // Verify charger is heading toward this bot
             float chargerVel[3];
             GetEntPropVector(g_iSharedChargingCharger, Prop_Data, "m_vecAbsVelocity", chargerVel);
@@ -463,54 +490,73 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
 }
 
 /**
- * Find the nearest danger entity (acid pool or fire) within detection range.
- *
- * @param client      Bot client index.
- * @param dangerPos   Output: position of the nearest danger entity.
- * @return            Entity index of nearest danger, or -1 if none.
+ * Shared danger scan: scan all acid pools, fires, and tank rocks ONCE per 0.5s
+ * for ALL bots, instead of each bot scanning independently.
+ * Called from DamageProtect_SharedSIScan when the SI scan fires.
+ */
+static void DamageProtect_SharedDangerScan(float curTime) {
+    if ((curTime - g_fSharedDangerScanTime) < DANGER_SCAN_SHARED_INTERVAL) return;
+    g_fSharedDangerScanTime = curTime;
+
+    // Scan acid pools and fires
+    g_iSharedDangerCount = 0;
+    int safetyCount;
+
+    // Acid pools (insect_swarm)
+    int ent = -1;
+    safetyCount = 0;
+    while ((ent = FindEntityByClassname(ent, "insect_swarm")) != -1) {
+        if (++safetyCount > 64) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
+        if (g_iSharedDangerCount >= MAX_SHARED_DANGERS) break;
+        g_iSharedDangerEnts[g_iSharedDangerCount] = ent;
+        GetEntPropVector(ent, Prop_Send, "m_vecOrigin", g_fSharedDangerPos[g_iSharedDangerCount]);
+        g_iSharedDangerCount++;
+    }
+
+    // Fire (inferno)
+    ent = -1;
+    safetyCount = 0;
+    while ((ent = FindEntityByClassname(ent, "inferno")) != -1) {
+        if (++safetyCount > 64) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
+        if (g_iSharedDangerCount >= MAX_SHARED_DANGERS) break;
+        g_iSharedDangerEnts[g_iSharedDangerCount] = ent;
+        GetEntPropVector(ent, Prop_Send, "m_vecOrigin", g_fSharedDangerPos[g_iSharedDangerCount]);
+        g_iSharedDangerCount++;
+    }
+
+    // Tank rocks
+    g_iSharedRockEnt = -1;
+    ent = -1;
+    safetyCount = 0;
+    while ((ent = FindEntityByClassname(ent, "tank_rock")) != -1) {
+        if (++safetyCount > 16) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", g_fSharedRockPos);
+        // Just cache the first rock found (usually only one at a time)
+        g_iSharedRockEnt = ent;
+        break;
+    }
+}
+
+/**
+ * Find the nearest danger entity using shared cache.
+ * Avoids per-bot FindEntityByClassname loops — just checks distances to cached positions.
  */
 static int DamageProtect_FindNearbyDanger(int client, float dangerPos[3]) {
     float pos[3];
-    pos[0] = g_BotState[client].absOrigin[0];
-    pos[1] = g_BotState[client].absOrigin[1];
-    pos[2] = g_BotState[client].absOrigin[2];
+    pos = g_BotState[client].absOrigin;
 
     float closest = DANGER_DETECT_RANGE;
     int found = -1;
 
-    // Check acid pools (insect_swarm)
-    int ent = -1;
-    int safetyCount = 0;
-    while ((ent = FindEntityByClassname(ent, "insect_swarm")) != -1) {
-        if (++safetyCount > 256) break;
-        if (!IsValidEntity(ent)) { ent++; continue; }
-        float entPos[3];
-        GetEntPropVector(ent, Prop_Send, "m_vecOrigin", entPos);
-        float dist = GetVectorDistance(pos, entPos);
+    for (int i = 0; i < g_iSharedDangerCount; i++) {
+        float dist = GetVectorDistance(pos, g_fSharedDangerPos[i]);
         if (dist < closest) {
             closest = dist;
-            found = ent;
-            dangerPos[0] = entPos[0];
-            dangerPos[1] = entPos[1];
-            dangerPos[2] = entPos[2];
-        }
-    }
-
-    // Check fire (inferno)
-    ent = -1;
-    safetyCount = 0;
-    while ((ent = FindEntityByClassname(ent, "inferno")) != -1) {
-        if (++safetyCount > 256) break;
-        if (!IsValidEntity(ent)) { ent++; continue; }
-        float entPos[3];
-        GetEntPropVector(ent, Prop_Send, "m_vecOrigin", entPos);
-        float dist = GetVectorDistance(pos, entPos);
-        if (dist < closest) {
-            closest = dist;
-            found = ent;
-            dangerPos[0] = entPos[0];
-            dangerPos[1] = entPos[1];
-            dangerPos[2] = entPos[2];
+            found = g_iSharedDangerEnts[i];
+            dangerPos = g_fSharedDangerPos[i];
         }
     }
 
@@ -550,56 +596,37 @@ static void DamageProtect_StartDodge(int client, const float dangerPos[3], float
 /**
  * Find an incoming Tank rock (tank_rock entity) heading toward the bot.
  */
-static int DamageProtect_FindIncomingTankRock(int client) {
-    float pos[3];
-    pos = g_BotState[client].absOrigin;
-
-    int ent = -1;
-    int safetyCount = 0;
-    while ((ent = FindEntityByClassname(ent, "tank_rock")) != -1) {
-        if (++safetyCount > 256) break;
-        if (!IsValidEntity(ent)) { ent++; continue; }
-
-        float rockPos[3];
-        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", rockPos);
-        float dist = AI_GetVectorDistance(pos, rockPos);
-
-        if (dist > TANK_ROCK_DETECT_RANGE) continue;
-
-        // Check if rock is moving toward the bot (velocity check)
-        float rockVel[3];
-        GetEntPropVector(ent, Prop_Data, "m_vecAbsVelocity", rockVel);
-        float rockSpeed = GetVectorLength(rockVel);
-        if (rockSpeed < 50.0) continue;  // Rock isn't really moving
-
-        // Direction from rock to bot
-        float toBot[3];
-        SubtractVectors(pos, rockPos, toBot);
-        toBot[2] = 0.0;
-        float toBotLen = GetVectorLength(toBot);
-        if (toBotLen < 1.0) continue;
-
-        // Normalize
-        toBot[0] /= toBotLen;
-        toBot[1] /= toBotLen;
-
-        // Normalize rock velocity (horizontal)
-        float normVel[3];
-        normVel[0] = rockVel[0];
-        normVel[1] = rockVel[1];
-        normVel[2] = 0.0;
-        float velLen = GetVectorLength(normVel);
-        if (velLen < 1.0) continue;
-        normVel[0] /= velLen;
-        normVel[1] /= velLen;
-
-        // Dot product: if rock is heading toward bot, value > 0
-        float dot = normVel[0] * toBot[0] + normVel[1] * toBot[1];
-        if (dot > 0.5) {
-            return ent;  // Rock is heading toward this bot
+static int DamageProtect_FindIncomingTankRock(int client, float detectRange = TANK_ROCK_DETECT_RANGE) {
+    // Use shared rock cache first (avoid FindEntityByClassname per bot)
+    if (g_iSharedRockEnt != -1 && IsValidEntity(g_iSharedRockEnt)) {
+        float pos[3];
+        pos = g_BotState[client].absOrigin;
+        float dist = AI_GetVectorDistance(pos, g_fSharedRockPos);
+        if (dist <= detectRange) {
+            // Check if rock is heading toward this bot
+            float rockVel[3];
+            GetEntPropVector(g_iSharedRockEnt, Prop_Data, "m_vecAbsVelocity", rockVel);
+            float rockSpeed = GetVectorLength(rockVel);
+            if (rockSpeed >= 50.0) {
+                float toBot[3];
+                SubtractVectors(pos, g_fSharedRockPos, toBot);
+                toBot[2] = 0.0;
+                float toBotLen = GetVectorLength(toBot);
+                if (toBotLen >= 1.0) {
+                    toBot[0] /= toBotLen;
+                    toBot[1] /= toBotLen;
+                    float normVel[3];
+                    normVel[0] = rockVel[0]; normVel[1] = rockVel[1]; normVel[2] = 0.0;
+                    float velLen = GetVectorLength(normVel);
+                    if (velLen >= 1.0) {
+                        normVel[0] /= velLen; normVel[1] /= velLen;
+                        float dot = normVel[0] * toBot[0] + normVel[1] * toBot[1];
+                        if (dot > 0.5) return g_iSharedRockEnt;
+                    }
+                }
+            }
         }
     }
-
     return -1;
 }
 
