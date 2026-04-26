@@ -15,6 +15,7 @@
 #define RESCUE_SHOVE_RANGE      80.0
 #define RESCUE_SHOOT_RANGE      1000.0
 #define RESCUE_REVIVE_RANGE     64.0
+#define RESCUE_ACID_RANGE       200.0   // Don't rescue if acid within this range
 
 // Global rescuer assignment table (exception: cross-bot coordination)
 // g_iAssignedRescuer[victim] = rescuer client index, or -1 if unassigned
@@ -119,12 +120,15 @@ bool TaskRescue_ShouldUpdate(int client) {
     // Already assigned as rescuer?
     int assignedVictim = TaskRescue_GetAssignedVictim(client);
     if (assignedVictim != -1 && TaskRescue_NeedsHelp(assignedVictim)) {
-        // Even if assigned, if a Tank is very close, let combat take priority
+        // Even if assigned, if a Tank is very close or acid is nearby, let combat take priority
         // UNLESS in aggressive leader mode — then we fight while advancing
-        if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(client, 300.0)) {
-            // Release assignment — let combat handle Tank first
-            g_iAssignedRescuer[assignedVictim] = -1;
-            return false;
+        if (!TaskNavigate_IsAggressiveLeaderMode()) {
+            if (TaskRescue_IsTankNearby(client, 300.0) ||
+                AI_IsAcidNearPosition(g_BotState[client].absOrigin, RESCUE_ACID_RANGE)) {
+                // Release assignment — let combat handle threat first
+                g_iAssignedRescuer[assignedVictim] = -1;
+                return false;
+            }
         }
         if (g_bDebugMode) {
             char vName[64]; GetClientName(assignedVictim, vName, sizeof(vName));
@@ -143,13 +147,16 @@ bool TaskRescue_ShouldUpdate(int client) {
         // Already has a rescuer assigned?
         if (g_iAssignedRescuer[i] != -1) continue;
 
-        // Check if a Tank is near the victim — too dangerous to rescue right now
+        // Check if a Tank or acid is near the victim — too dangerous to rescue right now
         // In aggressive leader mode, we push through threats
         float victimPos[3];
         GetClientAbsOrigin(i, victimPos);
-        if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearPosition(victimPos, 400.0)) {
-            // Tank is too close to victim — skip rescue, let combat handle it
-            continue;
+        if (!TaskNavigate_IsAggressiveLeaderMode()) {
+            if (TaskRescue_IsTankNearPosition(victimPos, 400.0) ||
+                AI_IsAcidNearPosition(victimPos, RESCUE_ACID_RANGE)) {
+                // Tank/acid too close to victim — skip rescue, let combat handle it
+                continue;
+            }
         }
 
         // Find closest available bot for this victim
@@ -166,8 +173,11 @@ bool TaskRescue_ShouldUpdate(int client) {
             // Already rescuing someone else?
             if (TaskRescue_GetAssignedVictim(b) != -1) continue;
 
-            // Skip bots that are close to a Tank (unless aggressive leader mode)
-            if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(b, 300.0)) continue;
+            // Skip bots that are close to a Tank or acid (unless aggressive leader mode)
+            if (!TaskNavigate_IsAggressiveLeaderMode()) {
+                if (TaskRescue_IsTankNearby(b, 300.0) ||
+                    AI_IsAcidNearPosition(g_BotState[b].absOrigin, RESCUE_ACID_RANGE)) continue;
+            }
 
             float botPos[3];
             GetClientAbsOrigin(b, botPos);
@@ -212,14 +222,17 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
     g_BotState[client].rescueTarget = victim;
     g_BotState[client].isRescuing = true;
 
-    // === Tank awareness: if Tank is very close, release rescue and let combat handle it ===
+    // === Tank/acid awareness: if danger is very close, release rescue and let combat handle it ===
     // In aggressive leader mode, bots fight while advancing — don't abort rescue
-    if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(client, 300.0)) {
-        if (g_bDebugMode) {
-            AI_DebugDecision(client, "Rescue abort: Tank too close");
+    if (!TaskNavigate_IsAggressiveLeaderMode()) {
+        if (TaskRescue_IsTankNearby(client, 300.0) ||
+            AI_IsAcidNearPosition(g_BotState[client].absOrigin, RESCUE_ACID_RANGE)) {
+            if (g_bDebugMode) {
+                AI_DebugDecision(client, "Rescue abort: Tank/acid too close");
+            }
+            TaskRescue_Reset(client);
+            return false;  // Let combat task deal with the threat
         }
-        TaskRescue_Reset(client);
-        return false;  // Let combat task deal with the Tank
     }
 
     // === Emergency teleport: if too far and actually stuck ===

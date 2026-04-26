@@ -30,6 +30,8 @@
 #define DEFIB_HEIGHT_THRESHOLD  200.0   // Max height difference for reachable defib (underground check)
 #define DEFIB_STUCK_TELEPORT_TIME 8.0   // Seconds before teleporting if stuck moving to target
 #define DEFIB_STUCK_TELEPORT_DIST 300.0 // Min distance to target before teleport is considered
+#define DEFIB_ACID_RANGE        200.0   // Don't defib if acid within this range of corpse/bot
+#define DEFIB_TANK_RANGE        400.0   // Don't defib if Tank within this range of corpse/bot
 
 // Per-bot defib search state
 static int g_iDefibSearchTarget[MAXPLAYERS + 1];      // Ground defib entity to pick up
@@ -211,6 +213,36 @@ bool TaskDefib_ShouldUpdate(int client) {
     }
 
     // This bot IS the best candidate
+
+    // Safety check: don't attempt defib if the death position is in acid or near a Tank
+    // (unless in aggressive leader mode — then we push through)
+    if (!TaskNavigate_IsAggressiveLeaderMode()) {
+        for (int d = 1; d <= MaxClients; d++) {
+            if (!IsClientInGame(d) || GetClientTeam(d) != 2) continue;
+            if (IsPlayerAlive(d)) continue;
+            float deathPos[3];
+            if (g_bHasDeathPosition[d]) {
+                deathPos = g_fDeathPosition[d];
+            } else {
+                GetClientAbsOrigin(d, deathPos);
+            }
+            if (AI_IsDangerNearPosition(deathPos, DEFIB_ACID_RANGE, DEFIB_TANK_RANGE)) {
+                if (g_bDebugMode) {
+                    AI_DebugDecision(client, "Defib skip: danger near corpse (acid/tank)");
+                }
+                return false;
+            }
+            break;  // Only check first dead teammate
+        }
+        // Also check if the bot itself is standing in acid
+        if (AI_IsAcidNearPosition(g_BotState[client].absOrigin, DEFIB_ACID_RANGE)) {
+            if (g_bDebugMode) {
+                AI_DebugDecision(client, "Defib skip: standing in acid");
+            }
+            return false;
+        }
+    }
+
     if (hasDefib) {
         // Mode A: Bot already has a defibrillator
         g_bDefibSearchMode[client] = false;
@@ -456,6 +488,31 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
     }
 
     // === Mode A: Bot has defib - go revive dead teammate ===
+
+    // Safety: abort defib if danger appeared near corpse or bot (acid/tank)
+    // unless in aggressive leader mode
+    if (!TaskNavigate_IsAggressiveLeaderMode()) {
+        float checkDeathPos[3];
+        if (g_bHasDeathPosition[target]) {
+            checkDeathPos = g_fDeathPosition[target];
+        } else {
+            GetClientAbsOrigin(target, checkDeathPos);
+        }
+        if (AI_IsDangerNearPosition(checkDeathPos, DEFIB_ACID_RANGE, DEFIB_TANK_RANGE)) {
+            if (g_bDebugMode) {
+                AI_DebugDecision(client, "Defib abort: danger near corpse (acid/tank)");
+            }
+            TaskDefib_Reset(client);
+            return false;
+        }
+        if (AI_IsAcidNearPosition(g_BotState[client].absOrigin, DEFIB_ACID_RANGE)) {
+            if (g_bDebugMode) {
+                AI_DebugDecision(client, "Defib abort: standing in acid");
+            }
+            TaskDefib_Reset(client);
+            return false;
+        }
+    }
 
     // Verify bot still has defib
     int weapon = GetPlayerWeaponSlot(client, 3);

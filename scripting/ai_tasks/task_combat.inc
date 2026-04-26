@@ -229,6 +229,47 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
         }
     }
 
+    // === Cover Priority: protect busy teammates ===
+    // If a teammate is doing a critical task (rescue/defib/hold-USE),
+    // prefer targeting enemies near that teammate to provide cover fire.
+    int busyClient = -1;
+    float busyPos[3];
+    if (AI_IsTeammateBusyWithCriticalTask(busyClient, busyPos) && busyClient != client) {
+        int coverTarget = -1;
+        int coverType = 0;
+        float coverDistToTeammate = 600.0;
+
+        for (int ci = 1; ci <= MaxClients; ci++) {
+            if (ci == client) continue;
+            if (!IsClientInGame(ci) || !IsPlayerAlive(ci) || GetClientTeam(ci) != 3) continue;
+            if (GetEntProp(ci, Prop_Send, "m_isGhost") != 0) continue;
+            float ctPos[3];
+            GetClientAbsOrigin(ci, ctPos);
+            float distToBusy = AI_GetVectorDistance(busyPos, ctPos);
+            if (distToBusy > 600.0) continue;
+            if (!AI_IsVisibleEntity(g_BotState[client].eyePos, ci, MASK_SHOT, client)) continue;
+
+            int czClass = GetEntProp(ci, Prop_Send, "m_zombieClass");
+            int cType = (czClass == 8) ? 3 : 2;
+
+            if (cType > coverType || (cType == coverType && distToBusy < coverDistToTeammate)) {
+                coverTarget = ci;
+                coverType = cType;
+                coverDistToTeammate = distToBusy;
+            }
+        }
+
+        // Use cover target if same priority tier or higher than normal best
+        if (coverTarget != -1 && coverType >= bestType) {
+            bestTarget = coverTarget;
+            bestType = coverType;
+            float ctPos[3];
+            GetClientAbsOrigin(coverTarget, ctPos);
+            bestDist = AI_GetVectorDistance(g_BotState[client].eyePos, ctPos);
+            threatCount++;  // Count this as a visible threat
+        }
+    }
+
     // No target found
     if (bestTarget == -1) {
         TaskCombat_Reset(client);

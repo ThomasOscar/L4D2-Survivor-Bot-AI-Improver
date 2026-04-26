@@ -276,6 +276,95 @@ stock int AI_GetEntityMaxHealth(int entity)
     return GetEntProp(entity, Prop_Data, "m_iMaxHealth");
 }
 
+// ============================================================================
+// Danger Zone Checks (Acid, Tank)
+// ============================================================================
+
+/**
+ * Check if Spitter acid (insect_swarm) is near a given position.
+ * Spitter acid deals continuous damage — bots should avoid standing in it.
+ *
+ * @param pos      Reference position.
+ * @param range    Search radius.
+ * @return         True if an insect_swarm entity is within range.
+ */
+stock bool AI_IsAcidNearPosition(const float pos[3], float range) {
+    int ent = -1;
+    int safetyCount = 0;
+    float rangeSq = range * range;
+    while ((ent = FindEntityByClassname(ent, "insect_swarm")) != -1) {
+        if (++safetyCount > 64) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
+        float acidPos[3];
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", acidPos);
+        float dx = pos[0] - acidPos[0];
+        float dy = pos[1] - acidPos[1];
+        float dz = pos[2] - acidPos[2];
+        if (dx * dx + dy * dy + dz * dz <= rangeSq) return true;
+    }
+    return false;
+}
+
+/**
+ * Check if a Tank (zombie class 8) is near a given position.
+ *
+ * @param pos      Reference position.
+ * @param range    Search radius.
+ * @return         True if a living Tank is within range.
+ */
+stock bool AI_IsTankNearPosition(const float pos[3], float range) {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 3) continue;
+        if (GetEntProp(i, Prop_Send, "m_zombieClass") != 8) continue;
+        float tankPos[3];
+        GetClientAbsOrigin(i, tankPos);
+        if (AI_GetVectorDistance(pos, tankPos) <= range) return true;
+    }
+    return false;
+}
+
+/**
+ * Check if a position is dangerous (acid or tank nearby).
+ * Combines AI_IsAcidNearPosition and AI_IsTankNearPosition.
+ *
+ * @param pos          Reference position.
+ * @param acidRange    Acid search radius.
+ * @param tankRange    Tank search radius.
+ * @return             True if danger detected.
+ */
+stock bool AI_IsDangerNearPosition(const float pos[3], float acidRange, float tankRange) {
+    if (AI_IsAcidNearPosition(pos, acidRange)) return true;
+    if (AI_IsTankNearPosition(pos, tankRange)) return true;
+    return false;
+}
+
+/**
+ * Check if any survivor teammate is performing a critical task
+ * (rescuing, defibbing, or holding USE on a timed trigger).
+ *
+ * @param outClient  Output: client index of the busy teammate, or -1.
+ * @param outPos     Output: position of the busy teammate.
+ * @return           True if a teammate is busy with a critical task.
+ */
+stock bool AI_IsTeammateBusyWithCriticalTask(int &outClient, float outPos[3]) {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (!IsFakeClient(i)) continue;
+
+        // Check if teammate is actively doing a critical task
+        if (g_BotState[i].isRescuing || g_BotState[i].isHoldingUse ||
+            (g_BotState[i].defibTarget > 0 && g_BotState[i].defibTarget <= MaxClients)) {
+            outClient = i;
+            outPos = g_BotState[i].absOrigin;
+            return true;
+        }
+    }
+    outClient = -1;
+    return false;
+}
+
 /**
  * Find the nearest entity of a given classname within a maximum distance.
  *
