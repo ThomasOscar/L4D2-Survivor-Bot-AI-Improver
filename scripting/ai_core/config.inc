@@ -34,6 +34,8 @@ ConVar g_cvWitchDamage;
 ConVar g_cvSpecialDamage;
 ConVar g_cvTankDamage;
 ConVar g_cvSaveTeleportTime;
+ConVar g_cvSupplyEnabled;
+ConVar g_cvSupplyGiveCooldown;
 
 // Cached values for fast access (avoid native calls every frame)
 bool g_bBotEnabled;
@@ -59,6 +61,8 @@ float g_fWitchDamage;
 float g_fSpecialDamage;
 float g_fTankDamage;
 float g_fSaveTeleportTime;
+bool g_bSupplyEnabled;
+float g_fSupplyGiveCooldown;
 
 /**
  * Initialize all ConVars. Called from OnPluginStart.
@@ -90,7 +94,9 @@ void AIConfig_Init() {
     g_cvBackpackEnabled     = CreateConVar("ai_backpack_enabled",     "1", "Enable carry supplies", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvDefibEnabled        = CreateConVar("ai_defib_enabled",        "1", "Enable defibrillator use", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvFindGasEnabled      = CreateConVar("ai_findgas_enabled",      "1", "Enable gas can search", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvProtectEnabled      = CreateConVar("ai_protect_enabled",      "0", "Enable instant-kill protection", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvProtectEnabled     = CreateConVar("ai_protect_enabled",     "0", "Enable instant-kill protection", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvSupplyEnabled      = CreateConVar("ai_supply_enabled",      "1", "Enable supply management for bots", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvSupplyGiveCooldown = CreateConVar("ai_supply_give_cooldown","2.0", "Cooldown between giving items to players (seconds)", FCVAR_NOTIFY, true, 0.5, true, 30.0);
 
     // Auto-generate and load config file
     AutoExecConfig(true, "l4d2_ai_bot");
@@ -119,6 +125,8 @@ void AIConfig_Init() {
     g_cvDefibEnabled.AddChangeHook(AIConfig_OnChanged);
     g_cvFindGasEnabled.AddChangeHook(AIConfig_OnChanged);
     g_cvProtectEnabled.AddChangeHook(AIConfig_OnChanged);
+    g_cvSupplyEnabled.AddChangeHook(AIConfig_OnChanged);
+    g_cvSupplyGiveCooldown.AddChangeHook(AIConfig_OnChanged);
 
     // Initial cache population
     AIConfig_UpdateCache();
@@ -160,4 +168,6 @@ void AIConfig_UpdateCache() {
     g_bDefibEnabled       = g_cvDefibEnabled.BoolValue;
     g_bFindGasEnabled     = g_cvFindGasEnabled.BoolValue;
     g_bProtectEnabled     = g_cvProtectEnabled.BoolValue;
+    g_bSupplyEnabled      = g_cvSupplyEnabled.BoolValue;
+    g_fSupplyGiveCooldown = g_cvSupplyGiveCooldown.FloatValue;
 }
