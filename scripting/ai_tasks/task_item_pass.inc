@@ -178,6 +178,15 @@ bool TaskItemPass_Update(int client, int &buttons, float vel[3]) {
         if (dist > ITEM_PASS_DROP_RANGE) {
             AI_ComputeMoveToward(client, targetPos, g_BotState[client].absOrigin,
                                   g_BotState[client].eyeAngles, vel);
+
+            // Stuck teleport: if can't reach teammate, try teleport; abandon if failed
+            float passElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+            if (AI_ShouldAbandonNavigation(client)) {
+                TaskItemPass_Reset(client);
+                return false;
+            }
+            AI_TryStuckTeleport(client, targetPos, dist, passElapsed, 300.0, 10.0);
+
             return true; // Stay locked while approaching
         }
         // Close enough — transition to drop phase
@@ -220,6 +229,7 @@ void TaskItemPass_Reset(int client) {
     g_BotState[client].itemPassPhase = 0;
     g_fItemPassScanTime[client] = 0.0;
     g_iItemPassType[client] = 0;
+    AI_ResetTeleportState(client);
 }
 
 // ============================================================
