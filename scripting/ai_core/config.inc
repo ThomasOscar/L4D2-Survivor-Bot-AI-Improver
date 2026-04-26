@@ -73,7 +73,7 @@ void AIConfig_Init() {
     g_cvRescueEnabled   = CreateConVar("ai_rescue_enabled",    "1", "Enable rescue task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvHealEnabled     = CreateConVar("ai_heal_enabled",      "1", "Enable heal task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvThrowableEnabled = CreateConVar("ai_throwable_enabled","1", "Enable throwable task", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvLLMEnabled      = CreateConVar("ai_llm_enabled",       "1", "Enable LLM strategic advisor", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvLLMEnabled      = CreateConVar("ai_llm_enabled",       "0", "Enable LLM strategic advisor", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvDebugMode       = CreateConVar("ai_debug",             "0", "Debug mode (1=log task switches)", FCVAR_NOTIFY, true, 0.0, true, 1.0);
 
     // Extended ConVars — ranges & floats
