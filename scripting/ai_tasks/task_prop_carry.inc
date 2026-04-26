@@ -151,6 +151,17 @@ bool TaskPropCarry_Update(int client, int &buttons, float vel[3]) {
                     // Move toward generator
                     AI_ComputeMoveToward(client, g_fPourTargetPos, botPos,
                                           g_BotState[client].eyeAngles, vel);
+
+                    // Stuck teleport for pour delivery
+                    float pourDist2 = AI_GetVectorDistance(botPos, g_fPourTargetPos);
+                    float pourElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+                    if (AI_ShouldAbandonNavigation(client)) {
+                        // Can't reach generator — drop the gas can
+                        TaskPropCarry_Reset(client);
+                        return false;
+                    }
+                    AI_TryStuckTeleport(client, g_fPourTargetPos, pourDist2, pourElapsed, 300.0, 10.0);
+
                     return true;  // Lock while delivering
                 }
             }
@@ -191,6 +202,16 @@ bool TaskPropCarry_Update(int client, int &buttons, float vel[3]) {
         if (g_bHasPourTarget && g_bFindGasEnabled && TaskPropCarry_IsCarryingGascan(client)) {
             AI_ComputeMoveToward(client, g_fPourTargetPos, botPos,
                                   g_BotState[client].eyeAngles, vel);
+
+            // Stuck teleport while carrying gascan to generator
+            float carryDist = AI_GetVectorDistance(botPos, g_fPourTargetPos);
+            float carryElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+            if (AI_ShouldAbandonNavigation(client)) {
+                TaskPropCarry_Reset(client);
+                return false;
+            }
+            AI_TryStuckTeleport(client, g_fPourTargetPos, carryDist, carryElapsed, 300.0, 10.0);
+
             return false;  // Don't lock, allow combat to override
         }
 
@@ -226,6 +247,15 @@ bool TaskPropCarry_Update(int client, int &buttons, float vel[3]) {
     // Move toward prop
     AI_ComputeMoveToward(client, propPos, g_BotState[client].absOrigin,
                           g_BotState[client].eyeAngles, vel);
+
+    // Stuck teleport for prop pickup
+    float propElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+    if (AI_ShouldAbandonNavigation(client)) {
+        TaskPropCarry_Reset(client);
+        return false;
+    }
+    AI_TryStuckTeleport(client, propPos, dist, propElapsed, 300.0, 10.0);
+
     return false;  // Don't lock while walking toward
 }
 
@@ -235,6 +265,7 @@ bool TaskPropCarry_Update(int client, int &buttons, float vel[3]) {
 void TaskPropCarry_Reset(int client) {
     g_iPropTarget[client] = -1;
     g_bPropCarrying[client] = false;
+    AI_ResetTeleportState(client);
 }
 
 // ============================================================
