@@ -206,6 +206,10 @@ bool IsActiveSurvivorBot(int client) {
     return true;
 }
 
+// Shared human position cache timer — runs once every 0.5s for ALL bots
+static float g_fHumanCacheTime = 0.0;
+#define HUMAN_CACHE_INTERVAL 0.5
+
 /**
  * Cache basic bot data into BotState. Called each frame from OnPlayerRunCmd.
  */
@@ -221,16 +225,17 @@ void BotState_CacheBasicData(int client) {
     // Cache this bot's ground position as "last known position" for defib
     g_fLastGroundPosition[client] = g_BotState[client].absOrigin;
 
-    // Also cache ground positions for alive/incapped HUMAN teammates
-    // (so we have their position when they die and enter spectator mode)
-    for (int i = 1; i <= MaxClients; i++) {
-        if (i == client) continue;
-        if (!IsClientInGame(i)) continue;
-        if (GetClientTeam(i) != 2) continue;
-        if (!IsPlayerAlive(i)) continue;
-        // Only cache for human players (bot positions are cached in their own frame)
-        if (!IsFakeClient(i)) {
-            GetClientAbsOrigin(i, g_fLastGroundPosition[i]);
+    // Cache human positions — shared across all bots, runs only once per HUMAN_CACHE_INTERVAL
+    float curTime = GetGameTime();
+    if ((curTime - g_fHumanCacheTime) >= HUMAN_CACHE_INTERVAL) {
+        g_fHumanCacheTime = curTime;
+        for (int i = 1; i <= MaxClients; i++) {
+            if (!IsClientInGame(i)) continue;
+            if (GetClientTeam(i) != 2) continue;
+            if (!IsPlayerAlive(i)) continue;
+            if (!IsFakeClient(i)) {
+                GetClientAbsOrigin(i, g_fLastGroundPosition[i]);
+            }
         }
     }
 }

@@ -268,19 +268,19 @@ void AITaskQueue_Init() {
     g_iTaskCount = 0;
 
     // Register tasks by priority (uncomment as modules are implemented)
-    AITaskQueue_RegisterTask(TASK_RESCUE,     0, "Rescue");
-    AITaskQueue_RegisterTask(TASK_DEFIB,      0, "Defib", 0.5);       // Defib = same as rescue (saving lives)
-    AITaskQueue_RegisterTask(TASK_COMBAT,     1, "Combat", 0.15);    // Throttle combat scan (6.7 Hz instead of 30 Hz)
-    AITaskQueue_RegisterTask(TASK_THROWABLE,  2, "Throwable");
-    AITaskQueue_RegisterTask(TASK_HEAL,       2, "Heal");
-    AITaskQueue_RegisterTask(TASK_NAVIGATE,   3, "Navigate");
-    AITaskQueue_RegisterTask(TASK_WEAPON,     3, "Weapon");
-    AITaskQueue_RegisterTask(TASK_PROP_CARRY, 4, "PropCarry");
-    AITaskQueue_RegisterTask(TASK_SEARCH,     4, "Search");
-    AITaskQueue_RegisterTask(TASK_ITEM_PASS,  3, "ItemPass");
-    AITaskQueue_RegisterTask(TASK_TRIGGER_SEARCH, 5, "TriggerSearch");
+    AITaskQueue_RegisterTask(TASK_RESCUE,     0, "Rescue", 0.1);    // Rescue must be fast but not every frame
+    AITaskQueue_RegisterTask(TASK_DEFIB,      0, "Defib", 0.5);     // Defib = same as rescue (saving lives)
+    AITaskQueue_RegisterTask(TASK_COMBAT,     1, "Combat", 0.15);   // Throttle combat scan (6.7 Hz)
+    AITaskQueue_RegisterTask(TASK_THROWABLE,  2, "Throwable", 0.5); // Throwable scan doesn't need per-frame
+    AITaskQueue_RegisterTask(TASK_HEAL,       2, "Heal", 0.3);      // Heal check every 0.3s
+    AITaskQueue_RegisterTask(TASK_NAVIGATE,   3, "Navigate", 0.2);  // Navigation every 0.2s
+    AITaskQueue_RegisterTask(TASK_WEAPON,     3, "Weapon");          // Weapon mgmt needs per-frame (reload/switch)
+    AITaskQueue_RegisterTask(TASK_PROP_CARRY, 4, "PropCarry", 0.5); // Prop carry every 0.5s
+    AITaskQueue_RegisterTask(TASK_SEARCH,     4, "Search", 0.5);    // Search scan every 0.5s
+    AITaskQueue_RegisterTask(TASK_ITEM_PASS,  3, "ItemPass", 0.5);  // Item pass every 0.5s
+    AITaskQueue_RegisterTask(TASK_TRIGGER_SEARCH, 5, "TriggerSearch", 0.5); // Trigger scan every 0.5s
     AITaskQueue_RegisterTask(TASK_UPGRADE,  4, "Upgrade", 2.0);
-    AITaskQueue_RegisterTask(TASK_SUPPLY,   3, "Supply", 1.0);  // Supply management for bots
+    AITaskQueue_RegisterTask(TASK_SUPPLY,   3, "Supply", 1.0);
     // TASK_DAMAGE_PROTECT is SDKHook-only — no queue registration needed
 
     // Initialize rescue global state
