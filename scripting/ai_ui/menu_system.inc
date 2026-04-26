@@ -148,6 +148,9 @@ void AIMenu_ShowModules(int client) {
     Format(buf, sizeof(buf), "背物资 [%s]", g_bBackpackEnabled ? "开" : "关");
     menu.AddItem("backpack", buf);
 
+    Format(buf, sizeof(buf), "物资管理 [%s]", g_bSupplyEnabled ? "开" : "关");
+    menu.AddItem("supply", buf);
+
     menu.AddItem("back", "返回主菜单");
 
     menu.ExitButton = false;
@@ -166,44 +169,58 @@ public int AIMenu_ModulesHandler(Menu menu, MenuAction action, int param1, int p
 
         char name[32];
         if (StrEqual(item, "rescue")) {
-            g_cvRescueEnabled.SetBool(!g_bRescueEnabled);
-            AIMenu_PersistBool("ai_rescue_enabled", !g_bRescueEnabled);
+            bool newVal = !g_bRescueEnabled;
+            g_cvRescueEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_rescue_enabled", newVal);
             strcopy(name, sizeof(name), "救援模块");
         }
         else if (StrEqual(item, "heal")) {
-            g_cvHealEnabled.SetBool(!g_bHealEnabled);
-            AIMenu_PersistBool("ai_heal_enabled", !g_bHealEnabled);
+            bool newVal = !g_bHealEnabled;
+            g_cvHealEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_heal_enabled", newVal);
             strcopy(name, sizeof(name), "治疗模块");
         }
         else if (StrEqual(item, "throw")) {
-            g_cvThrowableEnabled.SetBool(!g_bThrowableEnabled);
-            AIMenu_PersistBool("ai_throwable_enabled", !g_bThrowableEnabled);
+            bool newVal = !g_bThrowableEnabled;
+            g_cvThrowableEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_throwable_enabled", newVal);
             strcopy(name, sizeof(name), "投掷物模块");
         }
         else if (StrEqual(item, "melee")) {
-            g_cvMeleeEnabled.SetBool(!g_bMeleeEnabled);
-            AIMenu_PersistBool("ai_melee_enabled", !g_bMeleeEnabled);
+            bool newVal = !g_bMeleeEnabled;
+            g_cvMeleeEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_melee_enabled", newVal);
             strcopy(name, sizeof(name), "近战模块");
         }
         else if (StrEqual(item, "gas")) {
-            g_cvFindGasEnabled.SetBool(!g_bFindGasEnabled);
-            AIMenu_PersistBool("ai_findgas_enabled", !g_bFindGasEnabled);
+            bool newVal = !g_bFindGasEnabled;
+            g_cvFindGasEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_findgas_enabled", newVal);
             strcopy(name, sizeof(name), "寻油模块");
         }
         else if (StrEqual(item, "defib")) {
-            g_cvDefibEnabled.SetBool(!g_bDefibEnabled);
-            AIMenu_PersistBool("ai_defib_enabled", !g_bDefibEnabled);
+            bool newVal = !g_bDefibEnabled;
+            g_cvDefibEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_defib_enabled", newVal);
             strcopy(name, sizeof(name), "除颤器");
         }
         else if (StrEqual(item, "upgrade")) {
-            g_cvUpgradeEnabled.SetBool(!g_bUpgradeEnabled);
-            AIMenu_PersistBool("ai_upgrade_enabled", !g_bUpgradeEnabled);
+            bool newVal = !g_bUpgradeEnabled;
+            g_cvUpgradeEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_upgrade_enabled", newVal);
             strcopy(name, sizeof(name), "升级包");
         }
         else if (StrEqual(item, "backpack")) {
-            g_cvBackpackEnabled.SetBool(!g_bBackpackEnabled);
-            AIMenu_PersistBool("ai_backpack_enabled", !g_bBackpackEnabled);
+            bool newVal = !g_bBackpackEnabled;
+            g_cvBackpackEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_backpack_enabled", newVal);
             strcopy(name, sizeof(name), "背物资");
+        }
+        else if (StrEqual(item, "supply")) {
+            bool newVal = !g_bSupplyEnabled;
+            g_cvSupplyEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_supply_enabled", newVal);
+            strcopy(name, sizeof(name), "物资管理");
         }
 
         PrintToChat(param1, "\x04[AI Bot]\x01 %s 已切换", name);
@@ -314,23 +331,27 @@ public int AIMenu_ProtectionHandler(Menu menu, MenuAction action, int param1, in
 
         char name[32];
         if (StrEqual(item, "protect")) {
-            g_cvProtectEnabled.SetBool(!g_bProtectEnabled);
-            AIMenu_PersistBool("ai_protect_enabled", !g_bProtectEnabled);
+            bool newVal = !g_bProtectEnabled;
+            g_cvProtectEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_protect_enabled", newVal);
             strcopy(name, sizeof(name), "免疫秒杀");
         }
         else if (StrEqual(item, "immunity")) {
-            g_cvImmunityEnabled.SetBool(!g_bImmunityEnabled);
-            AIMenu_PersistBool("ai_immunity_enabled", !g_bImmunityEnabled);
+            bool newVal = !g_bImmunityEnabled;
+            g_cvImmunityEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_immunity_enabled", newVal);
             strcopy(name, sizeof(name), "免疫黑枪");
         }
         else if (StrEqual(item, "pathfind")) {
-            g_cvPathfindingEnabled.SetBool(!g_bPathfindingEnabled);
-            AIMenu_PersistBool("ai_pathfinding_enabled", !g_bPathfindingEnabled);
+            bool newVal = !g_bPathfindingEnabled;
+            g_cvPathfindingEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_pathfinding_enabled", newVal);
             strcopy(name, sizeof(name), "寻路开关");
         }
         else if (StrEqual(item, "unstick")) {
-            g_cvUnstickEnabled.SetBool(!g_bUnstickEnabled);
-            AIMenu_PersistBool("ai_unstick_enabled", !g_bUnstickEnabled);
+            bool newVal = !g_bUnstickEnabled;
+            g_cvUnstickEnabled.SetBool(newVal);
+            AIMenu_PersistBool("ai_unstick_enabled", newVal);
             strcopy(name, sizeof(name), "卡住传送");
         }
 

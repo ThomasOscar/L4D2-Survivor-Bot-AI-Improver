@@ -134,6 +134,9 @@ bool AICommand_HandleChat(int client, const char[] message) {
     if (StrEqual(cmd, "!botdefib", false))
         return AICommand_Toggle(client, g_cvDefibEnabled, "除颤器");
 
+    if (StrEqual(cmd, "!botsupply", false))
+        return AICommand_Toggle(client, g_cvSupplyEnabled, "物资管理");
+
     // --- Special commands ---
     if (StrEqual(cmd, "!botstop", false)) {
         PrintToChat(client, "\x04[AI Bot]\x01 Bot停止功能尚未实现");
@@ -167,6 +170,7 @@ static bool AICommand_Skill(int client, const char[] arg) {
     }
 
     g_cvBotSkillLevel.SetInt(val - 1);  // User 1-5 → Internal 0-4
+    AIMenu_PersistInt("ai_bot_skill", val - 1);
     PrintToChat(client, "\x04[AI Bot]\x01 技能等级已设为: %d", val);
     return true;
 }
@@ -203,6 +207,12 @@ static bool AICommand_FloatParam(int client, const char[] arg, ConVar cv,
     }
 
     cv.SetFloat(val);
+
+    // Persist to cfg file
+    char cvarName[64];
+    cv.GetName(cvarName, sizeof(cvarName));
+    AIMenu_PersistFloat(cvarName, val);
+
     PrintToChat(client, "\x04[AI Bot]\x01 %s已设为: %.1f", name, val);
     return true;
 }
@@ -222,6 +232,12 @@ static bool AICommand_FloatParam(int client, const char[] arg, ConVar cv,
 static bool AICommand_Toggle(int client, ConVar cv, const char[] name) {
     bool newVal = !cv.BoolValue;
     cv.SetBool(newVal);
+
+    // Persist to cfg file
+    char cvarName[64];
+    cv.GetName(cvarName, sizeof(cvarName));
+    AIMenu_PersistBool(cvarName, newVal);
+
     PrintToChat(client, "\x04[AI Bot]\x01 %s: %s", name, newVal ? "开启" : "关闭");
     return true;
 }
