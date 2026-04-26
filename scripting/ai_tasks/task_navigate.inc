@@ -55,13 +55,31 @@ static bool g_bDefibNearby = false;                 // Cached result of DefibExi
 // ============================================================
 
 /**
- * Check if any survivor teammate (human or bot) is dead and could be rescued from a closet.
+ * Check if any survivor teammate is dead AND actually placed in a rescue closet
+ * waiting for someone to open the door. In L4D2, not all dead players get placed
+ * in closets — only when the Director creates rescuable survivors ahead.
+ */
+static bool TaskNavigate_AnyTeammateInRescueCloset() {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (IsPlayerAlive(i)) continue;
+        // Only count dead players who are actually waiting in a rescue closet
+        if (HasEntProp(i, Prop_Send, "m_isWaitingToRescue")) {
+            if (GetEntProp(i, Prop_Send, "m_isWaitingToRescue") != 0) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Check if any survivor teammate is dead (for defib/revive purposes).
  */
 static bool TaskNavigate_AnyTeammateDead() {
     for (int i = 1; i <= MaxClients; i++) {
         if (!IsClientInGame(i)) continue;
         if (GetClientTeam(i) != 2) continue;
-        if (!IsPlayerAlive(i)) return true;  // Dead survivor = in rescue closet
+        if (!IsPlayerAlive(i)) return true;
     }
     return false;
 }
@@ -405,8 +423,12 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
 
         if (isLeader) {
             // Leader bot: push forward aggressively
-            // If we have a rescue closet target, navigate toward it
-            TaskNavigate_FindRescueCloset();
+            // Navigate to rescue closet only if a teammate is actually waiting inside
+            if (TaskNavigate_AnyTeammateInRescueCloset()) {
+                TaskNavigate_FindRescueCloset();
+            } else {
+                g_bHasRescueCloset = false;
+            }
 
             if (g_bHasRescueCloset) {
                 // Navigate toward rescue closet and open it
@@ -421,19 +443,51 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                     AI_SnapViewToPosition(client, g_fRescueClosetPos, g_BotState[client].eyePos, g_BotState[client].eyeAngles);
                 }
             } else {
-                // No rescue closet found — just push forward along the map
-                // Use the leader's own forward direction to advance
-                float fwd[3];
-                GetAngleVectors(g_BotState[client].eyeAngles, fwd, NULL_VECTOR, NULL_VECTOR);
-                fwd[2] = 0.0;
-                float fwdLen = GetVectorLength(fwd);
-                if (fwdLen > 0.1) {
-                    // Compute a target point ahead of the leader
-                    float targetPos[3];
-                    targetPos[0] = g_BotState[client].absOrigin[0] + fwd[0] / fwdLen * 200.0;
-                    targetPos[1] = g_BotState[client].absOrigin[1] + fwd[1] / fwdLen * 200.0;
-                    targetPos[2] = g_BotState[client].absOrigin[2];
-                    AI_ComputeMoveToward(client, targetPos, g_BotState[client].absOrigin,
+                // No rescue closet target — push forward along the map
+                // Use flow distance to find the best forward direction: sample points
+                // around the bot and move toward the one with the highest flow distance.
+                float bestTarget[3];
+                bool foundForward = false;
+                float myFlow = L4D2Direct_GetFlowDistance(client);
+                float bestFlow = myFlow;
+
+                // Sample 8 directions around the bot
+                for (int dir = 0; dir < 8; dir++) {
+                    float angle = float(dir) * 45.0;
+                    float dirVec[3];
+                    dirVec[0] = Cosine(DegToRad(angle));
+                    dirVec[1] = Sine(DegToRad(angle));
+                    dirVec[2] = 0.0;
+
+                    float samplePos[3];
+                    samplePos[0] = g_BotState[client].absOrigin[0] + dirVec[0] * 300.0;
+                    samplePos[1] = g_BotState[client].absOrigin[1] + dirVec[1] * 300.0;
+                    samplePos[2] = g_BotState[client].absOrigin[2];
+
+                    // Check this direction isn't blocked by a wall
+                    Handle trace = TR_TraceRayFilterEx(g_BotState[client].absOrigin, samplePos,
+                                                        MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint,
+                                                        AI_TraceFilter_NoPlayers, 0);
+                    if (TR_DidHit(trace)) {
+                        delete trace;
+                        continue;  // Blocked by wall, skip this direction
+                    }
+                    delete trace;
+
+                    // Check flow distance at this point
+                    Address navArea = L4D2Direct_GetTerrorNavArea(samplePos);
+                    if (navArea != Address_Null) {
+                        float sampleFlow = L4D2Direct_GetTerrorNavAreaFlow(navArea);
+                        if (sampleFlow > bestFlow) {
+                            bestFlow = sampleFlow;
+                            bestTarget = samplePos;
+                            foundForward = true;
+                        }
+                    }
+                }
+
+                if (foundForward) {
+                    AI_ComputeMoveToward(client, bestTarget, g_BotState[client].absOrigin,
                                           g_BotState[client].eyeAngles, vel);
                 }
             }
@@ -505,10 +559,9 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
         }
     }
 
-    // === Step 2.5: Navigate toward rescue closet if any teammate is dead ===
-    // This works in ALL modes, not just aggressive mode.
-    // If a teammate (human or bot) is dead, bots should seek rescue closets.
-    if (TaskNavigate_AnyTeammateDead()) {
+    // === Step 2.5: Navigate toward rescue closet if a teammate is actually waiting inside ===
+    // Only navigate when someone is in a rescue closet (m_isWaitingToRescue), not just dead.
+    if (TaskNavigate_AnyTeammateInRescueCloset()) {
         TaskNavigate_FindRescueCloset();
         if (g_bHasRescueCloset) {
             float closetDist = AI_GetVectorDistance(g_BotState[client].absOrigin, g_fRescueClosetPos);
