@@ -55,6 +55,18 @@ static bool g_bDefibNearby = false;                 // Cached result of DefibExi
 // ============================================================
 
 /**
+ * Check if any survivor teammate (human or bot) is dead and could be rescued from a closet.
+ */
+static bool TaskNavigate_AnyTeammateDead() {
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        if (!IsPlayerAlive(i)) return true;  // Dead survivor = in rescue closet
+    }
+    return false;
+}
+
+/**
  * Check if any human survivor is alive.
  */
 static bool TaskNavigate_AnyHumanAlive() {
@@ -195,13 +207,32 @@ static void TaskNavigate_FindRescueCloset() {
     if ((curTime - g_fLastClosetCheckTime) < NAV_RESCUE_CLOSET_CHECK_INTERVAL) return;
     g_fLastClosetCheckTime = curTime;
 
-    // Get leader position as reference
-    if (g_iLeaderBot <= 0 || !IsClientInGame(g_iLeaderBot) || !IsPlayerAlive(g_iLeaderBot)) {
+    // Get reference position: leader bot in aggressive mode, or most-forward alive survivor
+    float refPos[3];
+    bool hasRef = false;
+
+    if (g_bAggressiveLeaderMode && g_iLeaderBot > 0 && IsClientInGame(g_iLeaderBot) && IsPlayerAlive(g_iLeaderBot)) {
+        GetClientAbsOrigin(g_iLeaderBot, refPos);
+        hasRef = true;
+    } else {
+        // Find the most-forward alive survivor as reference
+        float bestFlow = -1.0;
+        for (int i = 1; i <= MaxClients; i++) {
+            if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+            if (GetClientTeam(i) != 2) continue;
+            float flow = L4D2Direct_GetFlowDistance(i);
+            if (flow > bestFlow) {
+                bestFlow = flow;
+                GetClientAbsOrigin(i, refPos);
+                hasRef = true;
+            }
+        }
+    }
+
+    if (!hasRef) {
         g_bHasRescueCloset = false;
         return;
     }
-    float leaderPos[3];
-    GetClientAbsOrigin(g_iLeaderBot, leaderPos);
 
     float bestDist = NAV_RESCUE_CLOSET_SEARCH_RANGE;
     g_bHasRescueCloset = false;
@@ -215,7 +246,7 @@ static void TaskNavigate_FindRescueCloset() {
 
         float closetPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", closetPos);
-        float dist = AI_GetVectorDistance(leaderPos, closetPos);
+        float dist = AI_GetVectorDistance(refPos, closetPos);
 
         if (dist < bestDist) {
             // Check that closet is AHEAD of leader (higher flow), not behind
@@ -227,7 +258,7 @@ static void TaskNavigate_FindRescueCloset() {
     }
 
     if (g_bDebugMode && g_bHasRescueCloset) {
-        PrintToServer("[AI Bot] Rescue closet found at (%.0f, %.0f, %.0f), dist=%.0f from leader",
+        PrintToServer("[AI Bot] Rescue closet found at (%.0f, %.0f, %.0f), dist=%.0f",
             g_fRescueClosetPos[0], g_fRescueClosetPos[1], g_fRescueClosetPos[2], bestDist);
     }
 }
@@ -469,6 +500,20 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
         }
     }
 
+    // === Step 2.5: Navigate toward rescue closet if any teammate is dead ===
+    // This works in ALL modes, not just aggressive mode.
+    // If a teammate (human or bot) is dead, bots should seek rescue closets.
+    if (TaskNavigate_AnyTeammateDead()) {
+        TaskNavigate_FindRescueCloset();
+        if (g_bHasRescueCloset) {
+            float closetDist = AI_GetVectorDistance(g_BotState[client].absOrigin, g_fRescueClosetPos);
+            if (closetDist > NAV_FOLLOW_CLOSE) {
+                AI_ComputeMoveToward(client, g_fRescueClosetPos, g_BotState[client].absOrigin,
+                                      g_BotState[client].eyeAngles, vel);
+            }
+        }
+    }
+
     // === Step 3: Spread out if bunched with other bots ===
     TaskNavigate_Spread(client, vel);
 
@@ -582,8 +627,25 @@ static int TaskNavigate_FindLeader(int client) {
             if (client == g_iLeaderBot) return -1;
             return g_iLeaderBot;
         }
-        // Leader is dead/incapped — re-elect
+        // Leader is dead/incapped — re-elect a new leader immediately
         g_iLeaderBot = -1;
+        float bestFlow = -1.0;
+        for (int i = 1; i <= MaxClients; i++) {
+            if (!IsClientInGame(i) || !IsFakeClient(i)) continue;
+            if (GetClientTeam(i) != 2 || !IsPlayerAlive(i)) continue;
+            if (GetEntProp(i, Prop_Send, "m_isIncapacitated") != 0) continue;
+            float flow = L4D2Direct_GetFlowDistance(i);
+            if (flow > bestFlow) {
+                bestFlow = flow;
+                g_iLeaderBot = i;
+            }
+        }
+        if (g_iLeaderBot > 0) {
+            AI_DebugDecision(g_iLeaderBot, "New leader elected (previous leader died)");
+            if (client == g_iLeaderBot) return -1;
+            return g_iLeaderBot;
+        }
+        // No valid leader found — fall through to normal logic
         g_bAggressiveLeaderMode = false;
     }
 

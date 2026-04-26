@@ -17,11 +17,13 @@
 #define WEAPON_SWITCH_COOLDOWN  2.0     // Don't switch too fast
 #define WEAPON_AMMO_EMERGENCY_TIME 20.0 // Seconds with no ammo before emergency refill
 #define WEAPON_AMMO_CHECK_INTERVAL 5.0  // How often to check ammo status
+#define WEAPON_AMMO_REFILL_COOLDOWN 60.0 // Cooldown between emergency refills per bot
 
 // Per-bot weapon state
 static float g_fWeaponLastSwitchTime[MAXPLAYERS + 1];
 static float g_fWeaponAmmoEmptyTime[MAXPLAYERS + 1];   // When ammo first became empty
 static float g_fWeaponLastAmmoCheck[MAXPLAYERS + 1];    // Last ammo status check time
+static float g_fLastEmergencyRefill[MAXPLAYERS + 1];    // Last emergency refill time
 
 /**
  * Check if weapon task should activate for this bot.
@@ -121,12 +123,22 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
                     }
 
                     if (!hasNearbyAmmo && !hasNearbyWeapon) {
-                        // Emergency: refill one magazine of ammo
-                        int maxClip = TaskWeapon_GetMaxClip(primary);
-                        if (maxClip > 0) {
-                            SetEntProp(primary, Prop_Send, "m_iClip1", maxClip);
-                            g_fWeaponAmmoEmptyTime[client] = 0.0;  // Reset timer
-                            AI_DebugDecision(client, "Emergency ammo refill +%d rounds", maxClip);
+                        // Emergency: refill clip + reserve ammo
+                        // Cooldown: don't refill the same bot more than once per minute
+                        if ((curTime - g_fLastEmergencyRefill[client]) < WEAPON_AMMO_REFILL_COOLDOWN) {
+                            // Still on cooldown, skip
+                        } else {
+                            int maxClip = TaskWeapon_GetMaxClip(primary);
+                            if (maxClip > 0) {
+                                SetEntProp(primary, Prop_Send, "m_iClip1", maxClip);
+                                // Also refill reserve ammo so bot doesn't immediately run out again
+                                if (HasEntProp(primary, Prop_Send, "m_iPrimaryAmmoCount")) {
+                                    SetEntProp(primary, Prop_Send, "m_iPrimaryAmmoCount", maxClip * 3);
+                                }
+                                g_fWeaponAmmoEmptyTime[client] = 0.0;
+                                g_fLastEmergencyRefill[client] = curTime;
+                                AI_DebugDecision(client, "Emergency ammo refill +%d clip +%d reserve", maxClip, maxClip * 3);
+                            }
                         }
                     }
                 }
