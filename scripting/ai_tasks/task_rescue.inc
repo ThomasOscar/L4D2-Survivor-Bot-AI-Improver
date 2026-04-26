@@ -188,17 +188,18 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
     float rescueDist = AI_GetVectorDistance(g_BotState[client].absOrigin, victimPos);
     float rescueElapsed = GetGameTime() - g_BotState[client].taskStartTime;
 
-    if (rescueDist > g_fTeleportRange && rescueElapsed > g_fSaveTeleportTime) {
-        float telePos[3];
-        telePos[0] = victimPos[0] + GetRandomFloat(-80.0, 80.0);
-        telePos[1] = victimPos[1] + GetRandomFloat(-80.0, 80.0);
-        telePos[2] = victimPos[2] + 10.0;
-
-        TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
-        g_BotState[client].taskStartTime = GetGameTime(); // Reset to prevent repeated teleports
-
+    // Check if should abandon (teleport failed too many times)
+    if (AI_ShouldAbandonNavigation(client)) {
         if (g_bDebugMode) {
-            PrintToServer("[AI Bot] Rescue teleport: bot %d -> target %d (dist=%.0f)", client, victim, rescueDist);
+            PrintToServer("[AI Bot] Rescue abandon: bot %d failed to reach target %d after %d teleports", client, victim, g_BotState[client].teleportAttempts);
+        }
+        TaskRescue_Reset(client);
+        return false;
+    }
+
+    if (AI_TryStuckTeleport(client, victimPos, rescueDist, rescueElapsed, g_fTeleportRange, g_fSaveTeleportTime)) {
+        if (g_bDebugMode) {
+            PrintToServer("[AI Bot] Rescue teleport: bot %d -> target %d (dist=%.0f, attempt=%d)", client, victim, rescueDist, g_BotState[client].teleportAttempts);
         }
     }
 
@@ -276,6 +277,7 @@ void TaskRescue_Reset(int client) {
     g_BotState[client].rescueTarget = -1;
     g_BotState[client].rescueAttacker = -1;
     g_BotState[client].isRescuing = false;
+    AI_ResetTeleportState(client);
 
     // Clear any assignments where this bot is the rescuer
     for (int v = 1; v <= MaxClients; v++) {
