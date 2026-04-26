@@ -328,7 +328,7 @@ static bool TaskWeapon_IsShotgun(const char[] classname) {
  */
 static int TaskWeapon_GetMaxClip(int weapon) {
     if (!IsValidEntity(weapon)) return 0;
-    if (!HasEntProp(weapon, Prop_Data, "m_iClip1")) return 0;
+    if (!HasEntProp(weapon, Prop_Send, "m_iClip1")) return 0;
 
     // Use Prop_Send for m_iPrimaryAmmoType, then lookup max clip
     // Simplified: check common weapon clip sizes

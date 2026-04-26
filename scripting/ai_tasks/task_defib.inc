@@ -157,17 +157,15 @@ bool TaskDefib_ShouldUpdate(int client) {
 
         // Get distance to death position
         float bDist = 999999.0;
-        int deadTarget = -1;
         for (int d = 1; d <= MaxClients; d++) {
             if (d == b) continue;
             if (!IsClientInGame(d) || GetClientTeam(d) != 2) continue;
             if (IsPlayerAlive(d)) continue;
-            deadTarget = d;
             float deathPos[3];
             if (g_bHasDeathPosition[d]) {
                 deathPos = g_fDeathPosition[d];
             } else {
-                GetClientAbsOrigin(d, deathPos);
+                deathPos = g_fLastGroundPosition[d];
             }
             float d2 = AI_GetVectorDistance(g_BotState[b].absOrigin, deathPos);
             if (d2 < bDist) bDist = d2;
@@ -189,7 +187,7 @@ bool TaskDefib_ShouldUpdate(int client) {
                 g_fLastFindNearestTime[b] = curTime2;
             }
             int nearDefib = g_iCachedFindNearest[b];
-            if (nearDefib != -1) {
+            if (nearDefib != -1 && IsValidEntity(nearDefib)) {
                 float defibPos[3];
                 GetEntPropVector(nearDefib, Prop_Data, "m_vecAbsOrigin", defibPos);
                 float d2 = AI_GetVectorDistance(g_BotState[b].absOrigin, defibPos);
@@ -224,7 +222,7 @@ bool TaskDefib_ShouldUpdate(int client) {
             if (g_bHasDeathPosition[d]) {
                 deathPos = g_fDeathPosition[d];
             } else {
-                GetClientAbsOrigin(d, deathPos);
+                deathPos = g_fLastGroundPosition[d];
             }
             if (AI_IsDangerNearPosition(deathPos, DEFIB_ACID_RANGE, DEFIB_TANK_RANGE)) {
                 if (g_bDebugMode) {
@@ -293,7 +291,7 @@ bool TaskDefib_ShouldUpdate(int client) {
         g_fLastFindNearestTime[client] = curTime3;
     }
     int defibEnt = g_iCachedFindNearest[client];
-    if (defibEnt != -1) {
+    if (defibEnt != -1 && IsValidEntity(defibEnt)) {
         g_iDefibSearchTarget[client] = defibEnt;
         g_bDefibSearchMode[client] = true;
         g_fDefibSearchStartTime[client] = GetGameTime();
@@ -480,8 +478,8 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
             if (now - g_fLastDefibMoveLog[client] >= 2.0) {
                 g_fLastDefibMoveLog[client] = now;
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                float elapsed = now - g_fDefibSearchStartTime[client];
-                PrintToServer("[AI Bot DEBUG] %s ModeB: moving to defib (dist=%.0f, elapsed=%.0fs, ent=%d)", dbgN, dist, elapsed, searchTarget);
+                float dbgElapsed = now - g_fDefibSearchStartTime[client];
+                PrintToServer("[AI Bot DEBUG] %s ModeB: moving to defib (dist=%.0f, elapsed=%.0fs, ent=%d)", dbgN, dist, dbgElapsed, searchTarget);
             }
         }
         return true;  // LOCK while moving - prevents Heal/Combat from overriding
@@ -496,7 +494,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         if (g_bHasDeathPosition[target]) {
             checkDeathPos = g_fDeathPosition[target];
         } else {
-            GetClientAbsOrigin(target, checkDeathPos);
+            checkDeathPos = g_fLastGroundPosition[target];
         }
         if (AI_IsDangerNearPosition(checkDeathPos, DEFIB_ACID_RANGE, DEFIB_TANK_RANGE)) {
             if (g_bDebugMode) {
@@ -536,7 +534,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
     if (g_bHasDeathPosition[target]) {
         defibPos = g_fDeathPosition[target];
     } else {
-        GetClientAbsOrigin(target, defibPos);
+        defibPos = g_fLastGroundPosition[target];
     }
 
     float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, defibPos);

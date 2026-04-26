@@ -190,6 +190,15 @@ float g_fLastGroundPosition[MAXPLAYERS + 1][3];
  */
 void ResetAllBotStates() {
     for (int i = 0; i <= MaxClients; i++) {
+        // CRITICAL: Clear FL_FROZEN from entity flags before resetting state.
+        // If plugin reloads while a bot is frozen for healing, the entity flag persists
+        // but the BotState (isFrozenForHeal) is reset, so TaskHeal_Reset would never clear it.
+        if (i > 0 && IsClientInGame(i) && g_BotState[i].isFrozenForHeal) {
+            int flags = GetEntityFlags(i);
+            if ((flags & FL_FROZEN) != 0) {
+                SetEntityFlags(i, flags & ~FL_FROZEN);
+            }
+        }
         g_BotState[i].Reset();
     }
 }
