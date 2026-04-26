@@ -784,6 +784,7 @@ static float g_fRescueFailResetTime[MAXPLAYERS+1];     // Time to reset fail cou
 static int   g_iBot_PropTarget[MAXPLAYERS+1];          // Prop entity bot wants to pick up
 static float g_fBot_PropScanTime[MAXPLAYERS+1];        // Last prop scan time
 static float g_fBot_PropThrowTime[MAXPLAYERS+1];       // Cooldown for throwing props
+static float g_fRescueActionCooldown[MAXPLAYERS+1];     // Phase 5.2: Cooldown between rescue actions
 
 // -------------------------
 
@@ -3306,13 +3307,11 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		{
 			SnapViewToPosition(iClient, fIncapPos);
 			iButtons |= IN_USE;
-			return iAliveBots;
 		}
 		else if (fIncapDist <= 360000.0)  // 600 单位内，移动过去
 		{
 			ClearMoveToPosition(iClient);
 			SetMoveToPosition(iClient, fIncapPos, 5, "Rescue_Incap", 0.0, 50.0, true, true);
-			return iAliveBots;
 		}
 	}
 
@@ -3423,7 +3422,7 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		GetTargetAimPart(iClient, iPinnedAttacker, fAttackerAimPos);			
 
 		float fFriendDist = GetVectorDistance(g_fClientEyePos[iClient], g_fClientCenteroid[iPinnedFriend], true);
-		bool bCanShoot = (g_iCvar_HelpPinnedFriend_Enabled & (1 << 0) != 0);
+		bool bCanShoot = ((g_iCvar_HelpPinnedFriend_Enabled & (1 << 0)) != 0);
 		if (bCanShoot)
 		{
 			bCanShoot = (iCurWeapon && fFriendDist <= g_fCvar_HelpPinnedFriend_ShootRange_Sqr
@@ -3433,7 +3432,7 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 
 		int iCanShove;
-		if (g_iCvar_HelpPinnedFriend_Enabled & (1 << 1) != 0)
+		if ((g_iCvar_HelpPinnedFriend_Enabled & (1 << 1)) != 0)
 			iCanShove = (fFriendDist <= g_fCvar_HelpPinnedFriend_ShoveRange_Sqr ? 1 : (GetVectorDistance(g_fClientEyePos[iClient], g_fClientCenteroid[iPinnedAttacker], true) <= g_fCvar_HelpPinnedFriend_ShoveRange_Sqr ? 2 : 0));
 
 		L4D2ZombieClassType iZombieClass = L4D2_GetPlayerZombieClass(iPinnedAttacker);
@@ -4263,6 +4262,12 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		}
 	}
 
+	// ============ Phase 5.2: Comprehensive SI Rescue (HIGHEST PRIORITY) ============
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
+	{
+		if (Phase52_RescuePinnedTeammate(iClient, iButtons)) return iAliveBots;
+	}
+
 	// ============ Phase2: Smart Retreat (highest priority, affects team behavior) ============
 	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom)
 		Phase2_SmartRetreat(iClient);
@@ -4286,6 +4291,10 @@ int SurvivorBotThink(int iClient, int &iButtons, int iWpnSlots[6], int iInvFlags
 		Phase3_TankRockDodge(iClient); // Rock dodge (non-blocking)
 		Phase3_WitchControl(iClient); // Witch handling
 	}
+
+	// ============ Phase 5.2: Prop Carry/Throw (low priority) ============
+	if (g_hCvar_PhaseEnabled.IntValue > 0 && !bInStartingSaferoom && !g_iBot_PinnedFriend[iClient])
+		Phase52_PropCarryThrow(iClient, iButtons);
 
 	return iAliveBots;
 }
@@ -4989,7 +4998,7 @@ bool CheckCanThrowGrenade(int iClient, int iTarget, int iGrenadeType, float fThr
 		return false;
 
 	int iGrenadeBit = (iGrenadeType == 2 ? 1 : iGrenadeType == 3 ? 2 : 0);
-	if (g_iCvar_GrenadeThrow_GrenadeTypes & (1 << iGrenadeBit) == 0)
+	if ((g_iCvar_GrenadeThrow_GrenadeTypes & (1 << iGrenadeBit)) == 0)
 		return false;
 
 	if (iGrenadeType == 2) 
@@ -5028,13 +5037,22 @@ bool CheckCanThrowGrenade(int iClient, int iTarget, int iGrenadeType, float fThr
 					return false;
 			}
 		}
-		else if (iGrenadeType == 3 && bIsThrowTargetTank)
+		else if (iGrenadeType == 3)
 		{
-			if (GetGameTime() <= g_fInfectedBot_CoveredInVomitTime[iTarget])
-				return false;
+			if (bIsThrowTargetTank)
+			{
+				if (GetGameTime() <= g_fInfectedBot_CoveredInVomitTime[iTarget])
+					return false;
 
-			if (GetInfectedCount(iTarget, g_fCvar_ChaseBileRange, 10, _, false) < 10)
-				return false;
+				if (GetInfectedCount(iTarget, g_fCvar_ChaseBileRange, 10, _, false) < 10)
+					return false;
+			}
+			else
+			{
+				// Allow bile when surrounded by 5+ nearby infected
+				if (g_iBot_NearbyInfectedCount[iClient] < 5)
+					return false;
+			}
 		}
 	}
 
@@ -5089,7 +5107,8 @@ bool CheckIsUnableToThrowGrenade(int iClient, int iTarget, int iGrenadeType, flo
 	}
 	else if (iGrenadeType == 2)
 	{
-		if (!bIsThrowTargetTank && !g_bCvar_Nightmare)
+		// Molotov: allow at Tank, Nightmare, OR large horde (8+ visible infected)
+		if (!bIsThrowTargetTank && !g_bCvar_Nightmare && g_iBot_GrenadeInfectedCount[iClient] < 8)
 			return true;
 
 		if (g_bBot_IsFriendNearThrowArea[iClient])
@@ -5104,13 +5123,23 @@ bool CheckIsUnableToThrowGrenade(int iClient, int iTarget, int iGrenadeType, flo
 		if (GetVectorDistance(g_fClientAbsOrigin[iClient], fThrowPos, true) <= BOT_GRENADE_CHECK_RADIUS_SQR)
 			return true;
 	}
-	else if (iGrenadeType == 3 && bIsThrowTargetTank)
+	else if (iGrenadeType == 3)
 	{
-		if (GetGameTime() <= g_fInfectedBot_CoveredInVomitTime[iTarget])
-			return true;
+		// Bile jar: allow at Tank with enough nearby infected, OR when surrounded (5+ attackers)
+		if (bIsThrowTargetTank)
+		{
+			if (GetGameTime() <= g_fInfectedBot_CoveredInVomitTime[iTarget])
+				return true;
 
-		if (GetInfectedCount(iTarget, g_fCvar_ChaseBileRange, 10, _, false) < 10)
-			return true;
+			if (GetInfectedCount(iTarget, g_fCvar_ChaseBileRange, 10, _, false) < 10)
+				return true;
+		}
+		else
+		{
+			// Allow bile when surrounded by 5+ nearby infected
+			if (g_iBot_NearbyInfectedCount[iClient] < 5)
+				return true;
+		}
 	}
 
 	if ((bIsThrowTargetTank || g_bCvar_Nightmare) && !IsVisibleEntity(iClient, iTarget, MASK_SHOT_HULL))
@@ -14430,6 +14459,420 @@ bool Phase3_IsFacingSurvivor(int iInfected)
 			return true;
 	}
 
+	return false;
+}
+
+// ============================================================
+// Phase 5.2: Comprehensive SI Rescue System
+// ============================================================
+// Detects ALL types of special infected pinning teammates
+// (Smoker, Hunter, Jockey, Charger drag/pummel) and rescues.
+// Priority: Smoker >= Charger > Hunter > Jockey
+// ============================================================
+
+/**
+ * Returns SI control type on a survivor.
+ * 0=free, 1=Smoker, 2=Hunter, 3=Jockey, 4=Charger drag, 5=Charger pummel
+ */
+int GetTeammateControlledBy(int iSurvivor)
+{
+	if (!IsClientInGame(iSurvivor) || !IsPlayerAlive(iSurvivor))
+		return 0;
+
+	if (GetEntPropEnt(iSurvivor, Prop_Send, "m_tongueOwner") != -1)
+		return 1; // Smoker
+	if (GetEntPropEnt(iSurvivor, Prop_Send, "m_pounceAttacker") != -1)
+		return 2; // Hunter
+	if (GetEntPropEnt(iSurvivor, Prop_Send, "m_jockeyAttacker") != -1)
+		return 3; // Jockey
+	if (GetEntPropEnt(iSurvivor, Prop_Send, "m_carryAttacker") != -1)
+		return 4; // Charger drag
+	if (GetEntPropEnt(iSurvivor, Prop_Send, "m_pummelAttacker") != -1)
+		return 5; // Charger pummel
+
+	return 0;
+}
+
+/**
+ * Get the attacker entity for a pinned survivor.
+ */
+int GetPinAttacker(int iSurvivor, int iPinType)
+{
+	switch (iPinType)
+	{
+		case 1: return GetEntPropEnt(iSurvivor, Prop_Send, "m_tongueOwner");
+		case 2: return GetEntPropEnt(iSurvivor, Prop_Send, "m_pounceAttacker");
+		case 3: return GetEntPropEnt(iSurvivor, Prop_Send, "m_jockeyAttacker");
+		case 4: return GetEntPropEnt(iSurvivor, Prop_Send, "m_carryAttacker");
+		case 5: return GetEntPropEnt(iSurvivor, Prop_Send, "m_pummelAttacker");
+	}
+	return -1;
+}
+
+/**
+ * Get rescue priority for a pin type. Higher = more urgent.
+ */
+int GetPinPriority(int iPinType)
+{
+	switch (iPinType)
+	{
+		case 1: return 10; // Smoker - continuous damage, pulls away
+		case 5: return 9;  // Charger pummel - high damage
+		case 4: return 8;  // Charger drag - moving target
+		case 2: return 7;  // Hunter - pounce damage
+		case 3: return 6;  // Jockey - controllable
+	}
+	return 0;
+}
+
+/**
+ * Check if bot is in a long interruptible action (healing, reviving, etc.)
+ */
+bool IsBotInLongAction(int iClient)
+{
+	L4D2UseAction iUseAction = L4D2_GetPlayerUseAction(iClient);
+	if (iUseAction == L4D2UseAction_None)
+		return false;
+	
+	// Check if progress bar is actually active
+	float fStartTime = GetEntPropFloat(iClient, Prop_Send, "m_flProgressBarStartTime");
+	if (fStartTime <= 0.0)
+		return false;  // No progress bar, state may not be reset
+	
+	float fElapsed = GetGameTime() - fStartTime;
+	if (fElapsed > 10.0)
+		return false;  // Over 10s, state is stale, ignore
+	
+	return true;
+}
+
+/**
+ * Comprehensive SI rescue: handles Smoker, Hunter, Jockey, Charger.
+ * Returns true if bot is actively performing a rescue (blocks other behavior).
+ */
+bool Phase52_RescuePinnedTeammate(int iClient, int &iButtons)
+{
+	if (!g_iCvar_HelpPinnedFriend_Enabled)
+		return false;
+
+	if (L4D_IsPlayerIncapacitated(iClient) || L4D_IsPlayerPinned(iClient))
+		return false;
+
+	// Don't interrupt long actions
+	if (IsBotInLongAction(iClient))
+		return false;
+
+	float fCurTime = GetGameTime();
+
+	// Action cooldown: 0.5s between rescue actions
+	if (fCurTime < g_fRescueActionCooldown[iClient])
+		return false;
+
+	// Scan cooldown: every 0.2s
+	if (fCurTime - g_fRescueScanTime[iClient] < 0.2)
+		return false;
+	g_fRescueScanTime[iClient] = fCurTime;
+
+	// Reset fail counter after timeout (10 seconds)
+	if (g_iRescueFailCount[iClient] > 0 && fCurTime > g_fRescueFailResetTime[iClient])
+		g_iRescueFailCount[iClient] = 0;
+
+	// Give up after 10 consecutive failures
+	if (g_iRescueFailCount[iClient] >= 10)
+		return false;
+
+	float fBotPos[3];
+	GetClientAbsOrigin(iClient, fBotPos);
+
+	// Find the highest-priority pinned teammate within range
+	int iBestMate = -1;
+	int iBestAttacker = -1;
+	int iBestPinType = 0;
+	int iBestPriority = 0;
+	float fBestDist = 999999.0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (i == iClient || !IsClientInGame(i) || !IsClientSurvivor(i) || !IsPlayerAlive(i))
+			continue;
+
+		int iPinType = GetTeammateControlledBy(i);
+		if (iPinType == 0)
+			continue;
+
+		int iAttacker = GetPinAttacker(i, iPinType);
+		if (iAttacker <= 0 || iAttacker > MaxClients || !IsClientInGame(iAttacker) || !IsPlayerAlive(iAttacker))
+			continue;
+
+		float fMatePos[3];
+		GetClientAbsOrigin(i, fMatePos);
+		float fDist = GetVectorDistance(fBotPos, fMatePos);
+
+		// Max rescue range: 1500 units
+		if (fDist > 1500.0)
+			continue;
+
+		int iPriority = GetPinPriority(iPinType);
+
+		// Select by priority first, then distance
+		if (iPriority > iBestPriority || (iPriority == iBestPriority && fDist < fBestDist))
+		{
+			iBestMate = i;
+			iBestAttacker = iAttacker;
+			iBestPinType = iPinType;
+			iBestPriority = iPriority;
+			fBestDist = fDist;
+		}
+	}
+
+	if (iBestMate <= 0 || iBestAttacker <= 0)
+		return false;
+
+	// We have a rescue target - execute rescue behavior
+	float fAttackerPos[3];
+	GetClientAbsOrigin(iBestAttacker, fAttackerPos);
+	float fAttackerEye[3];
+	GetClientEyePosition(iBestAttacker, fAttackerEye);
+	float fDistToAttacker = GetVectorDistance(fBotPos, fAttackerPos);
+
+	// Shove range check
+	float fShoveRange = g_fCvar_HelpPinnedFriend_ShoveRange_Sqr > 0.0 ? SquareRoot(g_fCvar_HelpPinnedFriend_ShoveRange_Sqr) : 75.0;
+	float fShootRange = g_fCvar_HelpPinnedFriend_ShootRange_Sqr > 0.0 ? SquareRoot(g_fCvar_HelpPinnedFriend_ShootRange_Sqr) : 1250.0;
+
+	bool bCanSee = IsVisibleEntity(iClient, iBestAttacker, MASK_SHOT_HULL);
+
+	// === SHOVE: Close range, all SI types except Charger ===
+	if (fDistToAttacker <= fShoveRange && ((g_iCvar_HelpPinnedFriend_Enabled & 2) != 0))
+	{
+		// Charger can't be shoved off easily, prefer shooting
+		if (iBestPinType != 4 && iBestPinType != 5)
+		{
+			float fAimPos[3];
+			GetClientEyePosition(iBestAttacker, fAimPos);
+			fAimPos[2] -= 5.0;
+			SnapViewToPosition(iClient, fAimPos);
+			iButtons |= IN_ATTACK2;
+			g_iRescueFailCount[iClient] = 0;
+			g_fRescueActionCooldown[iClient] = fCurTime + 0.5;
+			return true;
+		}
+	}
+
+	// === SHOOT: Within shoot range and has line of sight ===
+	if (fDistToAttacker <= fShootRange && bCanSee && ((g_iCvar_HelpPinnedFriend_Enabled & 1) != 0))
+	{
+		// Check friendly fire
+		if (!Phase2_WouldCauseFriendlyFire(iClient, fAttackerEye))
+		{
+			SnapViewToPosition(iClient, fAttackerEye);
+			PressAttackButton(iClient, iButtons);
+			g_iRescueFailCount[iClient] = 0;
+			g_fRescueActionCooldown[iClient] = fCurTime + 0.5;
+			return true;
+		}
+	}
+
+	// === SMOKER SPECIAL: Shoot the tongue if can't see Smoker body ===
+	if (iBestPinType == 1 && !bCanSee)
+	{
+		// Try to shoot the tongue by aiming between Smoker and victim
+		float fVictimPos[3];
+		GetClientEyePosition(iBestMate, fVictimPos);
+
+		// Check if we can see the victim at least
+		if (IsVisibleVector(iClient, fVictimPos, MASK_SHOT_HULL))
+		{
+			float fTongueAim[3];
+			fTongueAim[0] = (fAttackerEye[0] + fVictimPos[0]) / 2.0;
+			fTongueAim[1] = (fAttackerEye[1] + fVictimPos[1]) / 2.0;
+			fTongueAim[2] = (fAttackerEye[2] + fVictimPos[2]) / 2.0;
+
+			if (IsVisibleVector(iClient, fTongueAim, MASK_SHOT_HULL))
+			{
+				SnapViewToPosition(iClient, fTongueAim);
+				PressAttackButton(iClient, iButtons);
+				g_fRescueActionCooldown[iClient] = fCurTime + 0.5;
+				return true;
+			}
+		}
+	}
+
+	// === MOVE CLOSER: Can't reach from here, move toward attacker ===
+	if (fDistToAttacker > fShoveRange + 50.0)
+	{
+		SetMoveToPosition(iClient, fAttackerPos, 5, "RescuePinned52", 0.0, 50.0, true, true);
+
+		// If we've been trying to move for too long, count as fail
+		if (fDistToAttacker > fShootRange)
+		{
+			g_iRescueFailCount[iClient]++;
+			g_fRescueFailResetTime[iClient] = fCurTime + 30.0;
+		}
+		return true;
+	}
+
+	return false;
+}
+
+// ============================================================
+// Phase 5.2: Prop Carry and Throw System
+// ============================================================
+// Bots pick up gascan, propane tank, oxygen tank and throw
+// them at Tank or large zombie groups.
+// ============================================================
+
+/**
+ * Bot prop pickup and throw behavior.
+ * - Picks up nearby props when not busy
+ * - Throws at Tank or large zombie groups
+ */
+bool Phase52_PropCarryThrow(int iClient, int &iButtons)
+{
+	if (L4D_IsPlayerIncapacitated(iClient) || L4D_IsPlayerPinned(iClient))
+		return false;
+
+	float fCurTime = GetGameTime();
+
+	// If already carrying a prop, look for throw opportunities
+	if (IsSurvivorCarryingProp(iClient))
+	{
+		// Throw cooldown
+		if (fCurTime < g_fBot_PropThrowTime[iClient])
+			return false;
+
+		float fBotPos[3];
+		GetClientAbsOrigin(iClient, fBotPos);
+
+		// Priority 1: Throw at Tank
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (!IsClientInGame(i) || GetClientTeam(i) != 3 || !IsPlayerAlive(i))
+				continue;
+			if (L4D2_GetPlayerZombieClass(i) != L4D2ZombieClass_Tank)
+				continue;
+
+			float fTankPos[3];
+			GetClientAbsOrigin(i, fTankPos);
+			float fDist = GetVectorDistance(fBotPos, fTankPos);
+
+			if (fDist <= 600.0 && fDist >= 100.0 && IsVisibleEntity(iClient, i, MASK_SHOT_HULL))
+			{
+				// Aim at Tank and throw
+				float fAim[3];
+				GetClientEyePosition(i, fAim);
+				SnapViewToPosition(iClient, fAim);
+				iButtons |= IN_ATTACK;
+				g_fBot_PropThrowTime[iClient] = fCurTime + 5.0;
+				return true;
+			}
+		}
+
+		// Priority 2: Throw at large zombie group (8+)
+		int iInfCount = GetInfectedCount(iClient, 400.0, 20, true, true);
+		if (iInfCount >= 8)
+		{
+			// Find center of zombie mass
+			float fCenterX = 0.0, fCenterY = 0.0, fCenterZ = 0.0;
+			int iCountValid = 0;
+			int iFindEnt = INVALID_ENT_REFERENCE;
+			while ((iFindEnt = FindEntityByClassname(iFindEnt, "infected")) != INVALID_ENT_REFERENCE)
+			{
+				if (!IsCommonAlive(iFindEnt) || !IsCommonAttacking(iFindEnt))
+					continue;
+				float fInfPos[3];
+				GetEntityAbsOrigin(iFindEnt, fInfPos);
+				if (GetVectorDistance(fBotPos, fInfPos) > 400.0)
+					continue;
+				fCenterX += fInfPos[0];
+				fCenterY += fInfPos[1];
+				fCenterZ += fInfPos[2];
+				iCountValid++;
+				if (iCountValid >= 15) break; // Limit iterations
+			}
+			if (iCountValid >= 5)
+			{
+				float fThrowTarget[3];
+				fThrowTarget[0] = fCenterX / float(iCountValid);
+				fThrowTarget[1] = fCenterY / float(iCountValid);
+				fThrowTarget[2] = (fCenterZ / float(iCountValid)) + 20.0;
+				SnapViewToPosition(iClient, fThrowTarget);
+				iButtons |= IN_ATTACK;
+				g_fBot_PropThrowTime[iClient] = fCurTime + 5.0;
+				return true;
+			}
+		}
+
+		return false; // Carrying but no good throw target
+	}
+
+	// Not carrying -- scan for nearby props to pick up
+	if (fCurTime - g_fBot_PropScanTime[iClient] < 1.0)
+		return false;
+	g_fBot_PropScanTime[iClient] = fCurTime;
+
+	// Don't pick up props if busy fighting or rescuing
+	if (g_iBot_TankTarget[iClient] || g_iBot_PinnedFriend[iClient])
+		return false;
+
+	float fBotPos2[3];
+	GetClientAbsOrigin(iClient, fBotPos2);
+
+	int iBestProp = -1;
+	float fBestPropDist = 400.0; // Max scan range
+
+	int iPropEnt = INVALID_ENT_REFERENCE;
+	char sProps[][] = { "weapon_gascan", "weapon_propanetank", "weapon_oxygentank" };
+	for (int p = 0; p < 3; p++)
+	{
+		iPropEnt = INVALID_ENT_REFERENCE;
+		while ((iPropEnt = FindEntityByClassname(iPropEnt, sProps[p])) != INVALID_ENT_REFERENCE)
+		{
+			if (!IsValidEntity(iPropEnt))
+				continue;
+
+			// Skip if someone is already carrying it
+			int iOwner = GetEntPropEnt(iPropEnt, Prop_Data, "m_hOwnerEntity");
+			if (iOwner > 0 && iOwner <= MaxClients)
+				continue;
+
+			float fPropPos[3];
+			GetEntityAbsOrigin(iPropEnt, fPropPos);
+			float fDist = GetVectorDistance(fBotPos2, fPropPos);
+
+			if (fDist < fBestPropDist)
+			{
+				if (IsVisibleVector(iClient, fPropPos, MASK_VISIBLE_AND_NPCS))
+				{
+					iBestProp = iPropEnt;
+					fBestPropDist = fDist;
+				}
+			}
+		}
+	}
+
+	if (iBestProp > 0)
+	{
+		float fPropPos2[3];
+		GetEntityAbsOrigin(iBestProp, fPropPos2);
+
+		if (fBestPropDist <= 90.0)
+		{
+			// Close enough to pick up
+			SnapViewToPosition(iClient, fPropPos2);
+			iButtons |= IN_USE;
+			g_iBot_PropTarget[iClient] = iBestProp;
+			return true;
+		}
+		else
+		{
+			// Move toward it
+			SetMoveToPosition(iClient, fPropPos2, 1, "PickupProp", 0.0, 80.0, true, false);
+			g_iBot_PropTarget[iClient] = iBestProp;
+			return false; // Don't block other behavior while moving to prop
+		}
+	}
+
+	g_iBot_PropTarget[iClient] = -1;
 	return false;
 }
 

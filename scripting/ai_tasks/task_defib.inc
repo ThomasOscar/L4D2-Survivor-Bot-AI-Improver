@@ -28,6 +28,8 @@
 #define DEFIB_PICKUP_RANGE      80.0    // Range to pick up defib (direct give, not USE-based)
 #define DEFIB_SEARCH_TIMEOUT    15.0    // Give up searching after this many seconds
 #define DEFIB_HEIGHT_THRESHOLD  200.0   // Max height difference for reachable defib (underground check)
+#define DEFIB_STUCK_TELEPORT_TIME 8.0   // Seconds before teleporting if stuck moving to target
+#define DEFIB_STUCK_TELEPORT_DIST 300.0 // Min distance to target before teleport is considered
 
 // Per-bot defib search state
 static int g_iDefibSearchTarget[MAXPLAYERS + 1];      // Ground defib entity to pick up
@@ -36,6 +38,7 @@ static float g_fDefibWeaponSwitchTime[MAXPLAYERS + 1]; // Time when weapon switc
 static float g_fDefibSearchStartTime[MAXPLAYERS + 1];  // Time when search mode started
 static bool g_bDefibNeedDropMedkit[MAXPLAYERS + 1];    // true = need to drop medkit before picking up defib
 static bool g_bDefibSearchIsSpawn[MAXPLAYERS + 1];     // true = search target is a weapon_spawn entity
+static float g_fDefibReviveStartTime[MAXPLAYERS + 1];  // Time when Mode A (navigate to corpse) started
 
 /**
  * Check if bot is in search mode (Mode B - looking for defib on ground).
@@ -389,6 +392,24 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         }
 
         // Moving toward the ground defib - LOCK to prevent other tasks overriding movement
+        // Check for stuck: if far from target and elapsed time exceeds threshold, teleport
+        float elapsed = GetGameTime() - g_fDefibSearchStartTime[client];
+        if (dist > DEFIB_STUCK_TELEPORT_DIST && elapsed > DEFIB_STUCK_TELEPORT_TIME) {
+            // Bot is stuck trying to reach the defib — teleport near it
+            float telePos[3];
+            telePos[0] = defibPos[0] + GetRandomFloat(-50.0, 50.0);
+            telePos[1] = defibPos[1] + GetRandomFloat(-50.0, 50.0);
+            telePos[2] = defibPos[2] + 10.0;
+            TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
+            g_fDefibSearchStartTime[client] = GetGameTime();  // Reset to prevent repeated teleports
+
+            if (g_bDebugMode) {
+                char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
+                PrintToServer("[AI Bot DEBUG] %s ModeB: teleported near defib (was stuck %.0fs, dist=%.0f)", dbgN, elapsed, dist);
+            }
+            return true;
+        }
+
         g_BotState[client].moveTarget[0] = defibPos[0];
         g_BotState[client].moveTarget[1] = defibPos[1];
         g_BotState[client].moveTarget[2] = defibPos[2];
@@ -444,6 +465,28 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         // FAR FROM CORPSE - Don't lock. Let Navigate handle nav-mesh pathfinding.
         g_fDefibWeaponSwitchTime[client] = 0.0;
 
+        // Track when Mode A navigation started
+        if (g_fDefibReviveStartTime[client] <= 0.0) {
+            g_fDefibReviveStartTime[client] = GetGameTime();
+        }
+
+        // Check for stuck: if far from corpse and elapsed time exceeds threshold, teleport
+        float reviveElapsed = GetGameTime() - g_fDefibReviveStartTime[client];
+        if (dist > DEFIB_STUCK_TELEPORT_DIST && reviveElapsed > DEFIB_STUCK_TELEPORT_TIME) {
+            float telePos[3];
+            telePos[0] = defibPos[0] + GetRandomFloat(-80.0, 80.0);
+            telePos[1] = defibPos[1] + GetRandomFloat(-80.0, 80.0);
+            telePos[2] = defibPos[2] + 10.0;
+            TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
+            g_fDefibReviveStartTime[client] = GetGameTime();  // Reset to prevent repeated teleports
+
+            if (g_bDebugMode) {
+                char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
+                PrintToServer("[AI Bot DEBUG] %s ModeA: teleported near corpse (was stuck %.0fs, dist=%.0f)", dbgN, reviveElapsed, dist);
+            }
+            return false;
+        }
+
         g_BotState[client].moveTarget[0] = defibPos[0];
         g_BotState[client].moveTarget[1] = defibPos[1];
         g_BotState[client].moveTarget[2] = defibPos[2];
@@ -466,6 +509,9 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
     // ================================================================
     // Within DEFIB_USE_RANGE - REVIVE THE DEAD PLAYER (LOCKS)
     // ================================================================
+
+    // Reset revive start time - bot has reached the corpse
+    g_fDefibReviveStartTime[client] = 0.0;
 
     // Clear IN_USE to prevent picking up items near corpse
     buttons &= ~IN_USE;
@@ -528,6 +574,7 @@ void TaskDefib_Reset(int client) {
     g_fDefibSearchStartTime[client] = 0.0;
     g_bDefibNeedDropMedkit[client] = false;
     g_bDefibSearchIsSpawn[client] = false;
+    g_fDefibReviveStartTime[client] = 0.0;
     g_BotState[client].hasMoveTarget = false;
 }
 
@@ -591,11 +638,17 @@ static int TaskDefib_FindNearest(int client) {
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator_spawn")) != -1) {
         if (!IsValidEntity(ent)) continue;
 
-        // Check if spawn has items remaining
-        int count = GetEntProp(ent, Prop_Data, "m_nCount");
-        if (count <= 0) {
-            spawnSkip++;
-            continue;
+        // Check if spawn is still active (not picked clean)
+        // m_nCount may not exist on all entity types, so check safely
+        bool hasItems = true;
+        int offset = FindDataMapInfo(ent, "m_nCount");
+        if (offset > 0) {
+            int count = GetEntProp(ent, Prop_Data, "m_nCount");
+            if (count <= 0) {
+                hasItems = false;
+                spawnSkip++;
+                continue;
+            }
         }
 
         spawnFound++;
