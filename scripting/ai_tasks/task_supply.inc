@@ -379,13 +379,13 @@ static void TaskSupply_TeleportBackToTeam(int client) {
 
     if (nearestTeammateDist > SUPPLY_TEAM_TELEPORT && nearestTeammateDist < 999999.0) {
         // Too far from team — teleport near nearest teammate
-        float telePos[3];
-        telePos[0] = nearestTeammatePos[0] + GetRandomFloat(-80.0, 80.0);
-        telePos[1] = nearestTeammatePos[1] + GetRandomFloat(-80.0, 80.0);
-        telePos[2] = nearestTeammatePos[2] + 10.0;
+        float candidate[3];
+        candidate[0] = nearestTeammatePos[0] + GetRandomFloat(-60.0, 60.0);
+        candidate[1] = nearestTeammatePos[1] + GetRandomFloat(-60.0, 60.0);
+        candidate[2] = nearestTeammatePos[2] + 50.0;  // Start search from above
 
-        // Validate teleport position
-        if (AI_IsValidPosition(telePos)) {
+        float telePos[3];
+        if (AI_ValidateTeleportPosition(candidate, telePos)) {
             TeleportEntity(client, telePos, NULL_VECTOR, NULL_VECTOR);
 
             if (g_bDebugMode) {
