@@ -28,6 +28,7 @@
 #define NAV_STUCK_THRESHOLD     100.0   // Squared distance threshold for stuck
 #define NAV_STUCK_MAX_TIME      6.0     // Max stuck time before random escape
 #define NAV_SLOW_SPEED          200.0   // Slow follow speed
+#define NAV_DEFIB_SEARCH_RANGE  800.0   // Must match DEFIB_SEARCH_RANGE in task_defib.inc
 
 // Aggressive leader mode constants
 #define NAV_RESCUE_CLOSET_SEARCH_RANGE  2000.0  // How far ahead to search for rescue closets
@@ -118,7 +119,9 @@ static bool TaskNavigate_AnyBotHasDefib() {
 }
 
 /**
- * Check if a defibrillator exists on the ground or as a spawn within range.
+ * Check if a defibrillator exists on the ground or as a spawn within range
+ * of any alive survivor bot. This MUST match DEFIB_SEARCH_RANGE so that
+ * when it returns true, the defib task can actually find and reach the defib.
  * Results are cached for 5 seconds to avoid expensive entity scans every tick.
  */
 static bool TaskNavigation_DefibExistsNearby() {
@@ -129,6 +132,23 @@ static bool TaskNavigation_DefibExistsNearby() {
     g_fLastDefibNearbyCheckTime = curTime;
 
     g_bDefibNearby = false;
+
+    // Get reference position: most-forward alive survivor
+    float refPos[3];
+    bool hasRef = false;
+    float bestFlow = -1.0;
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 2) continue;
+        float flow = L4D2Direct_GetFlowDistance(i);
+        if (flow > bestFlow) {
+            bestFlow = flow;
+            GetClientAbsOrigin(i, refPos);
+            hasRef = true;
+        }
+    }
+    if (!hasRef) return false;
+
     int ent = -1;
     int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator")) != -1) {
@@ -136,8 +156,15 @@ static bool TaskNavigation_DefibExistsNearby() {
         if (!IsValidEntity(ent)) { ent++; continue; }
         int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
         if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) continue;
+
+        // Range check: must be reachable by defib task
+        float entPos[3];
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
+        float dist = AI_GetVectorDistance(refPos, entPos);
+        if (dist > NAV_DEFIB_SEARCH_RANGE) continue;
+
         g_bDefibNearby = true;
-        return true;  // Found an unowned defib
+        return true;
     }
     ent = -1;
     safetyCount = 0;
@@ -148,8 +175,15 @@ static bool TaskNavigation_DefibExistsNearby() {
         if (offset > 0) {
             if (GetEntProp(ent, Prop_Data, "m_nCount") <= 0) continue;
         }
+
+        // Range check: must be reachable by defib task
+        float entPos[3];
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
+        float dist = AI_GetVectorDistance(refPos, entPos);
+        if (dist > NAV_DEFIB_SEARCH_RANGE) continue;
+
         g_bDefibNearby = true;
-        return true;  // Found a spawn with items
+        return true;
     }
     return false;
 }
