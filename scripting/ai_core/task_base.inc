@@ -33,6 +33,7 @@ enum AITaskId {
     TASK_TRIGGER_SEARCH,    // Trigger/button search and activation
     TASK_DEFIB,             // Defibrillator use (priority 2)
     TASK_UPGRADE,           // Upgrade pack use (priority 4)
+    TASK_SUPPLY,            // Supply management (ensure bot has items, give to humans)
     TASK_MAX                // Total task count sentinel
 }
 
@@ -68,6 +69,7 @@ void AITask_GetName(AITaskId taskId, char[] buffer, int maxlen) {
         case TASK_TRIGGER_SEARCH: strcopy(buffer, maxlen, "TriggerSearch");
         case TASK_DEFIB:      strcopy(buffer, maxlen, "Defib");
         case TASK_UPGRADE:    strcopy(buffer, maxlen, "Upgrade");
+        case TASK_SUPPLY:     strcopy(buffer, maxlen, "Supply");
         default:              strcopy(buffer, maxlen, "Unknown");
     }
 }
