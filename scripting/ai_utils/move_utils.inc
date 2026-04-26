@@ -237,6 +237,13 @@ stock void AI_ComputeMoveForward(float vel[3], float moveSpeed = AI_MOVE_SPEED)
 #define TELEPORT_GROUND_CLEAR    2.0     // Min clearance above ground at destination
 #define TELEPORT_MIN_CLEARANCE   70.0    // Min vertical clearance (player height ~72 units)
 #define TELEPORT_MAX_OFFSET      60.0    // Max random offset from target (small to avoid walls)
+#define TELEPORT_STUCK_CHECK_INTERVAL 2.0  // Seconds between stuck position checks
+#define TELEPORT_STUCK_THRESHOLD  50.0   // Squared distance threshold for "not moving"
+
+// Per-bot stuck tracking for teleport
+static float g_fTeleportLastPos[MAXPLAYERS + 1][3];
+static float g_fTeleportLastCheckTime[MAXPLAYERS + 1];
+static int g_iTeleportStuckCount[MAXPLAYERS + 1];
 
 /**
  * Thoroughly validate a teleport position.
@@ -356,17 +363,39 @@ stock bool AI_IsValidPosition(const float pos[3])
 stock bool AI_TryStuckTeleport(int client, const float targetPos[3], float dist, float elapsed,
                                 float stuckThreshold = 300.0, float timeThreshold = 8.0)
 {
-    // Not stuck enough yet
+    // Not stuck enough yet (distance + time gate)
     if (dist <= stuckThreshold || elapsed <= timeThreshold)
         return false;
 
-    // Don't teleport if bot hasn't been in this task long enough to have actually tried moving
-    // This prevents round-start teleports where taskStartTime was just set
+    // Don't teleport if bot hasn't been in this task long enough
     if (g_BotState[client].taskStartTime <= 0.0)
         return false;
 
-    // Check cooldown
+    // === Actual stuck detection: check if bot has moved recently ===
     float curTime = GetGameTime();
+    if ((curTime - g_fTeleportLastCheckTime[client]) >= TELEPORT_STUCK_CHECK_INTERVAL) {
+        bool isStuck = AI_IsPlayerStuck(client, g_BotState[client].absOrigin,
+                                         g_fTeleportLastPos[client], TELEPORT_STUCK_THRESHOLD);
+
+        if (isStuck) {
+            g_iTeleportStuckCount[client]++;
+        } else {
+            g_iTeleportStuckCount[client] = 0;  // Reset — bot is moving fine
+        }
+
+        // Store current position for next check
+        g_fTeleportLastPos[client][0] = g_BotState[client].absOrigin[0];
+        g_fTeleportLastPos[client][1] = g_BotState[client].absOrigin[1];
+        g_fTeleportLastPos[client][2] = g_BotState[client].absOrigin[2];
+        g_fTeleportLastCheckTime[client] = curTime;
+    }
+
+    // Bot must be actually stuck (not moving) for at least 2 consecutive checks before teleport
+    if (g_iTeleportStuckCount[client] < 2) {
+        return false;  // Bot is still moving — don't teleport
+    }
+
+    // Check cooldown
     if (g_BotState[client].lastTeleportTime > 0.0 &&
         (curTime - g_BotState[client].lastTeleportTime) < TELEPORT_MIN_INTERVAL)
         return false;
@@ -413,6 +442,8 @@ stock void AI_ResetTeleportState(int client)
 {
     g_BotState[client].teleportAttempts = 0;
     g_BotState[client].lastTeleportTime = 0.0;
+    g_iTeleportStuckCount[client] = 0;
+    g_fTeleportLastCheckTime[client] = 0.0;
 }
 
 /**
