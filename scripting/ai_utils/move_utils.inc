@@ -233,36 +233,93 @@ stock void AI_ComputeMoveForward(float vel[3], float moveSpeed = AI_MOVE_SPEED)
 #define TELEPORT_MIN_INTERVAL    8.0     // Min seconds between teleports
 #define TELEPORT_HEIGHT_BELOW    -4000.0 // Z below this = underground/out of map
 #define TELEPORT_HEIGHT_ABOVE    5000.0  // Z above this = out of map (skybox)
-#define TELEPORT_TRACE_HEIGHT    300.0   // Height to trace down for ground check
+#define TELEPORT_TRACE_HEIGHT    500.0   // Height to trace down for ground check
 #define TELEPORT_GROUND_CLEAR    2.0     // Min clearance above ground at destination
+#define TELEPORT_MIN_CLEARANCE   70.0    // Min vertical clearance (player height ~72 units)
+#define TELEPORT_MAX_OFFSET      60.0    // Max random offset from target (small to avoid walls)
 
 /**
- * Check if a position is likely valid (not underground, not in skybox, has ground beneath).
- * Uses simple Z-bounds check + traceline to verify ground exists below the point.
+ * Thoroughly validate a teleport position.
+ * Checks: Z bounds, ground beneath, clearance above, not inside solid.
  *
- * @param pos     Position to validate.
- * @return        True if position appears valid and safe.
+ * @param pos     Position to validate (will be adjusted downward to ground).
+ * @param outPos  Output: adjusted position on the ground.
+ * @return        True if position is safe for teleport.
  */
-stock bool AI_IsValidPosition(const float pos[3])
+stock bool AI_ValidateTeleportPosition(const float pos[3], float outPos[3])
 {
-    // Out-of-bounds Z check
+    // 1. Out-of-bounds Z check
     if (pos[2] < TELEPORT_HEIGHT_BELOW || pos[2] > TELEPORT_HEIGHT_ABOVE)
         return false;
 
-    // Trace down from above the position to check for ground
+    // 2. Trace down from well above the position to find ground
     float start[3], end[3];
     start[0] = pos[0];
     start[1] = pos[1];
     start[2] = pos[2] + TELEPORT_TRACE_HEIGHT;
     end[0] = pos[0];
     end[1] = pos[1];
-    end[2] = pos[2] - 100.0;
+    end[2] = pos[2] - 200.0;
 
     Handle trace = TR_TraceRayFilterEx(start, end, MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint, AI_TraceFilter_NoPlayers, 0);
     bool hitGround = TR_DidHit(trace);
+
+    if (!hitGround) {
+        delete trace;
+        return false;  // No ground found below
+    }
+
+    // Get the ground position
+    float groundPos[3];
+    TR_GetEndPosition(groundPos, trace);
     delete trace;
 
-    return hitGround;
+    // 3. Check that ground is at a reasonable distance below the starting point
+    // (not too far below = we're not teleporting to a completely different floor)
+    float groundDist = start[2] - groundPos[2];
+    if (groundDist > TELEPORT_TRACE_HEIGHT + 200.0) {
+        return false;  // Ground is way too far below
+    }
+
+    // 4. Set output position slightly above ground
+    outPos[0] = groundPos[0];
+    outPos[1] = groundPos[1];
+    outPos[2] = groundPos[2] + TELEPORT_GROUND_CLEAR;
+
+    // 5. Check vertical clearance above the ground position (player needs ~72 units)
+    float ceilingStart[3], ceilingEnd[3];
+    ceilingStart[0] = outPos[0];
+    ceilingStart[1] = outPos[1];
+    ceilingStart[2] = outPos[2];
+    ceilingEnd[0] = outPos[0];
+    ceilingEnd[1] = outPos[1];
+    ceilingEnd[2] = outPos[2] + TELEPORT_MIN_CLEARANCE;
+
+    Handle ceilTrace = TR_TraceRayFilterEx(ceilingStart, ceilingEnd, MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint, AI_TraceFilter_NoPlayers, 0);
+    bool hitCeiling = TR_DidHit(ceilTrace);
+    delete ceilTrace;
+
+    if (hitCeiling) {
+        return false;  // Not enough headroom — would be stuck in ceiling
+    }
+
+    // 6. Check that the position is not inside a wall by tracing a short horizontal line
+    // Trace from the position outward in a direction; if it starts in solid, it'll be 0 length
+    float wallCheck[3];
+    wallCheck[0] = outPos[0] + 20.0;
+    wallCheck[1] = outPos[1];
+    wallCheck[2] = outPos[2] + 30.0;  // Check at torso height
+
+    Handle wallTrace = TR_TraceRayFilterEx(outPos, wallCheck, MASK_PLAYERSOLID_BRUSHONLY, RayType_EndPoint, AI_TraceFilter_NoPlayers, 0);
+    float wallFrac = TR_GetFraction(wallTrace);
+    delete wallTrace;
+
+    // If the trace didn't go anywhere near 20 units, we're probably inside a wall
+    if (wallFrac < 0.3) {
+        return false;
+    }
+
+    return true;
 }
 
 /**
@@ -274,8 +331,18 @@ stock bool AI_TraceFilter_NoPlayers(int entity, int contentsMask, int client)
 }
 
 /**
+ * Check if a position is likely valid (simpler check for non-teleport uses).
+ * Uses Z-bounds + ground check.
+ */
+stock bool AI_IsValidPosition(const float pos[3])
+{
+    float outPos[3];
+    return AI_ValidateTeleportPosition(pos, outPos);
+}
+
+/**
  * Try to safely teleport a bot near a target position.
- * Checks: position validity, max attempts, cooldown.
+ * Uses thorough position validation with ground snapping.
  * If the bot is still stuck after max attempts, returns false to signal abandon.
  *
  * @param client          Bot client index.
@@ -293,6 +360,11 @@ stock bool AI_TryStuckTeleport(int client, const float targetPos[3], float dist,
     if (dist <= stuckThreshold || elapsed <= timeThreshold)
         return false;
 
+    // Don't teleport if bot hasn't been in this task long enough to have actually tried moving
+    // This prevents round-start teleports where taskStartTime was just set
+    if (g_BotState[client].taskStartTime <= 0.0)
+        return false;
+
     // Check cooldown
     float curTime = GetGameTime();
     if (g_BotState[client].lastTeleportTime > 0.0 &&
@@ -303,30 +375,27 @@ stock bool AI_TryStuckTeleport(int client, const float targetPos[3], float dist,
     if (g_BotState[client].teleportAttempts >= TELEPORT_MAX_ATTEMPTS)
         return false;
 
-    // Generate candidate position near target with random offset
+    // Generate candidate positions and validate each
     float telePos[3];
-    telePos[0] = targetPos[0] + GetRandomFloat(-80.0, 80.0);
-    telePos[1] = targetPos[1] + GetRandomFloat(-80.0, 80.0);
-    telePos[2] = targetPos[2] + 10.0;
+    bool found = false;
 
-    // Validate destination
-    if (!AI_IsValidPosition(telePos)) {
-        // Try a few more candidates
-        bool found = false;
-        for (int attempt = 0; attempt < 3; attempt++) {
-            telePos[0] = targetPos[0] + GetRandomFloat(-120.0, 120.0);
-            telePos[1] = targetPos[1] + GetRandomFloat(-120.0, 120.0);
-            telePos[2] = targetPos[2] + GetRandomFloat(0.0, 30.0);
-            if (AI_IsValidPosition(telePos)) {
-                found = true;
-                break;
-            }
+    for (int attempt = 0; attempt < 5; attempt++) {
+        float candidate[3];
+        float offsetScale = (attempt == 0) ? TELEPORT_MAX_OFFSET : TELEPORT_MAX_OFFSET + attempt * 15.0;
+        candidate[0] = targetPos[0] + GetRandomFloat(-offsetScale, offsetScale);
+        candidate[1] = targetPos[1] + GetRandomFloat(-offsetScale, offsetScale);
+        candidate[2] = targetPos[2] + 50.0;  // Start search from above target
+
+        if (AI_ValidateTeleportPosition(candidate, telePos)) {
+            found = true;
+            break;
         }
-        if (!found) {
-            g_BotState[client].teleportAttempts++;
-            g_BotState[client].lastTeleportTime = curTime;
-            return false;
-        }
+    }
+
+    if (!found) {
+        g_BotState[client].teleportAttempts++;
+        g_BotState[client].lastTeleportTime = curTime;
+        return false;
     }
 
     // Execute teleport
