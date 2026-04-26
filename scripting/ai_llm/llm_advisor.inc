@@ -87,6 +87,14 @@ void LLMAdvisor_OnMapStart() {
 }
 
 /**
+ * Called when LLM is disabled via ConVar — stop all socket activity.
+ */
+void LLMAdvisor_OnDisabled() {
+    LLM_DisconnectCleanup();
+    LogMessage("[LLM Advisor] Disabled via ConVar — disconnected and stopped reconnecting.");
+}
+
+/**
  * Check if LLM is currently connected.
  */
 bool LLMAdvisor_IsConnected() {
@@ -209,6 +217,12 @@ public void LLMAdvisor_OnSocketError(Socket socket, const int errorType, const i
     // Cancel any pending connect timeout timer
     delete g_hLLMConnectTimer;
     g_hLLMConnectTimer = null;
+
+    // Clean up send/heartbeat timers
+    delete g_hLLMSendTimer;
+    g_hLLMSendTimer = null;
+    delete g_hLLMHeartbeatTimer;
+    g_hLLMHeartbeatTimer = null;
 
     // Only log and retry if LLM is still enabled
     if (g_bLLMEnabled) {

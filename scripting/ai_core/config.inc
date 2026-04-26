@@ -136,7 +136,17 @@ void AIConfig_Init() {
  * ConVar change hook — refresh all cached values.
  */
 void AIConfig_OnChanged(ConVar convar, const char[] oldValue, const char[] newValue) {
+    bool wasLLMEnabled = g_bLLMEnabled;
     AIConfig_UpdateCache();
+
+    // If LLM was just disabled, disconnect and stop reconnecting
+    if (wasLLMEnabled && !g_bLLMEnabled) {
+        LLMAdvisor_OnDisabled();
+    }
+    // If LLM was just enabled, try connecting
+    if (!wasLLMEnabled && g_bLLMEnabled) {
+        LLMAdvisor_OnMapStart();
+    }
 }
 
 /**
