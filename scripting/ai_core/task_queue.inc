@@ -120,7 +120,7 @@ bool AITaskQueue_Execute(int client, int &buttons, float vel[3]) {
         // Check if this task should run for this bot
         bool shouldUpdate = AITask_ShouldUpdate(taskId, client);
 
-        // Debug: log ShouldUpdate results for Defib task (critical for diagnosing)
+        // Debug: log ShouldUpdate results for Defib task (throttled to 1/sec per bot)
         if (g_bDebugMode && taskId == TASK_DEFIB && curTime >= g_fDebugNextPrint[client]) {
             char botName[64];
             GetClientName(client, botName, sizeof(botName));
@@ -138,6 +138,7 @@ bool AITaskQueue_Execute(int client, int &buttons, float vel[3]) {
             PrintToServer("[AI Bot DEBUG] %s Defib.ShouldUpdate=%s slot3=%s dead_teammates=%d enabled=%d incap=%d pinned=%d",
                 botName, shouldUpdate ? "YES" : "NO", slot3name, deadCount,
                 g_bDefibEnabled, g_BotState[client].isIncapacitated, g_BotState[client].controlledByType);
+            g_fDebugNextPrint[client] = curTime + 1.0;
         }
 
         if (shouldUpdate) {

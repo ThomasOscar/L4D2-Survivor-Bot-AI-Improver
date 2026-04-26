@@ -188,12 +188,14 @@ static void TaskNavigate_FindRescueCloset() {
     g_bHasRescueCloset = false;
 
     // Search nav areas with NAV_SPAWN_RESCUE_CLOSET flag
-    int nav = -1;
-    while ((nav = FindEntityByClassname(nav, "info_survivor_rescue")) != -1) {
-        if (!IsValidEntity(nav)) continue;
+    int ent = -1;
+    int closetCount = 0;
+    while ((ent = FindEntityByClassname(ent, "info_survivor_rescue")) != -1) {
+        if (!IsValidEntity(ent)) continue;
+        if (++closetCount > 32) break;  // Safety: don't iterate forever on broken maps
 
         float closetPos[3];
-        GetEntPropVector(nav, Prop_Data, "m_vecAbsOrigin", closetPos);
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", closetPos);
         float dist = AI_GetVectorDistance(leaderPos, closetPos);
 
         if (dist < bestDist) {
@@ -364,13 +366,13 @@ bool TaskNavigate_Update(int client, int &buttons, float vel[3]) {
                 fwd[2] = 0.0;
                 float fwdLen = GetVectorLength(fwd);
                 if (fwdLen > 0.1) {
-                    // Move in the direction the leader is facing
-                    AI_ComputeMoveToward(client, g_BotState[client].absOrigin, g_BotState[client].absOrigin,
+                    // Compute a target point ahead of the leader
+                    float targetPos[3];
+                    targetPos[0] = g_BotState[client].absOrigin[0] + fwd[0] / fwdLen * 200.0;
+                    targetPos[1] = g_BotState[client].absOrigin[1] + fwd[1] / fwdLen * 200.0;
+                    targetPos[2] = g_BotState[client].absOrigin[2];
+                    AI_ComputeMoveToward(client, targetPos, g_BotState[client].absOrigin,
                                           g_BotState[client].eyeAngles, vel);
-                    // Ensure forward movement
-                    if (vel[0] == 0.0 && vel[1] == 0.0) {
-                        vel[0] = 400.0;  // Push forward
-                    }
                 }
             }
         } else {

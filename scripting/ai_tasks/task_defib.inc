@@ -685,9 +685,14 @@ static int TaskDefib_FindNearest(int client) {
     g_bDefibSearchIsSpawn[client] = bestIsSpawn;
 
     if (g_bDebugMode) {
-        char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-        PrintToServer("[AI Bot DEBUG] %s FindNearest: wep_total=%d owner_skip=%d spawn_total=%d spawn_skip=%d dist_skip=%d reach_skip=%d best=%d isSpawn=%d dist=%.0f",
-            dbgN, totalFound, skippedOwner, spawnFound, spawnSkip, skippedDist, skippedReach, best, bestIsSpawn, bestDist);
+        static float g_fLastFindNearestLog[MAXPLAYERS + 1];
+        float now = GetGameTime();
+        if (now - g_fLastFindNearestLog[client] >= 3.0) {
+            g_fLastFindNearestLog[client] = now;
+            char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
+            PrintToServer("[AI Bot DEBUG] %s FindNearest: wep_total=%d owner_skip=%d spawn_total=%d spawn_skip=%d dist_skip=%d reach_skip=%d best=%d isSpawn=%d dist=%.0f",
+                dbgN, totalFound, skippedOwner, spawnFound, spawnSkip, skippedDist, skippedReach, best, bestIsSpawn, bestDist);
+        }
     }
 
     return best;
