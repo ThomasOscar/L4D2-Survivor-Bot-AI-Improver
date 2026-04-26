@@ -239,6 +239,18 @@ bool TaskHeal_Update(int client, int &buttons, float vel[3]) {
             AI_ComputeMoveToward(client, targetPos, g_BotState[client].absOrigin,
                                   g_BotState[client].eyeAngles, vel);
             g_BotState[client].healTarget = healTarget;
+
+            // Stuck teleport: if can't reach teammate, try teleport near them
+            float healElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+            if (AI_ShouldAbandonNavigation(client)) {
+                if (g_bDebugMode) {
+                    PrintToServer("[AI Bot] Heal abandon: bot %d can't reach heal target %d (teleport failed)", client, healTarget);
+                }
+                TaskHeal_Reset(client);
+                return false;
+            }
+            AI_TryStuckTeleport(client, targetPos, dist, healElapsed, 300.0, 10.0);
+
             return true; // Lock while approaching
         }
 
@@ -304,4 +316,5 @@ void TaskHeal_Reset(int client) {
     g_BotState[client].isHealing = false;
     g_BotState[client].healTarget = -1;
     g_BotState[client].healEndTime = 0.0;
+    AI_ResetTeleportState(client);
 }
