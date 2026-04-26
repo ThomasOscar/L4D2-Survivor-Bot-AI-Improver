@@ -233,6 +233,7 @@ bool AITask_ShouldUpdate(AITaskId taskId, int client) {
         case TASK_TRIGGER_SEARCH: return TaskTriggerSearch_ShouldUpdate(client);
         case TASK_DEFIB:    return TaskDefib_ShouldUpdate(client);
         case TASK_UPGRADE:  return TaskUpgrade_ShouldUpdate(client);
+        case TASK_SUPPLY:   return TaskSupply_ShouldUpdate(client);
         // TASK_DAMAGE_PROTECT is SDKHook-driven, no ShouldUpdate needed
         default: {}
     }
@@ -257,6 +258,7 @@ bool AITask_Update(AITaskId taskId, int client, int &buttons, float vel[3]) {
         case TASK_TRIGGER_SEARCH: return TaskTriggerSearch_Update(client, buttons, vel);
         case TASK_DEFIB:    return TaskDefib_Update(client, buttons, vel);
         case TASK_UPGRADE:  return TaskUpgrade_Update(client, buttons, vel);
+        case TASK_SUPPLY:   return TaskSupply_Update(client, buttons, vel);
         // TASK_DAMAGE_PROTECT is SDKHook-driven, no Update needed
         default: {}
     }
@@ -280,6 +282,7 @@ void AITask_Reset(AITaskId taskId, int client) {
         case TASK_TRIGGER_SEARCH: TaskTriggerSearch_Reset(client);
         case TASK_DEFIB:    TaskDefib_Reset(client);
         case TASK_UPGRADE:  TaskUpgrade_Reset(client);
+        case TASK_SUPPLY:   TaskSupply_Reset(client);
         // TASK_DAMAGE_PROTECT has no task state to reset
         default: {}
     }
@@ -305,6 +308,7 @@ void AITaskQueue_Init() {
     AITaskQueue_RegisterTask(TASK_ITEM_PASS,  3, "ItemPass");
     AITaskQueue_RegisterTask(TASK_TRIGGER_SEARCH, 5, "TriggerSearch");
     AITaskQueue_RegisterTask(TASK_UPGRADE,  4, "Upgrade", 2.0);
+    AITaskQueue_RegisterTask(TASK_SUPPLY,   3, "Supply", 1.0);  // Supply management for bots
     // TASK_DAMAGE_PROTECT is SDKHook-only — no queue registration needed
 
     // Initialize rescue global state
