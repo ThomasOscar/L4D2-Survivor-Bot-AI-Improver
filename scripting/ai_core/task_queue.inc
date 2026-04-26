@@ -120,6 +120,13 @@ bool AITaskQueue_Execute(int client, int &buttons, float vel[3]) {
         bool shouldUpdate = AITask_ShouldUpdate(taskId, client);
 
         if (shouldUpdate) {
+            // If bot is holding USE on a timed trigger (progress bar active),
+            // only allow preempting by the highest-priority tasks (Rescue = 0, Defib = 0).
+            // Combat, Heal, and other mid-priority tasks should NOT interrupt hold-USE.
+            if (g_BotState[client].isHoldingUse && taskOrder > 0) {
+                continue;  // Don't interrupt hold-USE for non-critical tasks
+            }
+
             // If a lower-priority task is currently locked, preempt it
             if (g_BotState[client].taskLocked &&
                 g_BotState[client].currentTaskOrder > taskOrder) {

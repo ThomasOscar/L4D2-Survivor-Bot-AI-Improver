@@ -41,6 +41,7 @@ enum struct BotState {
     int healTarget;             // Heal target (self or teammate)
     float healEndTime;          // Expected heal end time
     bool isFrozenForHeal;       // Whether frozen for healing animation
+    bool isHoldingUse;          // Whether holding USE on a timed trigger (progress bar)
 
     // === Inventory State ===
     int primaryWeapon;          // Primary weapon entity (slot 0)
@@ -125,6 +126,7 @@ enum struct BotState {
         this.healTarget = -1;
         this.healEndTime = 0.0;
         this.isFrozenForHeal = false;
+        this.isHoldingUse = false;
         this.primaryWeapon = -1;
         this.secondaryWeapon = -1;
         this.throwableWeapon = -1;

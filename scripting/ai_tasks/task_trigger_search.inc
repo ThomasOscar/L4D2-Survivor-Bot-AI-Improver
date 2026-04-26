@@ -73,6 +73,9 @@ static char g_sTriggerClassnames[][] = {
 #define TRIGGER_REINTERACT_COOLDOWN 10.0
 static float g_fTriggerLastUsed[MAX_ENTITIES];   // Time when entity was last used
 
+// Trigger assignment: only ONE bot per trigger entity (like defib task)
+static int g_iTriggerAssignee[MAX_ENTITIES];      // Which bot is assigned to this entity (-1 = none)
+
 /**
  * Reset all used-trigger flags. Called from OnMapStart.
  */
@@ -80,10 +83,13 @@ void TriggerSearch_ResetGlobals() {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         g_bTriggerUsed[i] = false;
         g_fTriggerLastUsed[i] = 0.0;
+        g_iTriggerAssignee[i] = -1;
     }
     for (int i = 0; i <= MaxClients; i++) {
         g_iTriggerTarget[i] = -1;
         g_fTriggerScanTime[i] = 0.0;
+        g_bTriggerHolding[i] = false;
+        g_fTriggerHoldStart[i] = 0.0;
     }
 }
 
@@ -97,10 +103,19 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
     if (g_BotState[client].isRescuing) return false;
     if (g_BotState[client].isHealing) return false;
 
-    // If already tracking a trigger, continue
+    // If already tracking a trigger, continue (even if holding USE)
     int current = g_iTriggerTarget[client];
     if (current > 0 && current < MAX_ENTITIES && IsValidEntity(current) && !g_bTriggerUsed[current]) {
-        return true;
+        // Verify our assignment is still valid
+        if (g_iTriggerAssignee[current] == client) return true;
+        // Someone else took over — release
+        g_iTriggerTarget[client] = -1;
+        g_bTriggerHolding[client] = false;
+    }
+
+    // Clean up stale assignments for this bot
+    if (current > 0 && current < MAX_ENTITIES && g_iTriggerAssignee[current] == client) {
+        g_iTriggerAssignee[current] = -1;
     }
 
     // Throttle scanning
@@ -146,6 +161,18 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
                 }
             }
 
+            // Skip entities already assigned to another bot
+            if (g_iTriggerAssignee[ent] != -1 && g_iTriggerAssignee[ent] != client) {
+                // Check if the assigned bot is still valid and working on it
+                int assignee = g_iTriggerAssignee[ent];
+                if (assignee > 0 && assignee <= MaxClients && IsClientInGame(assignee) &&
+                    IsPlayerAlive(assignee) && g_iTriggerTarget[assignee] == ent) {
+                    continue;  // Another bot is handling this
+                }
+                // Assignment is stale — clear it
+                g_iTriggerAssignee[ent] = -1;
+            }
+
             float entPos[3];
             GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", entPos);
             float dist = AI_GetVectorDistance(g_BotState[client].absOrigin, entPos);
@@ -159,6 +186,8 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
     }
 
     if (best != -1) {
+        // Assign this bot to the trigger (only ONE bot per trigger!)
+        g_iTriggerAssignee[best] = client;
         g_iTriggerTarget[client] = best;
         return true;
     }
@@ -221,6 +250,7 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
             if (!g_bTriggerHolding[client]) {
                 // First frame of hold — start tracking
                 g_bTriggerHolding[client] = true;
+                g_BotState[client].isHoldingUse = true;
                 g_fTriggerHoldStart[client] = GetGameTime();
                 float holdTime = TriggerSearch_GetHoldDuration(target);
                 AI_DebugDecision(client, "Holding USE on entity (need %.1fs)", holdTime);
@@ -237,7 +267,9 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
                 }
                 g_bTriggerUsed[target] = true;
                 g_fTriggerLastUsed[target] = GetGameTime();
+                g_iTriggerAssignee[target] = -1;  // Clear assignment
                 g_bTriggerHolding[client] = false;
+                g_BotState[client].isHoldingUse = false;
                 g_iTriggerTarget[client] = -1;
                 return false;  // Release task
             }
@@ -282,8 +314,14 @@ void TaskTriggerSearch_Reset(int client) {
             SetEntityFlags(client, flags & ~FL_FROZEN);
         }
     }
+    // Clear our assignment on the trigger entity
+    int target = g_iTriggerTarget[client];
+    if (target > 0 && target < MAX_ENTITIES && g_iTriggerAssignee[target] == client) {
+        g_iTriggerAssignee[target] = -1;
+    }
     g_iTriggerTarget[client] = -1;
     g_bTriggerHolding[client] = false;
+    g_BotState[client].isHoldingUse = false;
     g_fTriggerHoldStart[client] = 0.0;
     AI_ResetTeleportState(client);
 }

@@ -178,8 +178,11 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse,
 
     // Step 1.2: If actively dodging a danger zone, apply dodge movement but continue task queue
     // (so high-priority tasks like rescue can still execute during dodge)
+    // BUT: if bot is frozen for heal or holding USE on a trigger, skip dodge
     bool wasDodging = false;
-    if (g_BotState[client].isDodging && g_BotState[client].hasMoveTarget) {
+    if (g_BotState[client].isDodging && g_BotState[client].hasMoveTarget
+        && !g_BotState[client].isFrozenForHeal
+        && !g_BotState[client].isHoldingUse) {
         AI_ComputeMoveToward(client, g_BotState[client].moveTarget,
                               g_BotState[client].absOrigin,
                               g_BotState[client].eyeAngles, vel);
