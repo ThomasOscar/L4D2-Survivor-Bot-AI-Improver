@@ -204,6 +204,11 @@ bool TaskDefib_ShouldUpdate(int client) {
     if (hasDefib) {
         // Mode A: Bot already has a defibrillator
         g_bDefibSearchMode[client] = false;
+        if (g_bDebugMode) {
+            char tName[64]; GetClientName(g_BotState[client].defibTarget, tName, sizeof(tName));
+            FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+                "Defib revive %s", tName);
+        }
         return true;
     }
 
@@ -215,7 +220,7 @@ bool TaskDefib_ShouldUpdate(int client) {
             (GetGameTime() - g_fDefibSearchStartTime[client]) > DEFIB_SEARCH_TIMEOUT) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                PrintToServer("[AI Bot DEBUG] %s Defib search timed out, giving up", dbgN);
+                AI_DebugDecision(client, "Defib search timed out, giving up");
             }
             TaskDefib_Reset(client);
             return false;
@@ -224,12 +229,16 @@ bool TaskDefib_ShouldUpdate(int client) {
         if (!TaskDefib_IsReachable(client, g_iDefibSearchTarget[client])) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                PrintToServer("[AI Bot DEBUG] %s Defib target unreachable (underground), finding another", dbgN);
+                AI_DebugDecision(client, "Defib target unreachable, finding another");
             }
             g_iDefibSearchTarget[client] = -1;
             // Fall through to find a new one
         } else {
             g_bDefibSearchMode[client] = true;
+            if (g_bDebugMode) {
+                FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+                    "Defib search");
+            }
             return true;
         }
     }
@@ -260,12 +269,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         float now = GetGameTime();
         if (now - g_fLastUpdateTrace[client] >= 3.0) {
             g_fLastUpdateTrace[client] = now;
-            char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-            int slot3 = GetPlayerWeaponSlot(client, 3);
-            char slot3cls[48] = "empty";
-            if (slot3 != -1 && IsValidEntity(slot3)) GetEntityClassname(slot3, slot3cls, sizeof(slot3cls));
-            PrintToServer("[AI Bot DEBUG] %s Defib.Update: searchMode=%d searchTarget=%d target=%d slot3=%s",
-                dbgN, g_bDefibSearchMode[client], g_iDefibSearchTarget[client], target, slot3cls);
+            // Removed verbose per-3s trace — task switches show enough info
         }
     }
 
@@ -282,7 +286,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
             (GetGameTime() - g_fDefibSearchStartTime[client]) > DEFIB_SEARCH_TIMEOUT) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                PrintToServer("[AI Bot DEBUG] %s Defib search timed out, giving up", dbgN);
+                AI_DebugDecision(client, "Defib search timed out, giving up");
             }
             TaskDefib_Reset(client);
             return false;
@@ -295,7 +299,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
             if (newTarget == -1) {
                 if (g_bDebugMode) {
                     char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                    PrintToServer("[AI Bot DEBUG] %s ModeB: lost target, no replacement found", dbgN);
+                    AI_DebugDecision(client, "ModeB: lost target, no replacement");
                 }
                 TaskDefib_Reset(client);
                 return false;
@@ -309,7 +313,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         if (!TaskDefib_IsReachable(client, searchTarget)) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                PrintToServer("[AI Bot DEBUG] %s ModeB: target unreachable, finding another", dbgN);
+                AI_DebugDecision(client, "ModeB: target unreachable, finding another");
             }
             g_iDefibSearchTarget[client] = -1;
             // Try to find another reachable defib
@@ -377,12 +381,12 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
 
                 if (g_bDebugMode) {
                     char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                    PrintToServer("[AI Bot DEBUG] %s ModeB: gave defib directly, switching to revive mode", dbgN);
+                    AI_DebugDecision(client, "ModeB: gave defib, switching to revive");
                 }
             } else {
                 if (g_bDebugMode) {
                     char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                    PrintToServer("[AI Bot DEBUG] %s ModeB: GivePlayerItem failed!", dbgN);
+                    AI_DebugDecision(client, "ModeB: GivePlayerItem failed!");
                 }
                 TaskDefib_Reset(client);
                 return false;
@@ -399,7 +403,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         if (AI_ShouldAbandonNavigation(client)) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                PrintToServer("[AI Bot DEBUG] %s ModeB: abandon defib search (teleport failed %d times)", dbgN, g_BotState[client].teleportAttempts);
+                AI_DebugDecision(client, "ModeB: abandon (teleport failed %d times)", g_BotState[client].teleportAttempts);
             }
             TaskDefib_Reset(client);
             return false;
@@ -481,7 +485,7 @@ bool TaskDefib_Update(int client, int &buttons, float vel[3]) {
         if (AI_ShouldAbandonNavigation(client)) {
             if (g_bDebugMode) {
                 char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-                PrintToServer("[AI Bot DEBUG] %s ModeA: abandon revive (teleport failed %d times)", dbgN, g_BotState[client].teleportAttempts);
+                AI_DebugDecision(client, "ModeA: abandon (teleport failed %d times)", g_BotState[client].teleportAttempts);
             }
             TaskDefib_Reset(client);
             return false;
@@ -683,17 +687,6 @@ static int TaskDefib_FindNearest(int client) {
 
     // Store spawn flag for this bot
     g_bDefibSearchIsSpawn[client] = bestIsSpawn;
-
-    if (g_bDebugMode) {
-        static float g_fLastFindNearestLog[MAXPLAYERS + 1];
-        float now = GetGameTime();
-        if (now - g_fLastFindNearestLog[client] >= 3.0) {
-            g_fLastFindNearestLog[client] = now;
-            char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
-            PrintToServer("[AI Bot DEBUG] %s FindNearest: wep_total=%d owner_skip=%d spawn_total=%d spawn_skip=%d dist_skip=%d reach_skip=%d best=%d isSpawn=%d dist=%.0f",
-                dbgN, totalFound, skippedOwner, spawnFound, spawnSkip, skippedDist, skippedReach, best, bestIsSpawn, bestDist);
-        }
-    }
 
     return best;
 }

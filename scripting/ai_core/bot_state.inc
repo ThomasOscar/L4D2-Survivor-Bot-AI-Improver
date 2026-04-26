@@ -55,6 +55,7 @@ enum struct BotState {
     int currentTaskOrder;       // Current task priority order
     bool taskLocked;            // Whether task is locked (cannot be preempted by lower priority)
     float taskStartTime;        // When the current task started
+    char taskSwitchReason[128]; // Reason for last task switch (debug)
 
     // === Combat Skill State ===
     float combatFirstSightTime; // When the current combat target was first spotted (for reaction delay)
@@ -134,6 +135,7 @@ enum struct BotState {
         this.currentTaskOrder = -1;
         this.taskLocked = false;
         this.taskStartTime = 0.0;
+        this.taskSwitchReason[0] = '\0';
         this.combatFirstSightTime = 0.0;
         this.lastCombatTarget = -1;
         this.lastSafePosTime = 0.0;

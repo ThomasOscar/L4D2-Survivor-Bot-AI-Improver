@@ -116,9 +116,7 @@ static void TaskNavigate_UpdateAggressiveMode() {
             g_bAggressiveLeaderMode = false;
             g_iLeaderBot = -1;
             g_bHasRescueCloset = false;
-            if (g_bDebugMode) {
-                PrintToServer("[AI Bot] Aggressive leader mode OFF — human player is alive");
-            }
+            PrintToServer("[AI Bot] Aggressive leader mode OFF — human player is alive");
         }
         return;
     }
@@ -156,13 +154,11 @@ static void TaskNavigate_UpdateAggressiveMode() {
             }
         }
 
-        if (g_bDebugMode) {
-            if (g_iLeaderBot > 0) {
-                char name[64]; GetClientName(g_iLeaderBot, name, sizeof(name));
-                PrintToServer("[AI Bot] Aggressive leader mode ON — leader: %s (flow=%.0f)", name, bestFlow);
-            } else {
-                PrintToServer("[AI Bot] Aggressive leader mode ON — but no valid leader found!");
-            }
+        if (g_iLeaderBot > 0) {
+            char name[64]; GetClientName(g_iLeaderBot, name, sizeof(name));
+            AI_DebugDecision(g_iLeaderBot, "Aggressive leader elected (all humans dead, no defib)");
+        } else {
+            PrintToServer("[AI Bot] Aggressive leader mode ON — but no valid leader found!");
         }
     }
 }
@@ -260,6 +256,13 @@ bool TaskNavigate_ShouldUpdate(int client) {
 
     // In aggressive leader mode, ALWAYS navigate — push forward!
     if (g_bAggressiveLeaderMode) {
+        if (client == g_iLeaderBot) {
+            FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+                "Leader push%s", g_bHasRescueCloset ? " → closet" : "");
+        } else {
+            FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+                "Following leader");
+        }
         return true;
     }
 

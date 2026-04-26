@@ -64,6 +64,35 @@ float g_fSaveTeleportTime;
 bool g_bSupplyEnabled;
 float g_fSupplyGiveCooldown;
 
+// ============================================================
+// Debug Decision Logging
+// ============================================================
+
+// Per-bot throttle for decision debug output
+static float g_fDebugDecisionNextPrint[MAXPLAYERS + 1];
+
+/**
+ * Log a bot decision event. Only prints when ai_debug is enabled.
+ * Throttled to 1 message per 0.5 seconds per bot to avoid spam.
+ *
+ * @param client    Bot client index
+ * @param fmt       Format string (decision description)
+ */
+stock void AI_DebugDecision(int client, const char[] fmt, any ...) {
+    if (!g_cvDebugMode.BoolValue) return;
+    float curTime = GetGameTime();
+    if (curTime < g_fDebugDecisionNextPrint[client]) return;
+    g_fDebugDecisionNextPrint[client] = curTime + 0.5;
+
+    char botName[64];
+    GetClientName(client, botName, sizeof(botName));
+
+    char msg[192];
+    VFormat(msg, sizeof(msg), fmt, 3);
+
+    PrintToServer("[AI Bot] %s | %s", botName, msg);
+}
+
 /**
  * Initialize all ConVars. Called from OnPluginStart.
  */

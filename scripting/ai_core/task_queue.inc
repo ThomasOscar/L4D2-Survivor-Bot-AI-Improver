@@ -18,7 +18,6 @@ int g_iTaskCount = 0;
 
 // Debug: per-bot last reported task (to avoid spam)
 static int g_iDebugLastTask[MAXPLAYERS + 1];
-static float g_fDebugNextPrint[MAXPLAYERS + 1];
 
 /**
  * Register a task into the global task queue.
@@ -120,27 +119,6 @@ bool AITaskQueue_Execute(int client, int &buttons, float vel[3]) {
         // Check if this task should run for this bot
         bool shouldUpdate = AITask_ShouldUpdate(taskId, client);
 
-        // Debug: log ShouldUpdate results for Defib task (throttled to 1/sec per bot)
-        if (g_bDebugMode && taskId == TASK_DEFIB && curTime >= g_fDebugNextPrint[client]) {
-            char botName[64];
-            GetClientName(client, botName, sizeof(botName));
-            int slot3 = GetPlayerWeaponSlot(client, 3);
-            char slot3name[48];
-            if (slot3 != -1 && IsValidEntity(slot3)) GetEntityClassname(slot3, slot3name, sizeof(slot3name));
-            else strcopy(slot3name, sizeof(slot3name), "empty");
-            // Count dead teammates
-            int deadCount = 0;
-            for (int d = 1; d <= MaxClients; d++) {
-                if (d == client) continue;
-                if (!IsClientInGame(d) || GetClientTeam(d) != 2) continue;
-                if (!IsPlayerAlive(d)) deadCount++;
-            }
-            PrintToServer("[AI Bot DEBUG] %s Defib.ShouldUpdate=%s slot3=%s dead_teammates=%d enabled=%d incap=%d pinned=%d",
-                botName, shouldUpdate ? "YES" : "NO", slot3name, deadCount,
-                g_bDefibEnabled, g_BotState[client].isIncapacitated, g_BotState[client].controlledByType);
-            g_fDebugNextPrint[client] = curTime + 1.0;
-        }
-
         if (shouldUpdate) {
             // If a lower-priority task is currently locked, preempt it
             if (g_BotState[client].taskLocked &&
@@ -153,18 +131,6 @@ bool AITaskQueue_Execute(int client, int &buttons, float vel[3]) {
             if (g_BotState[client].taskLocked &&
                 g_BotState[client].currentTaskOrder <= taskOrder &&
                 g_BotState[client].currentTaskId != view_as<int>(taskId)) {
-                // Debug: log when DEFIB is skipped
-                if (g_bDebugMode && taskId == TASK_DEFIB) {
-                    static float g_fLastSkipLog[MAXPLAYERS + 1];
-                    float nowSkip = GetGameTime();
-                    if (nowSkip - g_fLastSkipLog[client] >= 3.0) {
-                        g_fLastSkipLog[client] = nowSkip;
-                        char skipBot[64]; GetClientName(client, skipBot, sizeof(skipBot));
-                        char lockedTaskName[32];
-                        AITask_GetName(view_as<AITaskId>(g_BotState[client].currentTaskId), lockedTaskName, sizeof(lockedTaskName));
-                        PrintToServer("[AI Bot DEBUG] %s Defib SKIPPED: locked by %s (order=%d)", skipBot, lockedTaskName, g_BotState[client].currentTaskOrder);
-                    }
-                }
                 continue;
             }
 
@@ -182,17 +148,15 @@ bool AITaskQueue_Execute(int client, int &buttons, float vel[3]) {
                     g_BotState[client].taskStartTime = curTime;
                 }
 
-                // Debug: log task switch (throttled to 1 per second per bot)
+                // Debug: log task switch with reason
                 if (g_bDebugMode && g_iDebugLastTask[client] != view_as<int>(taskId)) {
                     g_iDebugLastTask[client] = view_as<int>(taskId);
-                    if (curTime >= g_fDebugNextPrint[client]) {
-                        g_fDebugNextPrint[client] = curTime + 1.0;
-                        char taskName[32];
-                        AITask_GetName(taskId, taskName, sizeof(taskName));
-                        char botName[64];
-                        GetClientName(client, botName, sizeof(botName));
-                        PrintToServer("[AI Bot DEBUG] %s → %s (locked)", botName, taskName);
-                    }
+                    char taskName[32];
+                    AITask_GetName(taskId, taskName, sizeof(taskName));
+                    char reason[128];
+                    strcopy(reason, sizeof(reason), g_BotState[client].taskSwitchReason);
+                    if (strlen(reason) == 0) strcopy(reason, sizeof(reason), "locked");
+                    AI_DebugDecision(client, "→ %s (%s)", taskName, reason);
                 }
 
                 return true;  // Task locked, skip remaining tasks

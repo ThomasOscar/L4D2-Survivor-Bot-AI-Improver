@@ -287,6 +287,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
 
             if (hasMelee && bestDist <= WITCH_CROWN_RANGE_MELEE) {
                 // Melee crown: switch to melee, aim at witch head, slash
+                AI_DebugDecision(client, "Witch melee crown %.0fu", bestDist);
                 int activeWep = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
                 if (activeWep != secondary) {
                     ClientCommand(client, "slot2");
@@ -306,6 +307,7 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
                 return true;  // Lock for witch crown
             } else if (hasShotgun && bestDist <= WITCH_CROWN_RANGE_SHOTGUN) {
                 // Shotgun crown: switch to shotgun, aim at head, fire
+                AI_DebugDecision(client, "Witch shotgun crown %.0fu", bestDist);
                 int activeWep = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
                 if (activeWep != primary) {
                     ClientCommand(client, "slot1");
@@ -399,6 +401,35 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     // Update BotState
     g_BotState[client].targetEntity = bestTarget;
     g_BotState[client].targetType = bestType;
+
+    // Debug: set combat decision reason
+    if (g_bDebugMode) {
+        char targetName[32];
+        switch (bestType) {
+            case 1: FormatEx(targetName, sizeof(targetName), "Common");
+            case 2: {
+                if (bestTarget > 0 && bestTarget <= MaxClients) {
+                    char siName[16];
+                    int zClass = GetEntProp(bestTarget, Prop_Send, "m_zombieClass");
+                    switch (zClass) {
+                        case 1: strcopy(siName, sizeof(siName), "Smoker");
+                        case 2: strcopy(siName, sizeof(siName), "Boomer");
+                        case 3: strcopy(siName, sizeof(siName), "Hunter");
+                        case 4: strcopy(siName, sizeof(siName), "Spitter");
+                        case 5: strcopy(siName, sizeof(siName), "Jockey");
+                        case 6: strcopy(siName, sizeof(siName), "Charger");
+                        default: strcopy(siName, sizeof(siName), "SI");
+                    }
+                    FormatEx(targetName, sizeof(targetName), "%s", siName);
+                } else strcopy(targetName, sizeof(targetName), "SI");
+            }
+            case 3: strcopy(targetName, sizeof(targetName), "Tank");
+            case 4: strcopy(targetName, sizeof(targetName), "Witch");
+            default: strcopy(targetName, sizeof(targetName), "?");
+        }
+        FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+            "%s %du", targetName, RoundToNearest(bestDist));
+    }
     g_BotState[client].isInCombat = true;
     g_BotState[client].visibleThreats = threatCount;
     g_BotState[client].visibleCommons = commonCount;

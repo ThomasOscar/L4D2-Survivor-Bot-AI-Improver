@@ -126,6 +126,12 @@ bool TaskRescue_ShouldUpdate(int client) {
             g_iAssignedRescuer[assignedVictim] = -1;
             return false;
         }
+        if (g_bDebugMode) {
+            char vName[64]; GetClientName(assignedVictim, vName, sizeof(vName));
+            bool pinned = AI_IsPlayerPinned(assignedVictim);
+            FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+                "%s %s", vName, pinned ? "pinned" : "incap");
+        }
         return true;
     }
 
@@ -175,6 +181,12 @@ bool TaskRescue_ShouldUpdate(int client) {
         if (closestBot == client) {
             // Assign this bot as the rescuer
             g_iAssignedRescuer[i] = client;
+            if (g_bDebugMode) {
+                char vName[64]; GetClientName(i, vName, sizeof(vName));
+                bool pinned = AI_IsPlayerPinned(i);
+                FormatEx(g_BotState[client].taskSwitchReason, sizeof(BotState::taskSwitchReason),
+                    "%s %s", vName, pinned ? "pinned" : "incap");
+            }
             return true;
         }
     }
@@ -204,7 +216,7 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
     // In aggressive leader mode, bots fight while advancing — don't abort rescue
     if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(client, 300.0)) {
         if (g_bDebugMode) {
-            PrintToServer("[AI Bot] Rescue abort: bot %d — Tank too close, releasing rescue", client);
+            AI_DebugDecision(client, "Rescue abort: Tank too close");
         }
         TaskRescue_Reset(client);
         return false;  // Let combat task deal with the Tank
@@ -217,7 +229,7 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
     // Check if should abandon (teleport failed too many times)
     if (AI_ShouldAbandonNavigation(client)) {
         if (g_bDebugMode) {
-            PrintToServer("[AI Bot] Rescue abandon: bot %d failed to reach target %d after %d teleports", client, victim, g_BotState[client].teleportAttempts);
+            AI_DebugDecision(client, "Rescue abandon: can't reach target after %d teleports", g_BotState[client].teleportAttempts);
         }
         TaskRescue_Reset(client);
         return false;
@@ -225,7 +237,7 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
 
     if (AI_TryStuckTeleport(client, victimPos, rescueDist, rescueElapsed, g_fTeleportRange, g_fSaveTeleportTime)) {
         if (g_bDebugMode) {
-            PrintToServer("[AI Bot] Rescue teleport: bot %d -> target %d (dist=%.0f, attempt=%d)", client, victim, rescueDist, g_BotState[client].teleportAttempts);
+            AI_DebugDecision(client, "Rescue teleport (dist=%.0f, attempt=%d)", rescueDist, g_BotState[client].teleportAttempts);
         }
     }
 

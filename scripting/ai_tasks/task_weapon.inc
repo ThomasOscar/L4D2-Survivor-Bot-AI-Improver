@@ -121,12 +121,7 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
                         if (maxClip > 0) {
                             SetEntProp(primary, Prop_Send, "m_iClip1", maxClip);
                             g_fWeaponAmmoEmptyTime[client] = 0.0;  // Reset timer
-
-                            if (g_bDebugMode) {
-                                char name[64]; GetClientName(client, name, sizeof(name));
-                                char cls[64]; GetEntityClassname(primary, cls, sizeof(cls));
-                                PrintToServer("[AI Bot] %s emergency ammo refill: %s + %d rounds", name, cls, maxClip);
-                            }
+                            AI_DebugDecision(client, "Emergency ammo refill +%d rounds", maxClip);
                         }
                     }
                 }
