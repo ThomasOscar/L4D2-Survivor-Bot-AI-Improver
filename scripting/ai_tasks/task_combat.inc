@@ -343,14 +343,17 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
             float witchPos[3];
             GetEntPropVector(bestTarget, Prop_Data, "m_vecAbsOrigin", witchPos);
 
-            // Check if we have a melee weapon
+            // Check if we have a melee weapon (only if melee module is enabled)
             bool hasMelee = false;
-            int secondary = GetPlayerWeaponSlot(client, 1);
-            if (secondary != -1 && IsValidEntity(secondary)) {
-                char secCls[64];
-                GetEntityClassname(secondary, secCls, sizeof(secCls));
-                if (StrEqual(secCls, "weapon_melee")) {
-                    hasMelee = true;
+            int secondary = -1;
+            if (g_bMeleeEnabled) {
+                secondary = GetPlayerWeaponSlot(client, 1);
+                if (secondary != -1 && IsValidEntity(secondary)) {
+                    char secCls[64];
+                    GetEntityClassname(secondary, secCls, sizeof(secCls));
+                    if (StrEqual(secCls, "weapon_melee")) {
+                        hasMelee = true;
+                    }
                 }
             }
 
@@ -469,12 +472,15 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     // If reaction not ready, bot aims but does not fire (simulating delay)
 
     // === Shove with skill-based success rate and dynamic range ===
-    float shoveRange = Combat_GetShoveRange();
-    if (bestDist < shoveRange && (bestType == 2 || bestType == 3 || bestType == 1)) {
-        // Roll for shove success based on skill level
-        float shoveRate = GetSkillFloat("shove");
-        if (SkillRollSuccess(shoveRate)) {
-            AI_PressShoveButton(client, buttons);
+    // Only shove when melee module is enabled
+    if (g_bMeleeEnabled) {
+        float shoveRange = Combat_GetShoveRange();
+        if (bestDist < shoveRange && (bestType == 2 || bestType == 3 || bestType == 1)) {
+            // Roll for shove success based on skill level
+            float shoveRate = GetSkillFloat("shove");
+            if (SkillRollSuccess(shoveRate)) {
+                AI_PressShoveButton(client, buttons);
+            }
         }
     }
 

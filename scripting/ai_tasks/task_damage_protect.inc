@@ -144,6 +144,29 @@ Action DamageProtect_OnTakeDamage(int victim, int &attacker, int &inflictor,
     if (GetClientTeam(victim) != 2) return Plugin_Continue;
     if (!IsPlayerAlive(victim)) return Plugin_Continue;
 
+    // === 0.5. Instant-kill protection (ConVar controlled) ===
+    // When enabled, cap damage so the bot is never one-shot killed or incapped
+    if (g_bProtectEnabled) {
+        int hp = GetClientHealth(victim);
+        bool isIncap = (GetEntProp(victim, Prop_Send, "m_isIncapacitated") != 0);
+
+        if (!isIncap) {
+            // Bot is standing — prevent one-shot incap
+            if (damage >= float(hp) && hp > 0) {
+                damage = float(hp) - 1.0;
+                if (damage < 1.0) damage = 1.0;
+                return Plugin_Changed;
+            }
+        } else {
+            // Bot is incapped — prevent instant death
+            if (damage >= float(hp) && hp > 0) {
+                damage = float(hp) - 1.0;
+                if (damage < 1.0) damage = 1.0;
+                return Plugin_Changed;
+            }
+        }
+    }
+
     // Get current skill level (clamped)
     int level = g_iBotSkillLevel;
     if (level < SKILL_LEVEL_MIN) level = SKILL_LEVEL_MIN;

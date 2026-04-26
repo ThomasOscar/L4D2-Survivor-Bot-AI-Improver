@@ -86,6 +86,7 @@ void PropCarry_OnMapStart() {
  * Check if prop carry task should activate for this bot.
  */
 bool TaskPropCarry_ShouldUpdate(int client) {
+    if (!g_bBackpackEnabled) return false;
     if (g_BotState[client].controlledByType > 0) return false;
     if (g_BotState[client].isIncapacitated) return false;
 
@@ -319,6 +320,9 @@ static int TaskPropCarry_FindNearestProp(int client) {
     };
 
     for (int p = 0; p < 3; p++) {
+        // Skip gascan pickup when FindGas is disabled
+        if (p == 0 && !g_bFindGasEnabled) continue;
+
         int ent = -1;
         int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, propClassnames[p])) != -1) {
