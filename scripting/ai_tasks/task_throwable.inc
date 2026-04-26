@@ -153,8 +153,10 @@ static int TaskThrowable_FindNearest(int client) {
 
     for (int t = 0; t < 3; t++) {
         int ent = -1;
+        int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, throwClassnames[t])) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
 
             // Skip owned throwables
             int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
@@ -235,8 +237,10 @@ static bool TaskThrowable_FindThrowTarget(int client, float result[3]) {
     float cx = 0.0, cy = 0.0, cz = 0.0;
     int count = 0;
     int common = -1;
+    int safetyCount = 0;
     while ((common = FindEntityByClassname(common, "infected")) != -1) {
-        if (!IsValidEntity(common)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(common)) { common++; continue; }
 
         float cPos[3];
         GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", cPos);

@@ -56,6 +56,7 @@ static float Combat_GetShoveRange() {
  * Check if combat task should activate for this bot.
  */
 bool TaskCombat_ShouldUpdate(int client) {
+    int safetyCount;
     // Bot must be free and standing
     if (g_BotState[client].controlledByType > 0) return false;
     if (g_BotState[client].isIncapacitated) return false;
@@ -83,8 +84,10 @@ bool TaskCombat_ShouldUpdate(int client) {
 
     // Check for angry witches
     int witch = -1;
+    safetyCount = 0;
     while ((witch = FindEntityByClassname(witch, "witch")) != -1) {
-        if (!IsValidEntity(witch)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(witch)) { witch++; continue; }
 
         float witchPos[3];
         GetEntPropVector(witch, Prop_Data, "m_vecAbsOrigin", witchPos);
@@ -102,8 +105,10 @@ bool TaskCombat_ShouldUpdate(int client) {
 
     // Check for common infected
     int common = -1;
+    safetyCount = 0;
     while ((common = FindEntityByClassname(common, "infected")) != -1) {
-        if (!IsValidEntity(common)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(common)) { common++; continue; }
 
         float commonPos[3];
         GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", commonPos);
@@ -126,6 +131,7 @@ bool TaskCombat_ShouldUpdate(int client) {
 bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     // vel is available for future use (e.g., strafing while shooting)
     #pragma unused vel
+    int safetyCount;
 
     int bestTarget = -1;
     int bestType = 0;       // 0=none, 1=common, 2=SI, 3=tank, 4=witch
@@ -167,8 +173,10 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     // Targeting priority: tank(3) > SI(2) > witch(4) > common(1)
     if (bestType != 3 && bestType != 2) {
         int witch = -1;
+        safetyCount = 0;
         while ((witch = FindEntityByClassname(witch, "witch")) != -1) {
-            if (!IsValidEntity(witch)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(witch)) { witch++; continue; }
 
             float witchPos[3];
             GetEntPropVector(witch, Prop_Data, "m_vecAbsOrigin", witchPos);
@@ -199,8 +207,10 @@ bool TaskCombat_Update(int client, int &buttons, float vel[3]) {
     // === Pass 3: Scan common infected (only if nothing better found) ===
     if (bestTarget == -1) {
         int common = -1;
+        safetyCount = 0;
         while ((common = FindEntityByClassname(common, "infected")) != -1) {
-            if (!IsValidEntity(common)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(common)) { common++; continue; }
 
             float commonPos[3];
             GetEntPropVector(common, Prop_Data, "m_vecAbsOrigin", commonPos);

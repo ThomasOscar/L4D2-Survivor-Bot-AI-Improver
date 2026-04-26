@@ -38,8 +38,10 @@ static bool Heal_IsInSafeRoom(int client) {
 
     // Check for checkpoint doors
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "prop_door_rotating_checkpoint")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         float doorPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", doorPos);
         if (GetVectorDistance(pos, doorPos) < HEAL_SAFEROOM_DOOR_RANGE) return true;
@@ -47,8 +49,10 @@ static bool Heal_IsInSafeRoom(int client) {
 
     // Check for changelevel triggers
     ent = -1;
+    safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "info_changelevel")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         float chgPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", chgPos);
         if (GetVectorDistance(pos, chgPos) < HEAL_SAFEROOM_CHANGELEVEL_RANGE) return true;

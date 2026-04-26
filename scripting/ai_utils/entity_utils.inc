@@ -291,10 +291,15 @@ stock int AI_FindNearestEntityByClassname(const char[] classname, const float or
     float entPos[3];
 
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, classname)) != -1)
     {
+        if (++safetyCount > 256) break;
         if (!AI_IsValidEntity(ent))
+        {
+            ent++;
             continue;
+        }
 
         AI_GetEntityAbsOrigin(ent, entPos);
         float dist = GetVectorDistance(origin, entPos, true);

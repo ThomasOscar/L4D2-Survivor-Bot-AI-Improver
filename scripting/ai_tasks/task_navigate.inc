@@ -94,16 +94,20 @@ static bool TaskNavigation_DefibExistsNearby() {
 
     g_bDefibNearby = false;
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
         if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) continue;
         g_bDefibNearby = true;
         return true;  // Found an unowned defib
     }
     ent = -1;
+    safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "weapon_defibrillator_spawn")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         int offset = FindDataMapInfo(ent, "m_nCount");
         if (offset > 0) {
             if (GetEntProp(ent, Prop_Data, "m_nCount") <= 0) continue;
@@ -203,8 +207,8 @@ static void TaskNavigate_FindRescueCloset() {
     int ent = -1;
     int closetCount = 0;
     while ((ent = FindEntityByClassname(ent, "info_survivor_rescue")) != -1) {
-        if (!IsValidEntity(ent)) continue;
         if (++closetCount > 32) break;  // Safety: don't iterate forever on broken maps
+        if (!IsValidEntity(ent)) { ent++; continue; }
 
         float closetPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", closetPos);

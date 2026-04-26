@@ -230,8 +230,10 @@ static int TaskSearch_FindNearestThrowable(int client) {
 
     for (int i = 0; i < sizeof(throwableClasses); i++) {
         int ent = -1;
+        int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, throwableClasses[i])) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
             if (!TaskSearch_IsUnowned(ent)) continue;
 
             float ePos[3];

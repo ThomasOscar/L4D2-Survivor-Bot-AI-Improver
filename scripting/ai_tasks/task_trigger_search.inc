@@ -88,8 +88,10 @@ bool TaskTriggerSearch_ShouldUpdate(int client) {
 
     for (int c = 0; c < sizeof(g_sTriggerClassnames); c++) {
         int ent = -1;
+        int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, g_sTriggerClassnames[c])) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
             if (ent <= 0 || ent >= MAX_ENTITIES) continue;
 
             // Skip recently used entities (cooldown)

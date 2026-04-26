@@ -57,6 +57,7 @@ bool TaskWeapon_ShouldUpdate(int client) {
  */
 bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
     #pragma unused vel
+    int safetyCount;
 
     float curTime = GetGameTime();
 
@@ -85,10 +86,12 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
                     // Check: is there any ammo pile nearby?
                     bool hasNearbyAmmo = false;
                     int ammoEnt = -1;
+                    safetyCount = 0;
                     float clientPos[3];
                     GetClientAbsOrigin(client, clientPos);
                     while ((ammoEnt = FindEntityByClassname(ammoEnt, "weapon_ammo_spawn")) != -1) {
-                        if (!IsValidEntity(ammoEnt)) continue;
+                        if (++safetyCount > 256) break;
+                        if (!IsValidEntity(ammoEnt)) { ammoEnt++; continue; }
                         float ammoPos[3];
                         GetEntPropVector(ammoEnt, Prop_Data, "m_vecAbsOrigin", ammoPos);
                         if (GetVectorDistance(clientPos, ammoPos) < 800.0) {
@@ -100,11 +103,13 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
                     // Check: is there a weapon on the ground we could swap to?
                     bool hasNearbyWeapon = false;
                     int wepEnt = -1;
+                    safetyCount = 0;
                     while ((wepEnt = FindEntityByClassname(wepEnt, "weapon_rifle")) != -1 ||
                            (wepEnt = FindEntityByClassname(wepEnt, "weapon_smg")) != -1 ||
                            (wepEnt = FindEntityByClassname(wepEnt, "weapon_pumpshotgun")) != -1 ||
                            (wepEnt = FindEntityByClassname(wepEnt, "weapon_autoshotgun")) != -1) {
-                        if (!IsValidEntity(wepEnt)) continue;
+                        if (++safetyCount > 256) break;
+                        if (!IsValidEntity(wepEnt)) { wepEnt++; continue; }
                         int owner = GetEntPropEnt(wepEnt, Prop_Data, "m_hOwnerEntity");
                         if (owner > 0 && owner <= MaxClients && IsPlayerAlive(owner)) continue;
                         float wepPos[3];
@@ -203,10 +208,12 @@ bool TaskWeapon_Update(int client, int &buttons, float vel[3]) {
             // Check for nearby ammo resupply before switching weapons
             bool hasNearbyAmmo = false;
             int ammoEnt = -1;
+            safetyCount = 0;
             float clientPos[3];
             GetClientAbsOrigin(client, clientPos);
             while ((ammoEnt = FindEntityByClassname(ammoEnt, "weapon_ammo_spawn")) != -1) {
-                if (!IsValidEntity(ammoEnt)) continue;
+                if (++safetyCount > 256) break;
+                if (!IsValidEntity(ammoEnt)) { ammoEnt++; continue; }
                 float ammoPos[3];
                 GetEntPropVector(ammoEnt, Prop_Data, "m_vecAbsOrigin", ammoPos);
                 if (GetVectorDistance(clientPos, ammoPos) < 500.0) {

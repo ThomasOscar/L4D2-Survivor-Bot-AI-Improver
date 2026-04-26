@@ -281,8 +281,10 @@ static int TaskSupply_FindNearest(int client, int slotType) {
         best = TaskSupply_FindNearestOfClass(throwableClasses, sizeof(throwableClasses), botPos, bestDist, best);
     } else if (slotType == SUPPLY_SLOT_AMMO) {
         int ent = -1;
+        int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, "weapon_ammo_spawn")) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
             float ePos[3];
             GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", ePos);
             float d = AI_GetVectorDistance(botPos, ePos);
@@ -304,8 +306,10 @@ static int TaskSupply_FindNearestOfClass(const char[][] classes, int numClasses,
     int best = currentBest;
     for (int i = 0; i < numClasses; i++) {
         int ent = -1;
+        int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, classes[i])) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
             if (!TaskSupply_IsAvailable(ent)) continue;
 
             // For spawn entities, check if they still have items

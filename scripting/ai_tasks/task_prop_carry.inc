@@ -50,8 +50,10 @@ void PropCarry_OnMapStart() {
 
     // Search for generator-type prop_dynamic entities
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "prop_dynamic")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         GetEntPropString(ent, Prop_Data, "m_ModelName", model, sizeof(model));
         if (StrContains(model, "generator") != -1 || StrContains(model, "dvd_player") != -1) {
             GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", g_fPourTargetPos);
@@ -66,8 +68,10 @@ void PropCarry_OnMapStart() {
     // Also search for point_prop_use_target (gascan pour accept point)
     if (!g_bHasPourTarget) {
         ent = -1;
+        safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, "point_prop_use_target")) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
             GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", g_fPourTargetPos);
             g_bHasPourTarget = true;
             g_iPourTargetEntity = ent;
@@ -316,8 +320,10 @@ static int TaskPropCarry_FindNearestProp(int client) {
 
     for (int p = 0; p < 3; p++) {
         int ent = -1;
+        int safetyCount = 0;
         while ((ent = FindEntityByClassname(ent, propClassnames[p])) != -1) {
-            if (!IsValidEntity(ent)) continue;
+            if (++safetyCount > 256) break;
+            if (!IsValidEntity(ent)) { ent++; continue; }
 
             // Skip if someone is carrying it
             int owner = GetEntPropEnt(ent, Prop_Data, "m_hOwnerEntity");
@@ -348,8 +354,10 @@ static int TaskPropCarry_FindHordeCenter(int client, float result[3]) {
     int count = 0;
 
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "infected")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
 
         float infPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", infPos);

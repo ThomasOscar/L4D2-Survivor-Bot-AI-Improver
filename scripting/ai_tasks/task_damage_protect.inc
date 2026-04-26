@@ -314,8 +314,10 @@ static int DamageProtect_FindNearbyDanger(int client, float dangerPos[3]) {
 
     // Check acid pools (insect_swarm)
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "insect_swarm")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         float entPos[3];
         GetEntPropVector(ent, Prop_Send, "m_vecOrigin", entPos);
         float dist = GetVectorDistance(pos, entPos);
@@ -330,8 +332,10 @@ static int DamageProtect_FindNearbyDanger(int client, float dangerPos[3]) {
 
     // Check fire (inferno)
     ent = -1;
+    safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "inferno")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
         float entPos[3];
         GetEntPropVector(ent, Prop_Send, "m_vecOrigin", entPos);
         float dist = GetVectorDistance(pos, entPos);
@@ -385,8 +389,10 @@ static int DamageProtect_FindIncomingTankRock(int client) {
     pos = g_BotState[client].absOrigin;
 
     int ent = -1;
+    int safetyCount = 0;
     while ((ent = FindEntityByClassname(ent, "tank_rock")) != -1) {
-        if (!IsValidEntity(ent)) continue;
+        if (++safetyCount > 256) break;
+        if (!IsValidEntity(ent)) { ent++; continue; }
 
         float rockPos[3];
         GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", rockPos);
