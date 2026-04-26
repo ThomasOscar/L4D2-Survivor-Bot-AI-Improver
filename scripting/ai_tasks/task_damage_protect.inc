@@ -40,6 +40,26 @@
 #define DANGER_DODGE_DURATION    1.0     // Dodge movement duration (seconds)
 #define DANGER_CHECK_INTERVAL    0.3     // Check interval to avoid per-frame cost
 
+// Tank rock and Charger detection
+#define TANK_ROCK_DETECT_RANGE   500.0   // Detection range for incoming Tank rock
+#define CHARGER_DETECT_RANGE     400.0   // Detection range for charging Charger
+
+// Self-heal thresholds
+#define SELF_HEAL_HP_PILLS       40      // Use pills/adrenaline below this HP
+#define SELF_HEAL_HP_ADRENALINE  30      // Use adrenaline below this HP (faster)
+
+// General SI damage reduction by skill level (index = level 0..4)
+// Lv0: 0%, Lv1: 10%, Lv2: 20%, Lv3: 30%, Lv4: 40%
+static float g_flSIDmgReduction[SKILL_LEVEL_COUNT] = {
+    0.0, 0.10, 0.20, 0.30, 0.40
+};
+
+// Tank damage reduction by skill level (index = level 0..4)
+// Lv0: 0%, Lv1: 5%, Lv2: 10%, Lv3: 20%, Lv4: 30%
+static float g_flTankDmgReduction[SKILL_LEVEL_COUNT] = {
+    0.0, 0.05, 0.10, 0.20, 0.30
+};
+
 // Fire damage reduction by skill level (index = level 0..4)
 // Lv0: 0%, Lv1: 0%, Lv2: 30%, Lv3: 45%, Lv4: 60%
 static float g_flFireDmgReduction[SKILL_LEVEL_COUNT] = {
@@ -164,6 +184,31 @@ Action DamageProtect_OnTakeDamage(int victim, int &attacker, int &inflictor,
         }
     }
 
+    // === 4. Tank Damage Reduction ===
+    if (attacker > 0 && attacker <= MaxClients && IsClientInGame(attacker)) {
+        if (GetClientTeam(attacker) == 3 && GetEntProp(attacker, Prop_Send, "m_zombieClass") == 8) {
+            float reduction = g_flTankDmgReduction[level];
+            if (reduction > 0.0) {
+                damage *= (1.0 - reduction);
+                return Plugin_Changed;
+            }
+        }
+    }
+
+    // === 5. General SI Damage Reduction ===
+    if (attacker > 0 && attacker <= MaxClients && IsClientInGame(attacker)) {
+        if (GetClientTeam(attacker) == 3) {
+            // Skip Tank (already handled above)
+            if (GetEntProp(attacker, Prop_Send, "m_zombieClass") != 8) {
+                float reduction = g_flSIDmgReduction[level];
+                if (reduction > 0.0) {
+                    damage *= (1.0 - reduction);
+                    return Plugin_Changed;
+                }
+            }
+        }
+    }
+
     return Plugin_Continue;
 }
 
@@ -197,37 +242,58 @@ static void DamageProtect_CheckDangerZone(int client, float curTime) {
     if (g_BotState[client].isIncapacitated) return;
     if (g_BotState[client].controlledByType > 0) return;
 
-    // Detect nearest danger
+    // === Self-heal: use pills/adrenaline when low HP ===
+    int level = g_iBotSkillLevel;
+    if (level < SKILL_LEVEL_MIN) level = SKILL_LEVEL_MIN;
+    if (level > SKILL_LEVEL_MAX) level = SKILL_LEVEL_MAX;
+    // Only self-heal at skill level 2+ (smarter bots know to use items)
+    if (level >= 2) {
+        int hp = GetClientHealth(client);
+        int slot4 = GetPlayerWeaponSlot(client, 4);  // Pills/Adrenaline slot
+        if (slot4 != -1 && hp <= SELF_HEAL_HP_PILLS) {
+            char cls[64];
+            GetEntityClassname(slot4, cls, sizeof(cls));
+            if (StrEqual(cls, "weapon_pain_pills") || StrEqual(cls, "weapon_adrenaline")) {
+                // Use the item
+                FakeClientCommand(client, "use %s", cls);
+                if (g_bDebugMode) {
+                    char dbgN[64]; GetClientName(client, dbgN, sizeof(dbgN));
+                    PrintToServer("[AI Bot] %s self-heal: using %s (HP=%d)", dbgN, cls, hp);
+                }
+                return;
+            }
+        }
+    }
+
+    // === Tank rock dodge ===
+    int level2 = level;
+    if (level2 >= 2) {  // Skill 2+ can dodge rocks
+        int rockEnt = DamageProtect_FindIncomingTankRock(client);
+        if (rockEnt != -1) {
+            float rockPos[3];
+            GetEntPropVector(rockEnt, Prop_Data, "m_vecAbsOrigin", rockPos);
+            DamageProtect_StartDodge(client, rockPos, curTime, 300.0, 1.5);
+            return;
+        }
+    }
+
+    // === Charger dodge ===
+    if (level2 >= 1) {  // Skill 1+ can dodge chargers
+        int chargerEnt = DamageProtect_FindChargingCharger(client);
+        if (chargerEnt != -1) {
+            float chargerPos[3];
+            GetClientAbsOrigin(chargerEnt, chargerPos);
+            DamageProtect_StartDodge(client, chargerPos, curTime, 250.0, 1.2);
+            return;
+        }
+    }
+
+    // Detect nearest danger (acid/fire)
     float dangerPos[3];
     int dangerEnt = DamageProtect_FindNearbyDanger(client, dangerPos);
     if (dangerEnt == -1) return;
 
-    // Compute escape direction: away from danger, horizontal only
-    float pos[3], escapeDir[3], escapeTarget[3];
-    pos[0] = g_BotState[client].absOrigin[0];
-    pos[1] = g_BotState[client].absOrigin[1];
-    pos[2] = g_BotState[client].absOrigin[2];
-
-    SubtractVectors(pos, dangerPos, escapeDir);
-    escapeDir[2] = 0.0; // Stay on horizontal plane
-
-    float len = GetVectorLength(escapeDir);
-    if (len < 1.0) {
-        // Directly on top of danger — pick arbitrary direction
-        escapeDir[0] = 1.0;
-        escapeDir[1] = 0.0;
-    }
-    NormalizeVector(escapeDir, escapeDir);
-    ScaleVector(escapeDir, DANGER_DODGE_DISTANCE);
-    AddVectors(pos, escapeDir, escapeTarget);
-
-    // Set move target to escape position
-    g_BotState[client].moveTarget[0] = escapeTarget[0];
-    g_BotState[client].moveTarget[1] = escapeTarget[1];
-    g_BotState[client].moveTarget[2] = escapeTarget[2];
-    g_BotState[client].hasMoveTarget = true;
-    g_BotState[client].isDodging = true;
-    g_BotState[client].dodgeExpireTime = curTime + DANGER_DODGE_DURATION;
+    DamageProtect_StartDodge(client, dangerPos, curTime, DANGER_DODGE_DISTANCE, DANGER_DODGE_DURATION);
 }
 
 /**
@@ -279,4 +345,141 @@ static int DamageProtect_FindNearbyDanger(int client, float dangerPos[3]) {
     }
 
     return found;
+}
+
+/**
+ * Start a dodge maneuver away from a position.
+ */
+static void DamageProtect_StartDodge(int client, const float dangerPos[3], float curTime,
+                                      float dodgeDist, float dodgeDuration) {
+    float pos[3], escapeDir[3], escapeTarget[3];
+    pos[0] = g_BotState[client].absOrigin[0];
+    pos[1] = g_BotState[client].absOrigin[1];
+    pos[2] = g_BotState[client].absOrigin[2];
+
+    SubtractVectors(pos, dangerPos, escapeDir);
+    escapeDir[2] = 0.0;
+
+    float len = GetVectorLength(escapeDir);
+    if (len < 1.0) {
+        escapeDir[0] = 1.0;
+        escapeDir[1] = 0.0;
+    }
+    NormalizeVector(escapeDir, escapeDir);
+    ScaleVector(escapeDir, dodgeDist);
+    AddVectors(pos, escapeDir, escapeTarget);
+
+    g_BotState[client].moveTarget[0] = escapeTarget[0];
+    g_BotState[client].moveTarget[1] = escapeTarget[1];
+    g_BotState[client].moveTarget[2] = escapeTarget[2];
+    g_BotState[client].hasMoveTarget = true;
+    g_BotState[client].isDodging = true;
+    g_BotState[client].dodgeExpireTime = curTime + dodgeDuration;
+}
+
+/**
+ * Find an incoming Tank rock (tank_rock entity) heading toward the bot.
+ */
+static int DamageProtect_FindIncomingTankRock(int client) {
+    float pos[3];
+    pos = g_BotState[client].absOrigin;
+
+    int ent = -1;
+    while ((ent = FindEntityByClassname(ent, "tank_rock")) != -1) {
+        if (!IsValidEntity(ent)) continue;
+
+        float rockPos[3];
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsOrigin", rockPos);
+        float dist = AI_GetVectorDistance(pos, rockPos);
+
+        if (dist > TANK_ROCK_DETECT_RANGE) continue;
+
+        // Check if rock is moving toward the bot (velocity check)
+        float rockVel[3];
+        GetEntPropVector(ent, Prop_Data, "m_vecAbsVelocity", rockVel);
+        float rockSpeed = GetVectorLength(rockVel);
+        if (rockSpeed < 50.0) continue;  // Rock isn't really moving
+
+        // Direction from rock to bot
+        float toBot[3];
+        SubtractVectors(pos, rockPos, toBot);
+        toBot[2] = 0.0;
+        float toBotLen = GetVectorLength(toBot);
+        if (toBotLen < 1.0) continue;
+
+        // Normalize
+        toBot[0] /= toBotLen;
+        toBot[1] /= toBotLen;
+
+        // Normalize rock velocity (horizontal)
+        float normVel[3];
+        normVel[0] = rockVel[0];
+        normVel[1] = rockVel[1];
+        normVel[2] = 0.0;
+        float velLen = GetVectorLength(normVel);
+        if (velLen < 1.0) continue;
+        normVel[0] /= velLen;
+        normVel[1] /= velLen;
+
+        // Dot product: if rock is heading toward bot, value > 0
+        float dot = normVel[0] * toBot[0] + normVel[1] * toBot[1];
+        if (dot > 0.5) {
+            return ent;  // Rock is heading toward this bot
+        }
+    }
+
+    return -1;
+}
+
+/**
+ * Find a Charger that is currently charging toward the bot.
+ */
+static int DamageProtect_FindChargingCharger(int client) {
+    float pos[3];
+    pos = g_BotState[client].absOrigin;
+
+    for (int i = 1; i <= MaxClients; i++) {
+        if (!IsClientInGame(i) || !IsPlayerAlive(i)) continue;
+        if (GetClientTeam(i) != 3) continue;
+        if (GetEntProp(i, Prop_Send, "m_zombieClass") != 6) continue;  // ZC_CHARGER = 6
+
+        // Check if Charger is in charging state
+        MoveType mt = GetEntityMoveType(i);
+        if (mt != MOVETYPE_ISOMETRIC) continue;  // Charger charges with isometric move type
+
+        float chargerPos[3];
+        GetClientAbsOrigin(i, chargerPos);
+        float dist = AI_GetVectorDistance(pos, chargerPos);
+        if (dist > CHARGER_DETECT_RANGE) continue;
+
+        // Check if Charger is heading toward the bot
+        float chargerVel[3];
+        GetEntPropVector(i, Prop_Data, "m_vecAbsVelocity", chargerVel);
+        float speed = GetVectorLength(chargerVel);
+        if (speed < 100.0) continue;  // Not really charging
+
+        float toBot[3];
+        SubtractVectors(pos, chargerPos, toBot);
+        toBot[2] = 0.0;
+        float toBotLen = GetVectorLength(toBot);
+        if (toBotLen < 1.0) continue;
+        toBot[0] /= toBotLen;
+        toBot[1] /= toBotLen;
+
+        float normVel[3];
+        normVel[0] = chargerVel[0];
+        normVel[1] = chargerVel[1];
+        normVel[2] = 0.0;
+        float velLen = GetVectorLength(normVel);
+        if (velLen < 1.0) continue;
+        normVel[0] /= velLen;
+        normVel[1] /= velLen;
+
+        float dot = normVel[0] * toBot[0] + normVel[1] * toBot[1];
+        if (dot > 0.3) {
+            return i;  // Charger is heading toward this bot
+        }
+    }
+
+    return -1;
 }
