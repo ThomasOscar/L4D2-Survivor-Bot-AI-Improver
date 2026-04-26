@@ -19,6 +19,11 @@
 #endif
 #define _task_trigger_search_included
 
+// FL_FROZEN safety define — may not be available in all include sets
+#if !defined FL_FROZEN
+    #define FL_FROZEN (1 << 5)
+#endif
+
 // Trigger search constants
 #define TRIGGER_SEARCH_RANGE      800.0   // Max search radius (units)
 #define TRIGGER_USE_RANGE         96.0    // Must be this close to activate
@@ -200,12 +205,17 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
 
         if (TriggerSearch_NeedsHoldUse(target)) {
             // === Hold-USE mode: keep IN_USE pressed until progress completes ===
-            // CRITICAL: Must stop all movement — walking breaks the progress bar!
+            // CRITICAL: Freeze the bot at engine level (FL_FROZEN) like heal does.
+            // Just clearing vel/buttons is NOT enough — other tasks/engine AI override them.
+            int flags = GetEntityFlags(client);
+            if ((flags & FL_FROZEN) == 0) {
+                SetEntityFlags(client, flags | FL_FROZEN);
+            }
+
             vel[0] = 0.0;
             vel[1] = 0.0;
             vel[2] = 0.0;
             buttons |= IN_USE;
-            // Clear movement buttons too
             buttons &= ~(IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_JUMP | IN_DUCK);
 
             if (!g_bTriggerHolding[client]) {
@@ -220,7 +230,11 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
             float heldDuration = GetGameTime() - g_fTriggerHoldStart[client];
             float requiredDuration = TriggerSearch_GetHoldDuration(target);
             if (heldDuration >= requiredDuration + 0.5) {
-                // Held long enough — mark as used and release
+                // Held long enough — unfreeze, mark as used and release
+                int f = GetEntityFlags(client);
+                if ((f & FL_FROZEN) != 0) {
+                    SetEntityFlags(client, f & ~FL_FROZEN);
+                }
                 g_bTriggerUsed[target] = true;
                 g_fTriggerLastUsed[target] = GetGameTime();
                 g_bTriggerHolding[client] = false;
@@ -261,6 +275,13 @@ bool TaskTriggerSearch_Update(int client, int &buttons, float vel[3]) {
  * Reset trigger search state for a bot.
  */
 void TaskTriggerSearch_Reset(int client) {
+    // CRITICAL: Remove FL_FROZEN if we were holding USE, same as heal task
+    if (g_bTriggerHolding[client]) {
+        int flags = GetEntityFlags(client);
+        if ((flags & FL_FROZEN) != 0) {
+            SetEntityFlags(client, flags & ~FL_FROZEN);
+        }
+    }
     g_iTriggerTarget[client] = -1;
     g_bTriggerHolding[client] = false;
     g_fTriggerHoldStart[client] = 0.0;
