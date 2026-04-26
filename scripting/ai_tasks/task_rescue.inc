@@ -120,7 +120,8 @@ bool TaskRescue_ShouldUpdate(int client) {
     int assignedVictim = TaskRescue_GetAssignedVictim(client);
     if (assignedVictim != -1 && TaskRescue_NeedsHelp(assignedVictim)) {
         // Even if assigned, if a Tank is very close, let combat take priority
-        if (TaskRescue_IsTankNearby(client, 300.0)) {
+        // UNLESS in aggressive leader mode — then we fight while advancing
+        if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(client, 300.0)) {
             // Release assignment — let combat handle Tank first
             g_iAssignedRescuer[assignedVictim] = -1;
             return false;
@@ -137,9 +138,10 @@ bool TaskRescue_ShouldUpdate(int client) {
         if (g_iAssignedRescuer[i] != -1) continue;
 
         // Check if a Tank is near the victim — too dangerous to rescue right now
+        // In aggressive leader mode, we push through threats
         float victimPos[3];
         GetClientAbsOrigin(i, victimPos);
-        if (TaskRescue_IsTankNearPosition(victimPos, 400.0)) {
+        if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearPosition(victimPos, 400.0)) {
             // Tank is too close to victim — skip rescue, let combat handle it
             continue;
         }
@@ -158,8 +160,8 @@ bool TaskRescue_ShouldUpdate(int client) {
             // Already rescuing someone else?
             if (TaskRescue_GetAssignedVictim(b) != -1) continue;
 
-            // Skip bots that are close to a Tank
-            if (TaskRescue_IsTankNearby(b, 300.0)) continue;
+            // Skip bots that are close to a Tank (unless aggressive leader mode)
+            if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(b, 300.0)) continue;
 
             float botPos[3];
             GetClientAbsOrigin(b, botPos);
@@ -199,7 +201,8 @@ bool TaskRescue_Update(int client, int &buttons, float vel[3]) {
     g_BotState[client].isRescuing = true;
 
     // === Tank awareness: if Tank is very close, release rescue and let combat handle it ===
-    if (TaskRescue_IsTankNearby(client, 300.0)) {
+    // In aggressive leader mode, bots fight while advancing — don't abort rescue
+    if (!TaskNavigate_IsAggressiveLeaderMode() && TaskRescue_IsTankNearby(client, 300.0)) {
         if (g_bDebugMode) {
             PrintToServer("[AI Bot] Rescue abort: bot %d — Tank too close, releasing rescue", client);
         }
