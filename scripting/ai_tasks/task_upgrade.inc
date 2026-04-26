@@ -127,6 +127,15 @@ bool TaskUpgrade_Update(int client, int &buttons, float vel[3]) {
         // Move toward upgrade pack
         AI_ComputeMoveToward(client, entPos, g_BotState[client].absOrigin,
                               g_BotState[client].eyeAngles, vel);
+
+        // Stuck teleport for upgrade pickup
+        float upgradeElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+        if (AI_ShouldAbandonNavigation(client)) {
+            TaskUpgrade_Reset(client);
+            return false;
+        }
+        AI_TryStuckTeleport(client, entPos, dist, upgradeElapsed, 300.0, 10.0);
+
         return false;  // Don't lock while approaching
     }
 
@@ -170,6 +179,15 @@ bool TaskUpgrade_Update(int client, int &buttons, float vel[3]) {
         // Move toward ammo pile
         AI_ComputeMoveToward(client, ammoPos, g_BotState[client].absOrigin,
                               g_BotState[client].eyeAngles, vel);
+
+        // Stuck teleport for deploy movement
+        float deployElapsed = GetGameTime() - g_BotState[client].taskStartTime;
+        if (AI_ShouldAbandonNavigation(client)) {
+            TaskUpgrade_Reset(client);
+            return false;
+        }
+        AI_TryStuckTeleport(client, ammoPos, dist, deployElapsed, 300.0, 10.0);
+
         return true;  // Lock while moving to deploy spot
     }
 
@@ -224,4 +242,5 @@ void TaskUpgrade_Reset(int client) {
     g_BotState[client].upgradeTarget = -1;
     g_iUpgradePhase[client] = UPGRADE_PHASE_SEEK;
     g_iUpgradeDeployTarget[client] = -1;
+    AI_ResetTeleportState(client);
 }
